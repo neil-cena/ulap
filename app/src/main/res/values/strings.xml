@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Ulap</string>
+    <string name="notification_channel_backup">Backup</string>
+    <string name="notification_backup_title">Backing up your media</string>
+    <string name="notification_restore_title">Restoring your media</string>
+</resources>
