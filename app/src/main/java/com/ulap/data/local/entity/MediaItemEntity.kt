@@ -13,6 +13,7 @@ enum class BackupStatus { PENDING, UPLOADING, BACKED_UP, FAILED, EXCLUDED, CLOUD
     indices = [
         Index("backupStatus"),
         Index("bucketName"),
+        Index("dateTaken"),
         Index("mediaType"),
     ]
 )
