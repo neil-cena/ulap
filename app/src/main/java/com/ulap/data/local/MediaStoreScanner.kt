@@ -1,4 +1,5 @@
 package com.ulap.data.local
+// MediaType.VIDEO support added
 
 import android.content.ContentResolver
 import android.content.ContentUris
