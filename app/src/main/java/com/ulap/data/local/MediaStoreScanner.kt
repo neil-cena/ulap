@@ -1,4 +1,4 @@
-package com.ulap.data.local // null mimeType guard
+package com.ulap.data.local
 
 import android.content.ContentResolver
 import android.content.ContentUris
