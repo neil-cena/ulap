@@ -1,4 +1,4 @@
-package com.ulap.ui.onboarding
+package com.ulap.ui.onboarding // password visibility toggle
 
 import android.content.Intent
 import android.net.Uri
