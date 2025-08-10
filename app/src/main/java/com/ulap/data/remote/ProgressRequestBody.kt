@@ -1,4 +1,4 @@
-package com.ulap.data.remote // streaming RequestBody
+package com.ulap.data.remote
 
 import okhttp3.MediaType
 import okhttp3.RequestBody

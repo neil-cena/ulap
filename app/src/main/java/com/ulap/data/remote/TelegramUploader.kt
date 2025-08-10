@@ -1,4 +1,4 @@
-package com.ulap.data.remote // sendVideo
+package com.ulap.data.remote
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
