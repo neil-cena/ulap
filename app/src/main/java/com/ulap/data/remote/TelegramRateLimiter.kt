@@ -1,4 +1,4 @@
-package com.ulap.data.remote // rate limiter
+package com.ulap.data.remote
 
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
