@@ -1,4 +1,4 @@
-package com.ulap.sync // pipeline
+package com.ulap.sync
 
 import android.content.ContentResolver
 import android.content.ContentValues
