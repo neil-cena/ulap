@@ -1,0 +1,63 @@
+package com.ulap.ui.backup
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.ulap.domain.model.BackupStats
+import com.ulap.domain.model.SyncProgress
+import com.ulap.domain.usecase.FetchIndexFromPinnedMessageUseCase
+import com.ulap.domain.usecase.GetBackupStatsUseCase
+import com.ulap.domain.usecase.RetryFailedUseCase
+import com.ulap.domain.usecase.ScanMediaUseCase
+import com.ulap.domain.usecase.StartBackupUseCase
+import com.ulap.sync.SyncEngine
+import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
+import javax.inject.Inject
+
+@HiltViewModel
+class BackupViewModel @Inject constructor(
+    private val getBackupStats: GetBackupStatsUseCase,
+    private val startBackup: StartBackupUseCase,
+    private val retryFailed: RetryFailedUseCase,
+    private val scanMedia: ScanMediaUseCase,
+    private val fetchIndex: FetchIndexFromPinnedMessageUseCase,
+    private val syncEngine: SyncEngine,
+) : ViewModel() {
+
+    val stats: StateFlow<BackupStats?> = getBackupStats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val progress: StateFlow<SyncProgress> = syncEngine.progress
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncProgress())
+
+    init {
+        viewModelScope.launch { scanMedia(fullScan = false) }
+    }
+
+    fun startBackup() {
+        viewModelScope.launch {
+            try {
+                scanMedia(fullScan = false)
+                startBackup.invoke()
+            } catch (_: Exception) { }
+        }
+    }
+
+    fun retryFailed() {
+        viewModelScope.launch {
+            try { retryFailed.invoke() } catch (_: Exception) { }
+        }
+    }
+
+    fun syncNow() {
+        viewModelScope.launch {
+            try {
+                fetchIndex()
+                scanMedia(fullScan = false)
+            } catch (_: Exception) { }
+        }
+    }
+}
