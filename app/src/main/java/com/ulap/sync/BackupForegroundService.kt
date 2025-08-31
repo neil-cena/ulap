@@ -1,4 +1,4 @@
-package com.ulap.sync
+package com.ulap.sync // notification fix
 
 import android.app.Notification
 import android.app.NotificationChannel
