@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery
+package com.ulap.ui.gallery // date headers
 
 import android.Manifest
 import android.content.pm.PackageManager
