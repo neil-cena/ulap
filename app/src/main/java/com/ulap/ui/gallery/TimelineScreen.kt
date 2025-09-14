@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery // video badge
+package com.ulap.ui.gallery
 
 import android.Manifest
 import android.content.pm.PackageManager

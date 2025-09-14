@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery // Coil thumbnails
+package com.ulap.ui.gallery
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
