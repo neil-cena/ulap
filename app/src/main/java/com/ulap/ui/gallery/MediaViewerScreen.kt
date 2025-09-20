@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery
+package com.ulap.ui.gallery // pager
 
 import android.net.Uri
 import androidx.compose.foundation.background
