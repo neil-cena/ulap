@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery
+package com.ulap.ui.gallery // ExoPlayer
 
 import android.net.Uri
 import androidx.compose.runtime.Composable
