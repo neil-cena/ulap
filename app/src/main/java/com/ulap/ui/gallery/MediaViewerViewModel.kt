@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery
+package com.ulap.ui.gallery // exoplayer release
 
 import android.content.Context
 import androidx.lifecycle.SavedStateHandle
