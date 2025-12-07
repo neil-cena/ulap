@@ -1,4 +1,4 @@
-package com.ulap.sync
+package com.ulap.sync // parallel download
 
 import android.content.ContentResolver
 import android.content.ContentValues

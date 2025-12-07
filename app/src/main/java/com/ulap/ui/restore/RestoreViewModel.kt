@@ -1,4 +1,4 @@
-package com.ulap.ui.restore // MediaStore insert
+package com.ulap.ui.restore
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
