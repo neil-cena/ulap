@@ -1,4 +1,4 @@
-package com.ulap.ui.restore // resume support
+package com.ulap.ui.restore
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
