@@ -1,4 +1,4 @@
-package com.ulap.ui.backup // stats screen
+package com.ulap.ui.backup
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
