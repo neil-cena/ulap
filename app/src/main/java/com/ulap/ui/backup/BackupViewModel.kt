@@ -1,4 +1,4 @@
-package com.ulap.ui.backup
+package com.ulap.ui.backup // stat chips
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
