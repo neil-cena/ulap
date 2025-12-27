@@ -1,4 +1,4 @@
-package com.ulap.ui.onboarding
+package com.ulap.ui.onboarding // toggles
 
 import android.Manifest
 import android.content.pm.PackageManager
