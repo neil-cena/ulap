@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery // per-folder bars
+package com.ulap.ui.gallery
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
