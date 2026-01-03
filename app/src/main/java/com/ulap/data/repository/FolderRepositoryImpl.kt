@@ -1,4 +1,4 @@
-package com.ulap.data.repository // toggle persist fix
+package com.ulap.data.repository
 
 import com.ulap.data.local.MediaStoreScanner
 import com.ulap.data.local.dao.BackupFolderDao
