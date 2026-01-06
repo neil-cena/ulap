@@ -1,4 +1,4 @@
-package com.ulap.ui.settings // verify bot
+package com.ulap.ui.settings
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer

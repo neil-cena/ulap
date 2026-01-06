@@ -1,4 +1,4 @@
-package com.ulap.sync
+package com.ulap.sync // hilt fix
 
 import android.content.Context
 import androidx.hilt.work.HiltWorker
