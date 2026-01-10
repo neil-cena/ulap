@@ -1,4 +1,4 @@
-package com.ulap.sync
+package com.ulap.sync // scan cache
 
 import android.content.ContentResolver
 import android.content.ContentValues
