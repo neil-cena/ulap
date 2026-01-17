@@ -1,4 +1,4 @@
-package com.ulap.ui.onboarding
+package com.ulap.ui.onboarding // empty states
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
