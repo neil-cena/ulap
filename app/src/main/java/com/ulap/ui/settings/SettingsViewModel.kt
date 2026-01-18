@@ -1,4 +1,4 @@
-package com.ulap.ui.settings
+package com.ulap.ui.settings // edge-to-edge
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
