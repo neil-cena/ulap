@@ -1,4 +1,5 @@
 # Retrofit + OkHttp
+# Retrofit + OkHttp + Gson + Room + Hilt keep rules (added Jan 2026)
 -dontwarn okhttp3.**
 -dontwarn okio.**
 -keepattributes Signature
