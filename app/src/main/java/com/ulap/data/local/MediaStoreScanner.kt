@@ -1,4 +1,4 @@
-package com.ulap.data.local // Android 14 bucket fix
+package com.ulap.data.local
 
 import android.content.ContentResolver
 import android.content.ContentUris
