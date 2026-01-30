@@ -10,9 +10,9 @@ import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024
-private const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024
-const val MAX_FILE_SIZE = 2L * 1024 * 1024 * 1024
+private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API limit
+private const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
+const val MAX_FILE_SIZE = 2L * 1024 * 1024 * 1024 // 2GB absolute limit
 
 @Singleton
 class TelegramUploader @Inject constructor(
@@ -33,12 +33,27 @@ class TelegramUploader @Inject constructor(
         if (fileSize > MAX_FILE_SIZE) {
             return@withContext UploadResult.FileTooLarge(fileSize)
         }
+
         when {
             fileSize <= MAX_SINGLE_UPLOAD_SIZE -> uploadSingle(
-                token, chatId, inputStream, fileName, mimeType, fileSize, caption, onProgress,
+                token = token,
+                chatId = chatId,
+                inputStream = inputStream,
+                fileName = fileName,
+                mimeType = mimeType,
+                fileSize = fileSize,
+                caption = caption,
+                onProgress = onProgress,
             )
             else -> uploadChunked(
-                token, chatId, inputStream, fileName, mimeType, fileSize, caption, onProgress,
+                token = token,
+                chatId = chatId,
+                inputStream = inputStream,
+                fileName = fileName,
+                mimeType = mimeType,
+                fileSize = fileSize,
+                caption = caption,
+                onProgress = onProgress,
             )
         }
     }
@@ -57,18 +72,26 @@ class TelegramUploader @Inject constructor(
         val captionBody = caption?.toRequestBody("text/plain".toMediaType())
         val safeToken = sanitizeTokenForPath(token)
 
-        // All images are sent via sendPhoto regardless of MIME type
-        val isPhoto = mimeType.startsWith("image/")
+        // Only JPEG and PNG are accepted by sendPhoto. For all other image types
+        // (WebP, HEIC, GIF, BMP, etc.) go straight to sendDocument.
+        val isPhotoCandidate = mimeType == "image/jpeg" || mimeType == "image/png"
         val isVideo = mimeType.startsWith("video/")
 
-        val bytes: ByteArray? = if (isPhoto) inputStream.readBytes() else null
+        // For photo candidates we read bytes into memory first (files are ≤50MB here)
+        // so that if Telegram rejects the photo (bad aspect ratio, etc.) we can retry
+        // the same bytes as a document without needing to re-open the stream.
+        val bytes: ByteArray? = if (isPhotoCandidate) inputStream.readBytes() else null
 
         fun makeBody(name: String): MultipartBody.Part {
             val requestBody = if (bytes != null) {
+                var reported = 0L
                 ProgressRequestBody(
                     delegate = bytes.toRequestBody(mimeType.toMediaType()),
                     totalBytes = bytes.size.toLong(),
-                    onProgress = { uploaded, total -> onProgress(uploaded, total) },
+                    onProgress = { uploaded, total ->
+                        val delta = uploaded - reported; reported = uploaded
+                        onProgress(delta, total)
+                    },
                 )
             } else {
                 StreamProgressRequestBody(
@@ -78,12 +101,12 @@ class TelegramUploader @Inject constructor(
                     onProgress = onProgress,
                 )
             }
-            return MultipartBody.Part.createFormData(name, fileName, requestBody)
+            return MultipartBody.Part.createFormData(name = name, filename = fileName, body = requestBody)
         }
 
         val response = rateLimiter.withRateLimit {
             when {
-                isPhoto -> api.sendPhoto(safeToken, chatIdBody, makeBody("photo"), captionBody)
+                isPhotoCandidate -> api.sendPhoto(safeToken, chatIdBody, makeBody("photo"), captionBody)
                 isVideo -> api.sendVideo(safeToken, chatIdBody, makeBody("video"), captionBody)
                 else -> api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
             }
@@ -94,8 +117,25 @@ class TelegramUploader @Inject constructor(
                 val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1_000L
                 throw TelegramRateLimitException(retryAfterMs)
             }
+            // sendPhoto rejected (panorama aspect ratio, edge-case file, etc.)
+            // Fall back to sendDocument so the file is still preserved.
+            if (response.errorCode == 400 && isPhotoCandidate && bytes != null) {
+                val fallbackResponse = rateLimiter.withRateLimit {
+                    api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
+                }
+                if (fallbackResponse.ok && fallbackResponse.result != null) {
+                    rateLimiter.recordSuccess()
+                    val msg = fallbackResponse.result
+                    val fileId = msg.document?.fileId
+                        ?: return UploadResult.Error(Exception("No file_id in fallback response"))
+                    val thumbId = msg.document?.thumbnail?.fileId
+                    return UploadResult.Success(messageId = msg.messageId, fileId = fileId, thumbnailFileId = thumbId)
+                }
+            }
             rateLimiter.recordFailure()
-            return UploadResult.Error(TelegramApiException(response.errorCode, response.description))
+            return UploadResult.Error(
+                TelegramApiException(response.errorCode, response.description)
+            )
         }
 
         rateLimiter.recordSuccess()
@@ -139,15 +179,21 @@ class TelegramUploader @Inject constructor(
             val chunkProgressBody = ProgressRequestBody(
                 delegate = chunkData.toRequestBody(mimeType.toMediaType()),
                 totalBytes = read.toLong(),
-                onProgress = { chunkUp, _ -> onProgress(uploadedSoFar + chunkUp, fileSize) },
+                onProgress = { chunkUp, _ ->
+                    onProgress(uploadedSoFar + chunkUp, fileSize)
+                },
             )
             val part = MultipartBody.Part.createFormData(
-                "document", "${fileName}.part$partIndex", chunkProgressBody,
+                name = "document",
+                filename = "${fileName}.part$partIndex",
+                body = chunkProgressBody,
             )
             val captionBody = chunkCaption.toRequestBody("text/plain".toMediaType())
+
             val response = rateLimiter.withRateLimit {
                 api.sendDocument(safeToken, chatIdBody, part, captionBody)
             }
+
             if (!response.ok || response.result == null) {
                 if (response.errorCode == 429) {
                     val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1_000L
@@ -158,6 +204,7 @@ class TelegramUploader @Inject constructor(
                     TelegramApiException(response.errorCode, response.description)
                 )
             }
+
             rateLimiter.recordSuccess()
             val msg = response.result
             val fileId = msg.document?.fileId
@@ -167,9 +214,15 @@ class TelegramUploader @Inject constructor(
             uploadedSoFar += read
             onProgress(uploadedSoFar, fileSize)
         }
+
         val fileIdJson = fileIds.joinToString(prefix = "[", postfix = "]", separator = ",") { "\"$it\"" }
-        UploadResult.Success(messageId = firstMessageId ?: 0L, fileId = fileIdJson, thumbnailFileId = null)
+        UploadResult.Success(
+            messageId = firstMessageId ?: 0L,
+            fileId = fileIdJson,
+            thumbnailFileId = null,
+        )
     }
+
 }
 
 sealed class UploadResult {
