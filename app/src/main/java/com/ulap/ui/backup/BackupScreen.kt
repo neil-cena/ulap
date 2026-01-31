@@ -1,4 +1,4 @@
-package com.ulap.ui.backup
+package com.ulap.ui.backup // 2GB notice
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
