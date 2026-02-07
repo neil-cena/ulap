@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -32,6 +33,7 @@ import kotlinx.coroutines.delay
 @Composable
 fun WelcomeScreen(
     onGetStarted: () -> Unit,
+    onScanQr: () -> Unit,
 ) {
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -40,11 +42,16 @@ fun WelcomeScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        AnimatedVisibility(visible = visible, enter = fadeIn() + slideInVertically { it / 2 }) {
+        AnimatedVisibility(
+            visible = visible,
+            enter = fadeIn() + slideInVertically { it / 2 },
+        ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(
                     imageVector = Icons.Default.CloudUpload,
@@ -65,12 +72,26 @@ fun WelcomeScreen(
                     textAlign = TextAlign.Center,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "No servers. No subscriptions. Just your Telegram.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 Spacer(Modifier.height(48.dp))
                 Button(
                     onClick = onGetStarted,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text("Get Started")
+                }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onScanQr,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Already use Ulap on another phone? Scan QR")
                 }
             }
         }
