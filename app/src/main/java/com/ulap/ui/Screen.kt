@@ -3,6 +3,8 @@ package com.ulap.ui
 sealed class Screen(val route: String) {
     object Onboarding : Screen("onboarding")
     object BotSetup : Screen("bot_setup")
+    object QrScan : Screen("qr_scan")
+    object QrShow : Screen("qr_show")
     object FolderPicker : Screen("folder_picker/{fromOnboarding}") {
         fun createRoute(fromOnboarding: Boolean) = "folder_picker/$fromOnboarding"
     }

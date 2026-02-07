@@ -1,0 +1,90 @@
+package com.ulap.ui.onboarding
+
+import android.graphics.Bitmap
+import android.graphics.Color
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+
+@Composable
+fun QrShowScreen(
+    token: String,
+    chatId: String,
+) {
+    val payload = remember(token, chatId) {
+        JSONObject().put("t", token).put("c", chatId).toString()
+    }
+
+    var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(payload) {
+        qrBitmap = withContext(Dispatchers.Default) { generateQrBitmap(payload, 512) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text("Add another phone", style = MaterialTheme.typography.headlineMedium)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Open Ulap on your other phone, tap \"Scan QR\" on the welcome screen, then point its camera at this code.",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(32.dp))
+        qrBitmap?.let { bmp ->
+            Image(
+                bitmap = bmp.asImageBitmap(),
+                contentDescription = "QR code",
+                modifier = Modifier.size(260.dp),
+            )
+        }
+        Spacer(Modifier.height(24.dp))
+        Text(
+            "This code contains your bot token and chat ID.\nOnly share it with devices you own.",
+            style = MaterialTheme.typography.bodySmall,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+internal fun generateQrBitmap(content: String, size: Int): Bitmap {
+    val hints = mapOf(EncodeHintType.MARGIN to 1)
+    val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, size, size, hints)
+    val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.RGB_565)
+    for (x in 0 until size) {
+        for (y in 0 until size) {
+            bmp.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+        }
+    }
+    return bmp
+}
