@@ -63,3 +63,8 @@ data class TelegramUpdate(
     @SerializedName("update_id") val updateId: Long,
     @SerializedName("message") val message: TelegramMessage?,
 )
+
+data class TelegramChatInfo(
+    @SerializedName("id") val id: Long,
+    @SerializedName("pinned_message") val pinnedMessage: TelegramMessage?,
+)

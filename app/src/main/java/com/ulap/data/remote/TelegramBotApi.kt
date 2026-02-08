@@ -66,4 +66,18 @@ interface TelegramBotApi {
         @Query("offset") offset: Int? = null,
         @Query("limit") limit: Int? = null,
     ): TelegramResponse<List<TelegramUpdate>>
+
+    @GET("bot{token}/getChat")
+    suspend fun getChat(
+        @Path(value = "token", encoded = true) token: String,
+        @Query("chat_id") chatId: String,
+    ): TelegramResponse<TelegramChatInfo>
+
+    @POST("bot{token}/pinChatMessage")
+    suspend fun pinChatMessage(
+        @Path(value = "token", encoded = true) token: String,
+        @Query("chat_id") chatId: String,
+        @Query("message_id") messageId: Long,
+        @Query("disable_notification") disableNotification: Boolean = true,
+    ): TelegramResponse<Boolean>
 }
