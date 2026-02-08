@@ -45,17 +45,24 @@ class BackupIndexManager @Inject constructor(
     private val rateLimiter: TelegramRateLimiter,
     private val downloader: TelegramDownloader,
 ) {
+
     private val gson = Gson()
 
+    /** Uploads the backup index to the chat. Returns the document file_id on success (for "Sync from other device"). */
     suspend fun exportAndUpload(token: String, chatId: String): Result<String?> = withContext(Dispatchers.IO) {
         val entities = mediaItemDao.getAllBackedUp()
         if (entities.isEmpty()) return@withContext Result.success(null)
 
-        val manifest = IndexManifest(items = entities.map { it.toIndexEntry() })
-        val bytes = gson.toJson(manifest).toByteArray(Charsets.UTF_8)
+        val items = entities.map { it.toIndexEntry() }
+        val manifest = IndexManifest(items = items)
+        val json = gson.toJson(manifest)
+        val bytes = json.toByteArray(Charsets.UTF_8)
+
         val safeToken = sanitizeTokenForPath(token)
         val part = okhttp3.MultipartBody.Part.createFormData(
-            "document", INDEX_FILENAME, bytes.toRequestBody("application/json".toMediaType()),
+            "document",
+            INDEX_FILENAME,
+            bytes.toRequestBody("application/json".toMediaType()),
         )
         val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
         val captionBody = INDEX_CAPTION.toRequestBody("text/plain".toMediaType())
@@ -65,16 +72,52 @@ class BackupIndexManager @Inject constructor(
                 api.sendDocument(safeToken, chatIdBody, part, captionBody)
             }
             if (!response.ok) {
+                if (response.errorCode == 429) {
+                    val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1_000L
+                    throw TelegramRateLimitException(retryAfterMs)
+                }
                 rateLimiter.recordFailure()
                 return@withContext Result.failure(Exception(response.description ?: "Upload failed"))
             }
             rateLimiter.recordSuccess()
-            Result.success(response.result?.document?.fileId)
+            val message = response.result
+            val fileId = message?.document?.fileId
+            val messageId = message?.messageId
+            if (messageId != null) {
+                try {
+                    api.pinChatMessage(safeToken, chatId, messageId)
+                } catch (_: Exception) {
+                    // Pin is best-effort; bot may lack admin rights
+                }
+            }
+            Result.success(fileId)
         } catch (e: Exception) {
             Result.failure(e)
         }
     }
 
+    /** Fetches index from the chat's pinned message (works across all devices with the same credentials). */
+    suspend fun fetchAndMerge(token: String, chatId: String): Result<Int> = withContext(Dispatchers.IO) {
+        val safeToken = sanitizeTokenForPath(token)
+        val chatResponse = rateLimiter.withRateLimit {
+            api.getChat(safeToken, chatId)
+        }
+        if (!chatResponse.ok || chatResponse.result == null) {
+            if (chatResponse.errorCode == 429) {
+                val retryAfterMs = (chatResponse.parameters?.retryAfter ?: 30) * 1_000L
+                throw TelegramRateLimitException(retryAfterMs)
+            }
+            return@withContext Result.failure(Exception(chatResponse.description ?: "getChat failed"))
+        }
+        val pinnedMessage = chatResponse.result.pinnedMessage
+        if (pinnedMessage?.document == null || pinnedMessage.caption != INDEX_CAPTION) {
+            return@withContext Result.success(0)
+        }
+        val fileId = pinnedMessage.document.fileId
+        fetchAndMergeFromFileId(token, fileId)
+    }
+
+    /** Downloads the backup index by file_id and merges into local DB. Use for "Sync from other device" (index from another phone). */
     suspend fun fetchAndMergeFromFileId(token: String, fileId: String): Result<Int> = withContext(Dispatchers.IO) {
         val out = ByteArrayOutputStream()
         when (val dr = downloader.download(token, fileId, out)) {
@@ -91,26 +134,40 @@ class BackupIndexManager @Inject constructor(
             if (mediaItemDao.findByTelegramFileId(entry.telegramFileId) != null) continue
             val local = mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
             if (local != null) {
+                val status = if (local.contentUri.isBlank()) BackupStatus.CLOUD_ONLY else BackupStatus.BACKED_UP
                 mediaItemDao.updateBackupResult(
-                    id = local.id, status = BackupStatus.BACKED_UP, error = null,
-                    syncedAt = System.currentTimeMillis(), fileId = entry.telegramFileId,
-                    messageId = entry.telegramMessageId, thumbnailFileId = entry.thumbnailFileId,
+                    id = local.id,
+                    status = status,
+                    error = null,
+                    syncedAt = System.currentTimeMillis(),
+                    fileId = entry.telegramFileId,
+                    messageId = entry.telegramMessageId,
+                    thumbnailFileId = entry.thumbnailFileId,
                 )
                 merged++
             } else {
                 val cloudId = "cloud_${entry.id}"
                 if (mediaItemDao.findById(cloudId) != null) continue
-                mediaItemDao.upsert(
-                    MediaItemEntity(
-                        id = cloudId, path = "", contentUri = "",
-                        fileName = entry.fileName, mimeType = entry.mimeType, size = entry.size,
-                        dateModified = entry.dateTaken, dateTaken = entry.dateTaken,
-                        bucketName = entry.bucketName, mediaType = MediaType.valueOf(entry.mediaType),
-                        durationMs = entry.durationMs, backupStatus = BackupStatus.CLOUD_ONLY,
-                        telegramFileId = entry.telegramFileId, telegramMessageId = entry.telegramMessageId,
-                        thumbnailFileId = entry.thumbnailFileId,
-                    )
+                val entity = MediaItemEntity(
+                    id = cloudId,
+                    path = "",
+                    contentUri = "",
+                    fileName = entry.fileName,
+                    mimeType = entry.mimeType,
+                    size = entry.size,
+                    dateModified = entry.dateTaken,
+                    dateTaken = entry.dateTaken,
+                    bucketName = entry.bucketName,
+                    mediaType = MediaType.valueOf(entry.mediaType),
+                    durationMs = entry.durationMs,
+                    backupStatus = BackupStatus.CLOUD_ONLY,
+                    telegramFileId = entry.telegramFileId,
+                    telegramMessageId = entry.telegramMessageId,
+                    lastSyncedAt = null,
+                    errorMessage = null,
+                    thumbnailFileId = entry.thumbnailFileId,
                 )
+                mediaItemDao.upsert(entity)
                 merged++
             }
         }
@@ -118,9 +175,16 @@ class BackupIndexManager @Inject constructor(
     }
 
     private fun MediaItemEntity.toIndexEntry() = IndexEntry(
-        id = id, telegramFileId = telegramFileId!!, telegramMessageId = telegramMessageId,
-        fileName = fileName, mimeType = mimeType, size = size, dateTaken = dateTaken,
-        bucketName = bucketName, mediaType = mediaType.name, durationMs = durationMs,
+        id = id,
+        telegramFileId = telegramFileId!!,
+        telegramMessageId = telegramMessageId,
+        fileName = fileName,
+        mimeType = mimeType,
+        size = size,
+        dateTaken = dateTaken,
+        bucketName = bucketName,
+        mediaType = mediaType.name,
+        durationMs = durationMs,
         thumbnailFileId = thumbnailFileId,
     )
 }
