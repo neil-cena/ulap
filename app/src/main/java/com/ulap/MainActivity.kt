@@ -18,6 +18,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import kotlinx.coroutines.launch
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -39,20 +40,30 @@ import com.ulap.ui.gallery.MediaViewerScreen
 import com.ulap.ui.gallery.TimelineScreen
 import com.ulap.ui.onboarding.BotSetupScreen
 import com.ulap.ui.onboarding.FolderPickerScreen
+import com.ulap.ui.onboarding.QrScanScreen
+import com.ulap.ui.onboarding.QrShowScreen
 import com.ulap.ui.onboarding.WelcomeScreen
 import com.ulap.ui.restore.RestoreScreen
 import com.ulap.ui.settings.SettingsScreen
 import com.ulap.ui.theme.UlapTheme
+import com.ulap.sync.SyncWorker
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
-    @Inject lateinit var getCredentials: GetCredentialsUseCase
-    @Inject lateinit var saveCredentials: SaveCredentialsUseCase
-    @Inject lateinit var startBackup: StartBackupUseCase
-    @Inject lateinit var scanMedia: ScanMediaUseCase
+    @Inject
+    lateinit var getCredentials: GetCredentialsUseCase
+
+    @Inject
+    lateinit var saveCredentials: SaveCredentialsUseCase
+
+    @Inject
+    lateinit var startBackup: StartBackupUseCase
+
+    @Inject
+    lateinit var scanMedia: ScanMediaUseCase
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -60,6 +71,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val startDestination = if (getCredentials.hasCredentials()) Screen.Timeline.route
         else Screen.Onboarding.route
+        if (getCredentials.hasCredentials()) SyncWorker.schedule(this)
 
         setContent {
             UlapTheme {
@@ -92,7 +104,11 @@ private fun UlapNavHost(
     val showBottomNav = currentRoute in bottomNavRoutes
 
     Scaffold(
-        bottomBar = { if (showBottomNav) BottomBar(navController, currentRoute) }
+        bottomBar = {
+            if (showBottomNav) {
+                BottomBar(navController, currentRoute)
+            }
+        }
     ) { innerPadding ->
         NavHost(
             navController = navController,
@@ -100,7 +116,10 @@ private fun UlapNavHost(
             modifier = Modifier.padding(innerPadding),
         ) {
             composable(Screen.Onboarding.route) {
-                WelcomeScreen(onGetStarted = { navController.navigate(Screen.BotSetup.route) })
+                WelcomeScreen(
+                    onGetStarted = { navController.navigate(Screen.BotSetup.route) },
+                    onScanQr = { navController.navigate(Screen.QrScan.route) },
+                )
             }
             composable(Screen.BotSetup.route) {
                 BotSetupScreen(onContinue = {
@@ -109,29 +128,64 @@ private fun UlapNavHost(
                     }
                 })
             }
+            composable(Screen.QrScan.route) {
+                val context = LocalContext.current
+                QrScanScreen(onScanned = { creds ->
+                    saveCredentials(creds.token, creds.chatId)
+                    SyncWorker.schedule(context.applicationContext)
+                    navController.navigate(Screen.Timeline.route) {
+                        popUpTo(0) { inclusive = true }
+                    }
+                })
+            }
+            composable(Screen.QrShow.route) {
+                QrShowScreen(
+                    token = getCredentials.getToken() ?: "",
+                    chatId = getCredentials.getChatId() ?: "",
+                )
+            }
             composable(Screen.FolderPicker.route) { backStack ->
                 val fromOnboarding = backStack.arguments?.getString("fromOnboarding") == "true"
                 FolderPickerScreen(onDone = {
                     if (fromOnboarding) {
-                        scope.launch { scanMedia(fullScan = false); startBackup() }
-                        navController.navigate(Screen.Timeline.route) { popUpTo(0) { inclusive = true } }
-                    } else navController.popBackStack()
+                        scope.launch {
+                            scanMedia(fullScan = false)
+                            startBackup()
+                        }
+                        navController.navigate(Screen.Timeline.route) {
+                            popUpTo(0) { inclusive = true }
+                        }
+                    } else {
+                        navController.popBackStack()
+                    }
                 })
             }
             composable(Screen.Timeline.route) {
-                TimelineScreen(onItemClick = { id -> navController.navigate(Screen.MediaViewer.createRoute(id)) })
+                TimelineScreen(onItemClick = { id ->
+                    navController.navigate(Screen.MediaViewer.createRoute(id))
+                })
             }
-            composable(Screen.Folders.route) { FoldersScreen(onFolderClick = { _ -> }) }
+            composable(Screen.Folders.route) {
+                FoldersScreen(onFolderClick = { _ -> })
+            }
             composable(Screen.Backup.route) { BackupScreen() }
             composable(Screen.Settings.route) {
                 SettingsScreen(
-                    onNavigateToFolderPicker = { navController.navigate(Screen.FolderPicker.createRoute(false)) },
-                    onNavigateToQrShow = {},
+                    onNavigateToFolderPicker = {
+                        navController.navigate(Screen.FolderPicker.createRoute(false))
+                    },
+                    onNavigateToQrShow = {
+                        navController.navigate(Screen.QrShow.route)
+                    },
                 )
             }
             composable(Screen.MediaViewer.route) { backStack ->
                 val mediaId = backStack.arguments?.getString("mediaId") ?: return@composable
-                MediaViewerScreen(mediaId = mediaId, onBack = { navController.popBackStack() }, viewModel = hiltViewModel(backStack))
+                MediaViewerScreen(
+                    mediaId = mediaId,
+                    onBack = { navController.popBackStack() },
+                    viewModel = hiltViewModel(backStack),
+                )
             }
             composable(Screen.Restore.route) { RestoreScreen() }
         }
@@ -141,18 +195,30 @@ private fun UlapNavHost(
 @Composable
 private fun BottomBar(navController: NavController, currentRoute: String?) {
     NavigationBar {
-        NavigationBarItem(selected = currentRoute == Screen.Timeline.route,
+        NavigationBarItem(
+            selected = currentRoute == Screen.Timeline.route,
             onClick = { navController.navigateToTab(Screen.Timeline.route) },
-            icon = { Icon(Icons.Default.GridView, null) }, label = { Text("Timeline") })
-        NavigationBarItem(selected = currentRoute == Screen.Folders.route,
+            icon = { Icon(Icons.Default.GridView, null) },
+            label = { Text("Timeline") },
+        )
+        NavigationBarItem(
+            selected = currentRoute == Screen.Folders.route,
             onClick = { navController.navigateToTab(Screen.Folders.route) },
-            icon = { Icon(Icons.Default.Folder, null) }, label = { Text("Folders") })
-        NavigationBarItem(selected = currentRoute == Screen.Backup.route,
+            icon = { Icon(Icons.Default.Folder, null) },
+            label = { Text("Folders") },
+        )
+        NavigationBarItem(
+            selected = currentRoute == Screen.Backup.route,
             onClick = { navController.navigateToTab(Screen.Backup.route) },
-            icon = { Icon(Icons.Default.Backup, null) }, label = { Text("Backup") })
-        NavigationBarItem(selected = currentRoute == Screen.Settings.route,
+            icon = { Icon(Icons.Default.Backup, null) },
+            label = { Text("Backup") },
+        )
+        NavigationBarItem(
+            selected = currentRoute == Screen.Settings.route,
             onClick = { navController.navigateToTab(Screen.Settings.route) },
-            icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") })
+            icon = { Icon(Icons.Default.Settings, null) },
+            label = { Text("Settings") },
+        )
     }
 }
 
