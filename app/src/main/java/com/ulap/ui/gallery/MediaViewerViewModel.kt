@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery
+package com.ulap.ui.gallery // prefetch + download
 
 import android.content.Context
 import androidx.lifecycle.SavedStateHandle
