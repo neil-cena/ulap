@@ -1,4 +1,4 @@
-package com.ulap.data.remote
+package com.ulap.data.remote // CLOUD_ONLY status fix
 
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
