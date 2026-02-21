@@ -1,4 +1,4 @@
-package com.ulap.ui.gallery // download button
+package com.ulap.ui.gallery
 
 import android.net.Uri
 import androidx.compose.foundation.background
