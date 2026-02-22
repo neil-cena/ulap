@@ -37,7 +37,7 @@ done
 APP_HOME=$( cd -P "${app_path%"${app_path##*/}"}" > /dev/null && pwd ) || exit
 
 APP_BASE_NAME=${0##*/}
-CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar:$APP_HOME/gradle/wrapper/gradle-wrapper-shared.jar
 
 # Add default JVM options here.
 DEFAULT_JVM_OPTS='-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"'
