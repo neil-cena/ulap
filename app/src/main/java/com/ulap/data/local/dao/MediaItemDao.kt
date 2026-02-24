@@ -160,4 +160,18 @@ interface MediaItemDao {
 
     @Query("SELECT * FROM media_items WHERE telegramFileId = :fileId LIMIT 1")
     suspend fun findByTelegramFileId(fileId: String): MediaItemEntity?
+
+    @Query("UPDATE media_items SET uploadedChunks = :chunks, uploadedChunkCount = :count WHERE id = :id")
+    suspend fun saveChunkProgress(id: String, chunks: String, count: Int)
+
+    @Query("UPDATE media_items SET uploadedChunks = NULL, uploadedChunkCount = 0 WHERE id = :id")
+    suspend fun clearChunkProgress(id: String)
+
+    // Only clears terminal states (BACKED_UP/EXCLUDED/CLOUD_ONLY).
+    // PENDING and FAILED items keep their chunk state so a retry can resume from where it left off.
+    @Query("""
+        UPDATE media_items SET uploadedChunks = NULL, uploadedChunkCount = 0
+        WHERE uploadedChunkCount > 0 AND backupStatus IN ('BACKED_UP', 'EXCLUDED', 'CLOUD_ONLY')
+    """)
+    suspend fun clearOrphanedChunkProgress()
 }

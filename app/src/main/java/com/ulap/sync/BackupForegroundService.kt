@@ -9,6 +9,7 @@ import android.content.Intent
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.ulap.R
+import com.ulap.data.remote.CHUNK_MAX_RETRIES
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -33,6 +34,7 @@ class BackupForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        // indeterminate = true (default), progressFraction = 0f (default) — correct for startup
         startForeground(NOTIFICATION_ID, buildNotification("Starting backup…"))
         observeProgress()
     }
@@ -57,24 +59,41 @@ class BackupForegroundService : Service() {
                     return@collectLatest
                 }
                 val text = when {
+                    progress.chunkRetryAttempt > 0 ->
+                        "Part ${progress.currentChunk}/${progress.totalChunks} — attempt ${progress.chunkRetryAttempt} of $CHUNK_MAX_RETRIES"
+                    progress.totalChunks > 0 ->
+                        "${progress.itemsDone + 1}/${progress.itemsTotal} · Part ${progress.currentChunk}/${progress.totalChunks}"
                     progress.itemsTotal > 0 ->
                         "${progress.itemsDone} of ${progress.itemsTotal} backed up"
                     else -> "Preparing…"
                 }
                 val nm = getSystemService(NotificationManager::class.java)
-                nm.notify(NOTIFICATION_ID, buildNotification(text))
+                nm.notify(
+                    NOTIFICATION_ID,
+                    buildNotification(
+                        text = text,
+                        progressFraction = progress.currentFileFraction,
+                        // indeterminate only during "Preparing…" — not when progressFraction == 0f,
+                        // which would re-trigger the spinner at the start of each file and on resume start.
+                        indeterminate = progress.itemsTotal == 0,
+                    )
+                )
             }
         }
     }
 
-    private fun buildNotification(text: String): Notification =
+    private fun buildNotification(
+        text: String,
+        progressFraction: Float = 0f,
+        indeterminate: Boolean = true,
+    ): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.ic_menu_upload)
             .setContentTitle(getString(R.string.notification_backup_title))
             .setContentText(text)
             .setOngoing(true)
             .setSilent(true)
-            .setProgress(100, 0, false)
+            .setProgress(100, (progressFraction * 100).toInt(), indeterminate)
             .build()
 
     private fun createNotificationChannel() {

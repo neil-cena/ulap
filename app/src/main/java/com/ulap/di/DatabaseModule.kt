@@ -32,11 +32,18 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE media_items ADD COLUMN uploadedChunks TEXT")
+            db.execSQL("ALTER TABLE media_items ADD COLUMN uploadedChunkCount INTEGER NOT NULL DEFAULT 0")
+        }
+    }
+
     @Provides
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): UlapDatabase =
         Room.databaseBuilder(context, UlapDatabase::class.java, "ulap.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .fallbackToDestructiveMigration()
             .build()
 

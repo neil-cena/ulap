@@ -25,7 +25,7 @@ class BackupStatusConverter {
 
 @Database(
     entities = [MediaItemEntity::class, BackupFolderEntity::class, SyncStateEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 @TypeConverters(MediaTypeConverter::class, BackupStatusConverter::class)

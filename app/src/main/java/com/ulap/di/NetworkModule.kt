@@ -43,4 +43,33 @@ object NetworkModule {
     @Singleton
     fun provideTelegramBotApi(retrofit: Retrofit): TelegramBotApi =
         retrofit.create(TelegramBotApi::class.java)
+
+    // NOTE: @UploadClient on the parameter is mandatory.
+    // Without it, Hilt injects the default OkHttpClient silently — no compile error.
+    @Provides
+    @Singleton
+    @UploadClient
+    fun provideUploadOkHttpClient(): OkHttpClient =
+        OkHttpClient.Builder()
+            .connectTimeout(30, TimeUnit.SECONDS)
+            .readTimeout(300, TimeUnit.SECONDS)   // 5 min — at 0.5 Mbps, 19MB = 304s
+            .writeTimeout(300, TimeUnit.SECONDS)  // 5 min — same rationale for write
+            .retryOnConnectionFailure(true)
+            .build()
+
+    @Provides
+    @Singleton
+    @UploadClient
+    fun provideUploadRetrofit(@UploadClient uploadClient: OkHttpClient): Retrofit =
+        Retrofit.Builder()
+            .baseUrl("https://api.telegram.org/")
+            .client(uploadClient)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+
+    @Provides
+    @Singleton
+    @UploadClient
+    fun provideUploadTelegramBotApi(@UploadClient retrofit: Retrofit): TelegramBotApi =
+        retrofit.create(TelegramBotApi::class.java)
 }

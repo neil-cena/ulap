@@ -69,5 +69,5 @@ class TelegramRateLimiter @Inject constructor() {
 
 class TelegramRateLimitException(val retryAfterMs: Long) : Exception("Rate limited for ${retryAfterMs}ms")
 
-class TelegramApiException(val errorCode: Int?, val description: String?) :
+class TelegramApiException(val errorCode: Int?, val description: String?, val isPermanent: Boolean = false) :
     Exception("Telegram API error $errorCode: $description")

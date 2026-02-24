@@ -8,19 +8,19 @@ import android.os.Environment
 import android.provider.MediaStore
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.BackupStatus
+import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.data.remote.DownloadResult
 import com.ulap.data.remote.Mp4FastStart
 import com.ulap.data.remote.TelegramDownloader
+import com.ulap.data.remote.TelegramRateLimitException
 import com.ulap.data.remote.TelegramUploader
 import com.ulap.data.remote.UploadResult
 import com.ulap.data.remote.MAX_FILE_SIZE
 import com.ulap.domain.model.MediaItem
-import com.ulap.domain.model.MediaType
 import com.ulap.domain.model.SyncOperation
 import com.ulap.domain.model.SyncProgress
 import com.ulap.domain.repository.CredentialRepository
-import com.ulap.domain.repository.MediaRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -41,7 +41,8 @@ import java.io.FileOutputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val UPLOAD_CONCURRENCY = 3
+private const val LARGE_FILE_CONCURRENCY = 1
+private const val SMALL_FILE_CONCURRENCY = 3
 private const val DOWNLOAD_CONCURRENCY = 3
 private const val CHUNKED_THRESHOLD = 50L * 1024 * 1024 // same as TelegramUploader's single upload limit
 
@@ -85,11 +86,21 @@ class SyncEngine @Inject constructor(
         val token = credentialRepository.getBotToken() ?: return
         val chatId = credentialRepository.getChatId() ?: return
 
+        // Sweep orphaned temp files before fetchAndMerge to avoid racing with new temp files.
+        appContext.cacheDir.listFiles { f ->
+            f.name.startsWith("ulap_raw_") || f.name.startsWith("ulap_fs_")
+        }?.forEach { it.delete() }
+
         // Any item left in UPLOADING state means the previous run crashed mid-upload.
         // Reset them to PENDING so they are re-attempted in this run.
+        // resetStaleUploadingToPending intentionally does NOT clear uploadedChunkCount —
+        // the chunk progress is the resume seed for the next run.
         mediaItemDao.resetStaleUploadingToPending()
         // Mark chunked items from old 45MB chunks as FAILED so they re-upload with 19MB (streamable) chunks.
         mediaItemDao.markOversizedChunkedItemsAsFailed()
+        // Clear chunk progress for items in terminal states (BACKED_UP/EXCLUDED/CLOUD_ONLY).
+        // PENDING and FAILED items keep their progress for resume on the next attempt.
+        mediaItemDao.clearOrphanedChunkProgress()
 
         backupIndexManager.fetchAndMerge(token, chatId)
 
@@ -98,22 +109,32 @@ class SyncEngine @Inject constructor(
         val items = mediaItemDao.getPendingOrFailed()
         if (items.isEmpty()) return
 
-        val queue = Channel<com.ulap.data.local.entity.MediaItemEntity>(Channel.UNLIMITED)
-        items.forEach { queue.send(it) }
-        queue.close()
-
         _progress.update {
             SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = items.size)
         }
 
-        val workers = (1..UPLOAD_CONCURRENCY).map {
-            engineScope.launch {
-                for (entity in queue) {
-                    processUpload(entity, token, chatId)
-                }
-            }
+        // Partition into large/small queues to prevent a large chunked upload from starving
+        // small files. Large files (1 worker) and small files (3 workers) run concurrently.
+        val (largeItems, smallItems) = items.partition { it.size > CHUNKED_THRESHOLD }
+
+        val largeQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
+        val smallQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
+
+        // Use for loops — Channel.send is a suspend function.
+        // Collection.forEach does not accept a suspend lambda; forEach { send(it) } is a compile error.
+        for (item in largeItems) largeQueue.send(item)
+        largeQueue.close()
+        for (item in smallItems) smallQueue.send(item)
+        smallQueue.close()
+
+        val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
+            engineScope.launch { for (e in largeQueue) processUpload(e, token, chatId) }
         }
-        workers.joinAll()
+        val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
+            engineScope.launch { for (e in smallQueue) processUpload(e, token, chatId) }
+        }
+        (largeWorkers + smallWorkers).joinAll()
+
         backupIndexManager.exportAndUpload(token, chatId).getOrNull()?.let { fileId ->
             credentialRepository.setLastIndexFileId(fileId)
         }
@@ -121,15 +142,25 @@ class SyncEngine @Inject constructor(
     }
 
     private suspend fun processUpload(
-        entity: com.ulap.data.local.entity.MediaItemEntity,
+        entity: MediaItemEntity,
         token: String,
         chatId: String,
     ) {
         try {
             processUploadInternal(entity, token, chatId)
+        } catch (e: TelegramRateLimitException) {
+            // Global rate limit exhausted inside rateLimiter — this is NOT this item's fault.
+            // Re-throw so the worker coroutine is cancelled rather than marking the item FAILED.
+            // The item stays UPLOADING; resetStaleUploadingToPending on the next run resets it
+            // to PENDING with its uploadedChunkCount intact so it can resume.
+            // Because SyncEngine uses SupervisorJob, only this worker is cancelled —
+            // other workers continue with their current items.
+            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
+            throw e
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
             // unexpected I/O errors) so the worker coroutine stays alive for the next item.
+            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
             mediaItemDao.updateBackupResult(
                 id = entity.id,
                 status = BackupStatus.FAILED,
@@ -144,7 +175,7 @@ class SyncEngine @Inject constructor(
     }
 
     private suspend fun processUploadInternal(
-        entity: com.ulap.data.local.entity.MediaItemEntity,
+        entity: MediaItemEntity,
         token: String,
         chatId: String,
     ) {
@@ -221,9 +252,11 @@ class SyncEngine @Inject constructor(
         var tempRaw: File? = null
         var tempFastStarted: File? = null
 
+        // entity.id is the DB primary key in "external_1234" / "internal_1234" format —
+        // no slashes, unique by definition. Use it directly as a temp filename component.
         val uploadStream = if (isVideo && willChunk) {
-            tempRaw = File(appContext.cacheDir, "ulap_raw_${entity.id.hashCode()}.mp4")
-            tempFastStarted = File(appContext.cacheDir, "ulap_fs_${entity.id.hashCode()}.mp4")
+            tempRaw = File(appContext.cacheDir, "ulap_raw_${entity.id}.mp4")
+            tempFastStarted = File(appContext.cacheDir, "ulap_fs_${entity.id}.mp4")
             try {
                 inputStream.use { src ->
                     FileOutputStream(tempRaw).use { dst -> src.copyTo(dst) }
@@ -256,34 +289,60 @@ class SyncEngine @Inject constructor(
             else -> entity.size
         }
 
-        val result = uploadStream.use {
-            var lastReported = 0L
-            uploader.uploadMedia(
-                token = token,
-                chatId = chatId,
-                inputStream = it,
-                fileName = entity.fileName,
-                mimeType = entity.mimeType,
-                fileSize = actualFileSize,
-                caption = entity.fileName,
-                onProgress = { uploaded, total ->
-                    val delta = uploaded - lastReported
-                    lastReported = uploaded
-                    _progress.update { prog ->
-                        prog.copy(
-                            currentFileBytes = uploaded,
-                            currentFileBytesTotal = total,
-                            bytesTransferred = prog.bytesTransferred + delta,
-                        )
-                    }
-                },
-            )
+        val resumeFromChunk = entity.uploadedChunkCount
+        val existingFileIdsJson = entity.uploadedChunks ?: "[]"
+
+        var result: UploadResult? = null
+        try {
+            result = uploadStream.use {
+                var lastReported = 0L
+                uploader.uploadMedia(
+                    token = token,
+                    chatId = chatId,
+                    inputStream = it,
+                    fileName = entity.fileName,
+                    mimeType = entity.mimeType,
+                    fileSize = actualFileSize,
+                    caption = entity.fileName,
+                    onProgress = { uploaded, total ->
+                        val delta = uploaded - lastReported
+                        lastReported = uploaded
+                        _progress.update { prog ->
+                            prog.copy(
+                                currentFileBytes = uploaded,
+                                currentFileBytesTotal = total,
+                                bytesTransferred = prog.bytesTransferred + delta,
+                            )
+                        }
+                    },
+                    resumeFromChunk = resumeFromChunk,
+                    existingFileIdsJson = existingFileIdsJson,
+                    onTotalChunksKnown = { total ->
+                        _progress.update { it.copy(totalChunks = total, currentChunk = resumeFromChunk) }
+                    },
+                    onChunkSaved = { count, json ->
+                        mediaItemDao.saveChunkProgress(entity.id, json, count)
+                        _progress.update { it.copy(currentChunk = count, chunkRetryAttempt = 0) }
+                    },
+                    onChunkRetry = { attempt ->
+                        _progress.update { it.copy(chunkRetryAttempt = attempt) }
+                    },
+                )
+            }
+        } finally {
+            // Guaranteed cleanup even if uploadMedia throws (e.g. coroutine cancellation).
+            // Do NOT add itemsDone+1 here — rate-limited items are not completed.
+            tempRaw?.delete()
+            tempFastStarted?.delete()
         }
-        tempRaw?.delete()
-        tempFastStarted?.delete()
+        // result is null only when an exception escaped the try block (e.g. TelegramRateLimitException
+        // or coroutine cancellation), in which case the exception propagates past this point anyway.
+        result ?: return
 
         when (result) {
             is UploadResult.Success -> {
+                mediaItemDao.clearChunkProgress(entity.id)
+                _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
                     status = BackupStatus.BACKED_UP,
@@ -295,6 +354,7 @@ class SyncEngine @Inject constructor(
                 )
             }
             is UploadResult.Error -> {
+                _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
                     status = BackupStatus.FAILED,
@@ -333,10 +393,10 @@ class SyncEngine @Inject constructor(
             return
         }
 
-        val queue = Channel<com.ulap.data.local.entity.MediaItemEntity>(Channel.UNLIMITED)
+        val queue = Channel<MediaItemEntity>(Channel.UNLIMITED)
         val backedUpItems = mediaItemDao.let {
             val flow = it.observeByStatus(BackupStatus.BACKED_UP)
-            emptyList<com.ulap.data.local.entity.MediaItemEntity>()
+            emptyList<MediaItemEntity>()
         }
 
         _progress.update {
@@ -362,7 +422,7 @@ class SyncEngine @Inject constructor(
     }
 
     private suspend fun processDownload(
-        entity: com.ulap.data.local.entity.MediaItemEntity,
+        entity: MediaItemEntity,
         token: String,
     ) {
         val fileId = entity.telegramFileId ?: return

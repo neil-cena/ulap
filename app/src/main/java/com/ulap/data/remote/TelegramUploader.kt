@@ -1,6 +1,9 @@
 package com.ulap.data.remote
 
+import com.google.gson.Gson
+import com.ulap.di.UploadClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -14,11 +17,25 @@ private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API lim
 private const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
 const val MAX_FILE_SIZE = 2L * 1024 * 1024 * 1024 // 2GB absolute limit
 
+// Top-level so BackupForegroundService can import it for the notification string.
+const val CHUNK_MAX_RETRIES = 5
+
+private const val CHUNK_BACKOFF_BASE_MS = 3_000L
+private const val CHUNK_BACKOFF_MAX_MS = 60_000L
+
+// 401/403 are definitively permanent (wrong token / bot banned from chat).
+// 400 is NOT included — it can mean transient encoding issues; don't permanently
+// exclude a user's file on a single 400.
+private val PERMANENT_ERROR_CODES = setOf(401, 403)
+
 @Singleton
 class TelegramUploader @Inject constructor(
-    private val api: TelegramBotApi,
+    private val api: TelegramBotApi,                       // default: metadata, single uploads
+    @UploadClient private val uploadApi: TelegramBotApi,   // long-timeout: only used in uploadChunked
     private val rateLimiter: TelegramRateLimiter,
 ) {
+
+    private val gson = Gson()
 
     suspend fun uploadMedia(
         token: String,
@@ -29,6 +46,19 @@ class TelegramUploader @Inject constructor(
         fileSize: Long,
         caption: String? = null,
         onProgress: (bytesUploaded: Long, total: Long) -> Unit = { _, _ -> },
+        resumeFromChunk: Int = 0,
+        existingFileIdsJson: String = "[]",
+        // suspend: calls mediaItemDao.saveChunkProgress (a suspend DAO method).
+        // Called from withContext(Dispatchers.IO) inside uploadChunked;
+        // Room's suspend API is safe to call from any dispatcher.
+        onChunkSaved: suspend (chunkCount: Int, fileIdsJson: String) -> Unit = { _, _ -> },
+        // non-suspend: only calls _progress.update{} which is a non-suspend StateFlow method.
+        // Do NOT make this suspend — the implementation does not require it.
+        onChunkRetry: (attempt: Int) -> Unit = {},
+        // Called once before the chunk loop with the computed total chunk count.
+        // Kept separate from onChunkSaved to set totalChunks before the first chunk completes,
+        // preventing "Part 1 of 0" in the UI.
+        onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
     ): UploadResult = withContext(Dispatchers.IO) {
         if (fileSize > MAX_FILE_SIZE) {
             return@withContext UploadResult.FileTooLarge(fileSize)
@@ -54,6 +84,11 @@ class TelegramUploader @Inject constructor(
                 fileSize = fileSize,
                 caption = caption,
                 onProgress = onProgress,
+                resumeFromChunk = resumeFromChunk,
+                existingFileIdsJson = existingFileIdsJson,
+                onChunkSaved = onChunkSaved,
+                onChunkRetry = onChunkRetry,
+                onTotalChunksKnown = onTotalChunksKnown,
             )
         }
     }
@@ -161,14 +196,48 @@ class TelegramUploader @Inject constructor(
         fileSize: Long,
         caption: String?,
         onProgress: (bytesUploaded: Long, total: Long) -> Unit,
+        resumeFromChunk: Int = 0,
+        existingFileIdsJson: String = "[]",
+        onChunkSaved: suspend (chunkCount: Int, fileIdsJson: String) -> Unit = { _, _ -> },
+        onChunkRetry: (attempt: Int) -> Unit = {},
+        onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
     ): UploadResult = withContext(Dispatchers.IO) {
         val safeToken = sanitizeTokenForPath(token)
         val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
-        val fileIds = mutableListOf<String>()
-        var firstMessageId: Long? = null
         var uploadedSoFar = 0L
-        var partIndex = 0
+
         val totalChunks = ((fileSize + CHUNK_UPLOAD_SIZE - 1) / CHUNK_UPLOAD_SIZE).toInt()
+        onTotalChunksKnown(totalChunks)   // sets SyncProgress.totalChunks before any chunk starts
+
+        // Seed fileIds from saved state for resume.
+        // Serialization format: plain JSON array of strings, e.g. ["id1","id2"].
+        // parseFileIdJson reads the same format via the same Gson instance.
+        // If either side is changed, update both together.
+        val fileIds = parseFileIdJson(existingFileIdsJson).toMutableList()
+        var partIndex = resumeFromChunk
+
+        // Safe skip with short-skip guard:
+        // partIndex == fileIds.size invariant: at every onChunkSaved call, both are equal.
+        // partIndex starts at resumeFromChunk and increments once per chunk.
+        // fileIds starts seeded with resumeFromChunk entries, gains one per successful chunk.
+        // If these diverge, resume would skip the wrong bytes or send mismatched chunk IDs.
+        if (resumeFromChunk > 0) {
+            var remaining = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
+            while (remaining > 0) {
+                val skipped = inputStream.skip(remaining)
+                if (skipped <= 0) break
+                remaining -= skipped
+            }
+            // Guard: stream shorter than expected means the file was modified/truncated since last run.
+            // Continuing would silently upload a corrupt partial chunk. Fail fast instead.
+            if (remaining > 0) {
+                return@withContext UploadResult.Error(
+                    Exception("Resume failed: stream ended before expected offset (file may have been modified)")
+                )
+            }
+            // Seed uploadedSoFar to reflect already-uploaded bytes for progress reporting
+            uploadedSoFar = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
+        }
 
         val buf = ByteArray(CHUNK_UPLOAD_SIZE.toInt())
         var read: Int
@@ -176,51 +245,110 @@ class TelegramUploader @Inject constructor(
             partIndex++
             val chunkData = buf.copyOf(read)
             val chunkCaption = "[ulap-chunk] $fileName part $partIndex/$totalChunks"
-            val chunkProgressBody = ProgressRequestBody(
-                delegate = chunkData.toRequestBody(mimeType.toMediaType()),
-                totalBytes = read.toLong(),
-                onProgress = { chunkUp, _ ->
-                    onProgress(uploadedSoFar + chunkUp, fileSize)
-                },
-            )
-            val part = MultipartBody.Part.createFormData(
-                name = "document",
-                filename = "${fileName}.part$partIndex",
-                body = chunkProgressBody,
-            )
             val captionBody = chunkCaption.toRequestBody("text/plain".toMediaType())
 
-            val response = rateLimiter.withRateLimit {
-                api.sendDocument(safeToken, chatIdBody, part, captionBody)
-            }
+            val fileId = uploadChunkWithRetry(
+                safeToken = safeToken,
+                chatIdBody = chatIdBody,
+                captionBody = captionBody,
+                chunkData = chunkData,
+                mimeType = mimeType,
+                partFileName = "${fileName}.part$partIndex",
+                uploadedSoFar = uploadedSoFar,
+                fileSize = fileSize,
+                onProgress = onProgress,
+                onChunkRetry = onChunkRetry,
+            )
 
-            if (!response.ok || response.result == null) {
-                if (response.errorCode == 429) {
-                    val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1_000L
-                    throw TelegramRateLimitException(retryAfterMs)
-                }
-                rateLimiter.recordFailure()
-                return@withContext UploadResult.Error(
-                    TelegramApiException(response.errorCode, response.description)
-                )
-            }
-
-            rateLimiter.recordSuccess()
-            val msg = response.result
-            val fileId = msg.document?.fileId
-                ?: return@withContext UploadResult.Error(Exception("No file_id in chunk response"))
             fileIds.add(fileId)
-            if (firstMessageId == null) firstMessageId = msg.messageId
             uploadedSoFar += read
             onProgress(uploadedSoFar, fileSize)
+
+            // Persist chunk progress after each success (invariant: partIndex == fileIds.size)
+            val updatedJson = gson.toJson(fileIds.toTypedArray())
+            onChunkSaved(partIndex, updatedJson)
         }
 
-        val fileIdJson = fileIds.joinToString(prefix = "[", postfix = "]", separator = ",") { "\"$it\"" }
+        val fileIdJson = gson.toJson(fileIds.toTypedArray())
         UploadResult.Success(
-            messageId = firstMessageId ?: 0L,
+            messageId = 0L,
             fileId = fileIdJson,
             thumbnailFileId = null,
         )
+    }
+
+    // Uploads a single chunk with per-chunk retry and exponential backoff with jitter.
+    // chunkData is a ByteArray — replayable on retry (body reconstructed fresh each attempt).
+    // onChunkRetry is called BEFORE the backoff delay — intentional: shows "retrying…"
+    // during the sleep rather than after, giving the user immediate feedback.
+    // chunkRetryAttempt is set to (attempt + 1) — the upcoming attempt number.
+    private suspend fun uploadChunkWithRetry(
+        safeToken: String,
+        chatIdBody: RequestBody,
+        captionBody: RequestBody,
+        chunkData: ByteArray,
+        mimeType: String,
+        partFileName: String,
+        uploadedSoFar: Long,
+        fileSize: Long,
+        onProgress: (Long, Long) -> Unit,
+        onChunkRetry: (attempt: Int) -> Unit = {},
+    ): String {
+        var attempt = 0
+        // highWaterMark clamps progress so the UI bar never regresses during a retry.
+        // ProgressRequestBody callbacks run sequentially on OkHttp's thread; the lambda
+        // from attempt N finishes before attempt N+1 starts — safe without synchronization.
+        var highWaterMark = uploadedSoFar
+        while (true) {
+            attempt++
+            val body = ProgressRequestBody(
+                delegate = chunkData.toRequestBody(mimeType.toMediaType()),
+                totalBytes = chunkData.size.toLong(),
+                onProgress = { chunkUp, _ ->
+                    val reported = maxOf(highWaterMark, uploadedSoFar + chunkUp)
+                    highWaterMark = reported
+                    onProgress(reported, fileSize)
+                },
+            )
+            val part = MultipartBody.Part.createFormData("document", partFileName, body)
+            try {
+                val response = rateLimiter.withRateLimit {
+                    uploadApi.sendDocument(safeToken, chatIdBody, part, captionBody)
+                }
+                if (response.ok && response.result?.document != null) {
+                    rateLimiter.recordSuccess()
+                    return response.result.document.fileId
+                }
+                if (response.errorCode in PERMANENT_ERROR_CODES) {
+                    rateLimiter.recordFailure()
+                    throw TelegramApiException(response.errorCode, response.description, isPermanent = true)
+                }
+                if (attempt >= CHUNK_MAX_RETRIES) {
+                    rateLimiter.recordFailure()
+                    throw TelegramApiException(response.errorCode, response.description)
+                }
+                rateLimiter.recordFailure()
+            } catch (e: TelegramApiException) {
+                if (e.isPermanent) throw e
+                if (attempt >= CHUNK_MAX_RETRIES) throw e
+            } catch (e: TelegramRateLimitException) {
+                // rateLimiter exhausted its own retries — propagate; don't count as a chunk retry.
+                // TelegramRateLimitException < Exception so must be caught before catch(Exception).
+                throw e
+            } catch (e: Exception) {
+                if (attempt >= CHUNK_MAX_RETRIES) throw e
+            }
+            // Signal retry before sleeping — user sees "retrying…" during the backoff wait.
+            onChunkRetry(attempt + 1)
+            val base = (CHUNK_BACKOFF_BASE_MS * (1L shl (attempt - 1))).coerceAtMost(CHUNK_BACKOFF_MAX_MS)
+            val jitter = (base * 0.2 * (Math.random() * 2 - 1)).toLong()
+            delay(base + jitter)
+        }
+    }
+
+    private fun parseFileIdJson(json: String): List<String> {
+        if (json.isBlank() || json == "[]") return emptyList()
+        return gson.fromJson(json, Array<String>::class.java).toList()
     }
 
 }

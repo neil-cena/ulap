@@ -98,6 +98,20 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        // Show chunk position label for multi-chunk uploads (totalChunks == 1 cannot
+                        // occur in practice: chunking requires >50MB, ceil(50MB/19MB) = 3 chunks min).
+                        if (progress.totalChunks > 1) {
+                            Spacer(Modifier.height(4.dp))
+                            val chunkLabel = if (progress.chunkRetryAttempt > 0)
+                                "Part ${progress.currentChunk} of ${progress.totalChunks} — retrying…"
+                            else
+                                "Part ${progress.currentChunk} of ${progress.totalChunks}"
+                            Text(
+                                chunkLabel,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     } else {
                         Spacer(Modifier.height(6.dp))
                         LinearProgressIndicator(

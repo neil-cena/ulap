@@ -12,6 +12,9 @@ data class SyncProgress(
     val bytesTransferred: Long = 0L,
     val currentSpeedBps: Long = 0L,
     val failedItems: List<MediaItem> = emptyList(),
+    val currentChunk: Int = 0,
+    val totalChunks: Int = 0,
+    val chunkRetryAttempt: Int = 0,   // 0 = not currently retrying
 ) {
     val progressFraction: Float get() = if (itemsTotal == 0) 0f else itemsDone.toFloat() / itemsTotal
     val currentFileFraction: Float get() = if (currentFileBytesTotal == 0L) 0f
