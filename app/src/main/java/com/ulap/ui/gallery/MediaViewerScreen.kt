@@ -1,14 +1,26 @@
 package com.ulap.ui.gallery
 
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.VectorConverter
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
@@ -22,23 +34,25 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.IntSize
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import com.ulap.domain.model.MediaType
-import kotlin.math.sqrt
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun MediaViewerScreen(
@@ -50,6 +64,7 @@ fun MediaViewerScreen(
     val streamUrlsCache by viewModel.streamUrlsCache.collectAsState()
     val downloadState by viewModel.downloadState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    var overlayVisible by remember { mutableStateOf(true) }
 
     LaunchedEffect(downloadState) {
         when (val s = downloadState) {
@@ -62,6 +77,12 @@ fun MediaViewerScreen(
                 viewModel.clearDownloadState()
             }
             else -> { }
+        }
+    }
+    LaunchedEffect(overlayVisible) {
+        if (overlayVisible) {
+            delay(3_000)
+            overlayVisible = false
         }
     }
 
@@ -83,6 +104,7 @@ fun MediaViewerScreen(
             LaunchedEffect(pagerState.currentPage) {
                 viewModel.setCurrentPage(pagerState.currentPage)
             }
+            val onToggleOverlay = remember { { overlayVisible = !overlayVisible } }
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
@@ -92,35 +114,74 @@ fun MediaViewerScreen(
                 when {
                     item.contentUri.isNotBlank() -> {
                         if (item.mediaType == MediaType.VIDEO) {
-                            VideoPlayerView(uris = listOf(Uri.parse(item.contentUri)))
+                            Box(
+                                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onToggleOverlay() })
+                                },
+                            ) {
+                                VideoPlayerView(uris = listOf(Uri.parse(item.contentUri)))
+                            }
                         } else {
-                            ZoomableImage(uri = Uri.parse(item.contentUri))
+                            ZoomableImage(
+                                uri = Uri.parse(item.contentUri),
+                                onTap = onToggleOverlay,
+                            )
                         }
                     }
                     else -> {
                         val state = streamUrlsCache[item.id] ?: StreamUrlsState.Loading
                         when (state) {
-                            is StreamUrlsState.Loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            is StreamUrlsState.Loading -> Box(
+                                Modifier.fillMaxSize().pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onToggleOverlay() })
+                                },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 CircularProgressIndicator(color = Color.White)
                             }
-                            is StreamUrlsState.Error -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            is StreamUrlsState.Error -> Box(
+                                Modifier.fillMaxSize().pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onToggleOverlay() })
+                                },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 Text(state.message, color = Color.White, modifier = Modifier.fillMaxWidth(0.8f))
                             }
                             is StreamUrlsState.Ready -> {
                                 val urls = state.urls
                                 if (item.mediaType == MediaType.VIDEO) {
-                                    VideoPlayerView(uris = urls.map { Uri.parse(it) })
+                                    Box(
+                                        modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                                            detectTapGestures(onTap = { onToggleOverlay() })
+                                        },
+                                    ) {
+                                        VideoPlayerView(uris = urls.map { Uri.parse(it) })
+                                    }
                                 } else {
-                                    ZoomableImage(uri = Uri.parse(urls.first()))
+                                    ZoomableImage(
+                                        uri = Uri.parse(urls.first()),
+                                        onTap = onToggleOverlay,
+                                    )
                                 }
                             }
                             is StreamUrlsState.ReadyProgressive -> {
-                                VideoPlayerView(
-                                    uris = listOf(Uri.parse(state.fileUri)),
-                                    dataSourceFactory = state.dataSourceFactory,
-                                )
+                                Box(
+                                    modifier = Modifier.fillMaxSize().pointerInput(Unit) {
+                                        detectTapGestures(onTap = { onToggleOverlay() })
+                                    },
+                                ) {
+                                    VideoPlayerView(
+                                        uris = listOf(Uri.parse(state.fileUri)),
+                                        dataSourceFactory = state.dataSourceFactory,
+                                    )
+                                }
                             }
-                            else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            else -> Box(
+                                Modifier.fillMaxSize().pointerInput(Unit) {
+                                    detectTapGestures(onTap = { onToggleOverlay() })
+                                },
+                                contentAlignment = Alignment.Center,
+                            ) {
                                 CircularProgressIndicator(color = Color.White)
                             }
                         }
@@ -132,39 +193,54 @@ fun MediaViewerScreen(
                 currentItem.contentUri.isBlank() &&
                 currentItem.telegramFileId != null
             val isDownloading = downloadState is DownloadState.Downloading
-            if (canDownload) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp),
-                ) {
-                    if (isDownloading) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(24.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp,
+            AnimatedVisibility(
+                visible = overlayVisible,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(8.dp),
+            ) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    IconButton(
+                        onClick = onBack,
+                        modifier = Modifier
+                            .background(Color(0x66000000), CircleShape)
+                            .padding(4.dp),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            tint = Color.White,
                         )
-                    } else {
-                        IconButton(onClick = { currentItem?.let { viewModel.downloadItem(it) } }) {
-                            Icon(
-                                Icons.Default.Download,
-                                contentDescription = "Download",
-                                tint = Color.White,
-                            )
+                    }
+
+                    Box(modifier = Modifier.weight(1f))
+
+                    if (canDownload) {
+                        IconButton(
+                            onClick = { if (!isDownloading) currentItem?.let { viewModel.downloadItem(it) } },
+                            modifier = Modifier
+                                .background(Color(0x66000000), CircleShape)
+                                .padding(4.dp),
+                        ) {
+                            if (isDownloading) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp,
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "Download",
+                                    tint = Color.White,
+                                )
+                            }
                         }
                     }
                 }
             }
-        }
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier.align(Alignment.TopStart),
-        ) {
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowBack,
-                contentDescription = "Back",
-                tint = Color.White,
-            )
         }
         SnackbarHost(
             hostState = snackbarHostState,
@@ -176,66 +252,83 @@ fun MediaViewerScreen(
 }
 
 @Composable
-private fun ZoomableImage(uri: Uri) {
-    var scale by remember { mutableFloatStateOf(1f) }
-    var offset by remember { mutableStateOf(Offset.Zero) }
-    var lastCentroid by remember { mutableStateOf(Offset.Zero) }
-    var lastDist by remember { mutableFloatStateOf(0f) }
-    var lastSingle by remember { mutableStateOf(Offset.Zero) }
+private fun ZoomableImage(uri: Uri, onTap: () -> Unit = {}) {
+    val scope = rememberCoroutineScope()
+    val scale = remember { Animatable(1f) }
+    val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+
+    fun clampOffset(current: Offset, currentScale: Float): Offset {
+        if (containerSize == IntSize.Zero || currentScale <= 1f) return Offset.Zero
+        val maxX = (containerSize.width.toFloat() * (currentScale - 1f)) / 2f
+        val maxY = (containerSize.height.toFloat() * (currentScale - 1f)) / 2f
+        return Offset(
+            x = current.x.coerceIn(-maxX, maxX),
+            y = current.y.coerceIn(-maxY, maxY),
+        )
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(scale) {
-                awaitPointerEventScope {
-                    while (true) {
+            .onSizeChanged { containerSize = it }
+            .pointerInput(uri) {
+                detectTapGestures(
+                    onTap = { onTap() },
+                    onDoubleTap = {
+                        scope.launch {
+                            scale.stop()
+                            offset.stop()
+                            launch { scale.animateTo(1f) }
+                            launch { offset.animateTo(Offset.Zero) }
+                        }
+                    },
+                )
+            }
+            .pointerInput(uri) {
+                // Only intercept and consume pan/zoom gestures when the image is zoomed in.
+                // At scale 1×, horizontal swipes must propagate to the parent HorizontalPager.
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    var pan = Offset.Zero
+                    var pastTouchSlop = false
+
+                    do {
                         val event = awaitPointerEvent()
-                        when (event.changes.size) {
-                            1 -> {
-                                val pos = event.changes.first().position
-                                if (scale > 1f) {
-                                    offset += (pos - lastSingle)
-                                    event.changes.forEach { it.consume() }
-                                }
-                                lastSingle = pos
+                        val canceled = event.changes.any { it.isConsumed }
+                        if (canceled) break
+
+                        val zoomChange = event.calculateZoom()
+                        val panChange = event.calculatePan()
+
+                        val isZoomed = scale.value > 1f
+                        if (!pastTouchSlop) {
+                            pan += panChange
+                            val panDistance = pan.getDistance()
+                            // Trigger gesture handling when zoomed or when pinching.
+                            if (panDistance > viewConfiguration.touchSlop || zoomChange != 1f) {
+                                pastTouchSlop = true
                             }
-                            else -> if (event.changes.size >= 2) {
-                                val p1 = event.changes[0].position
-                                val p2 = event.changes[1].position
-                                val centroid = Offset((p1.x + p2.x) / 2, (p1.y + p2.y) / 2)
-                                val dist = sqrt((p2.x - p1.x) * (p2.x - p1.x) + (p2.y - p1.y) * (p2.y - p1.y))
-                                if (lastDist > 0f) {
-                                    val zoom = dist / lastDist
-                                    val newScale = (scale * zoom).coerceIn(1f, 5f)
-                                    scale = newScale
-                                    if (newScale > 1f) {
-                                        offset += (centroid - lastCentroid)
-                                    } else {
-                                        offset = Offset.Zero
-                                    }
-                                }
-                                lastCentroid = centroid
-                                lastDist = dist
+                        }
+
+                        if (pastTouchSlop) {
+                            val newScale = (scale.value * zoomChange).coerceIn(1f, 5f)
+                            val updatedOffset = if (newScale <= 1f) Offset.Zero
+                            else clampOffset(offset.value + panChange, newScale)
+
+                            // Only disallow parent interception (blocking pager swipe) when zoomed.
+                            if (isZoomed || zoomChange != 1f) {
                                 event.changes.forEach { it.consume() }
                             }
+
+                            scope.launch { scale.snapTo(newScale) }
+                            scope.launch { offset.snapTo(updatedOffset) }
                         }
-                        when (event.type) {
-                            PointerEventType.Press -> {
-                                when (event.changes.size) {
-                                    1 -> lastSingle = event.changes[0].position
-                                    else -> if (event.changes.size >= 2) {
-                                        val p1 = event.changes[0].position
-                                        val p2 = event.changes[1].position
-                                        lastCentroid = Offset((p1.x + p2.x) / 2, (p1.y + p2.y) / 2)
-                                        lastDist = sqrt((p2.x - p1.x) * (p2.x - p1.x) + (p2.y - p1.y) * (p2.y - p1.y))
-                                    }
-                                }
-                            }
-                            PointerEventType.Release -> {
-                                lastDist = 0f
-                            }
-                            else -> { }
-                        }
+                    } while (event.changes.any { it.pressed })
+
+                    // Reset offset when scale snaps back to 1× after a pinch.
+                    if (scale.value <= 1f && offset.value != Offset.Zero) {
+                        scope.launch { offset.snapTo(Offset.Zero) }
                     }
                 }
             },
@@ -248,10 +341,10 @@ private fun ZoomableImage(uri: Uri) {
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    scaleX = scale
-                    scaleY = scale
-                    translationX = offset.x
-                    translationY = offset.y
+                    scaleX = scale.value
+                    scaleY = scale.value
+                    translationX = offset.value.x
+                    translationY = offset.value.y
                 },
         )
     }

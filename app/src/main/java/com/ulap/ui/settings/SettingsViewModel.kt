@@ -2,14 +2,17 @@ package com.ulap.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.usecase.ClearCredentialsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -27,10 +30,14 @@ class SettingsViewModel @Inject constructor(
     private val getCredentials: GetCredentialsUseCase,
     private val clearCredentials: ClearCredentialsUseCase,
     private val verifyBot: VerifyBotCredentialsUseCase,
+    val debugLog: DebugLogBuffer,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
+
+    val debugEntries: StateFlow<List<String>> = debugLog.entries
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     init {
         loadState()
@@ -71,4 +78,6 @@ class SettingsViewModel @Inject constructor(
         clearCredentials()
         _uiState.update { SettingsUiState() }
     }
+
+    fun clearDebugLog() = debugLog.clear()
 }

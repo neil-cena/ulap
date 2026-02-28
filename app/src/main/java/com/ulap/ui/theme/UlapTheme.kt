@@ -12,6 +12,7 @@ private val onPrimaryLight = Color(0xFFFFFFFF)
 private val primaryContainerLight = Color(0xFFD8E6FF)
 private val onPrimaryContainerLight = Color(0xFF001945)
 private val secondaryLight = Color(0xFF545F71)
+private val tertiaryLight = Color(0xFF2E7D32)
 private val surfaceLight = Color(0xFFF8F9FF)
 private val backgroundLight = Color(0xFFF8F9FF)
 
@@ -20,6 +21,7 @@ private val onPrimaryDark = Color(0xFF002F6C)
 private val primaryContainerDark = Color(0xFF004499)
 private val onPrimaryContainerDark = Color(0xFFD8E6FF)
 private val secondaryDark = Color(0xFFBBC7DB)
+private val tertiaryDark = Color(0xFF81C784)
 private val surfaceDark = Color(0xFF101418)
 private val backgroundDark = Color(0xFF101418)
 
@@ -29,6 +31,7 @@ private val LightColors = lightColorScheme(
     primaryContainer = primaryContainerLight,
     onPrimaryContainer = onPrimaryContainerLight,
     secondary = secondaryLight,
+    tertiary = tertiaryLight,
     surface = surfaceLight,
     background = backgroundLight,
 )
@@ -39,6 +42,7 @@ private val DarkColors = darkColorScheme(
     primaryContainer = primaryContainerDark,
     onPrimaryContainer = onPrimaryContainerDark,
     secondary = secondaryDark,
+    tertiary = tertiaryDark,
     surface = surfaceDark,
     background = backgroundDark,
 )

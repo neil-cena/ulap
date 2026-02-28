@@ -17,14 +17,17 @@ import com.ulap.data.remote.TelegramRateLimitException
 import com.ulap.data.remote.TelegramUploader
 import com.ulap.data.remote.UploadResult
 import com.ulap.data.remote.MAX_FILE_SIZE
+import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.SyncOperation
 import com.ulap.domain.model.SyncProgress
 import com.ulap.domain.repository.CredentialRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
@@ -34,6 +37,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
@@ -54,6 +58,7 @@ class SyncEngine @Inject constructor(
     private val credentialRepository: CredentialRepository,
     private val contentResolver: ContentResolver,
     private val backupIndexManager: BackupIndexManager,
+    private val debugLog: DebugLogBuffer,
     @ApplicationContext private val appContext: Context,
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -109,6 +114,7 @@ class SyncEngine @Inject constructor(
         val items = mediaItemDao.getPendingOrFailed()
         if (items.isEmpty()) return
 
+        debugLog.log("SyncEngine", "upload pipeline: starting — ${items.size} pending/failed items (large=${items.count { it.size > CHUNKED_THRESHOLD }}, small=${items.count { it.size <= CHUNKED_THRESHOLD }})")
         _progress.update {
             SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = items.size)
         }
@@ -127,18 +133,41 @@ class SyncEngine @Inject constructor(
         for (item in smallItems) smallQueue.send(item)
         smallQueue.close()
 
-        val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
-            engineScope.launch { for (e in largeQueue) processUpload(e, token, chatId) }
+        try {
+            supervisorScope {
+                val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
+                    launch { for (e in largeQueue) processUpload(e, token, chatId) }
+                }
+                val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
+                    launch { for (e in smallQueue) processUpload(e, token, chatId) }
+                }
+                // supervisorScope awaits all children before returning; joinAll() is not needed.
+            }
+            debugLog.log("SyncEngine", "upload pipeline: all workers completed normally")
+        } catch (e: CancellationException) {
+            debugLog.log("SyncEngine", "upload pipeline: cancelled")
+            throw e
+        } catch (e: Exception) {
+            // One or more workers failed (e.g. TelegramRateLimitException).
+            // Fall through to finally so exportAndUpload still runs for successful files.
+            debugLog.log("SyncEngine", "upload pipeline: worker exception — ${e.message}")
+        } finally {
+            // Always export the index for items that did succeed, and always reset progress.
+            // NonCancellable ensures the suspend call proceeds even when the coroutine is being cancelled.
+            // exportAndUpload internally guards: if getAllBackedUp() is empty it returns success(null).
+            debugLog.log("SyncEngine", "upload pipeline: exporting index")
+            withContext(NonCancellable) {
+                val result = backupIndexManager.exportAndUpload(token, chatId)
+                result.getOrNull()?.let { fileId ->
+                    credentialRepository.setLastIndexFileId(fileId)
+                    debugLog.log("SyncEngine", "upload pipeline: index exported, fileId=$fileId")
+                }
+                if (result.isFailure) {
+                    debugLog.log("SyncEngine", "upload pipeline: index export failed — ${result.exceptionOrNull()?.message}")
+                }
+            }
+            _progress.update { it.copy(isActive = false, operation = SyncOperation.IDLE) }
         }
-        val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
-            engineScope.launch { for (e in smallQueue) processUpload(e, token, chatId) }
-        }
-        (largeWorkers + smallWorkers).joinAll()
-
-        backupIndexManager.exportAndUpload(token, chatId).getOrNull()?.let { fileId ->
-            credentialRepository.setLastIndexFileId(fileId)
-        }
-        _progress.update { it.copy(isActive = false, operation = SyncOperation.IDLE) }
     }
 
     private suspend fun processUpload(

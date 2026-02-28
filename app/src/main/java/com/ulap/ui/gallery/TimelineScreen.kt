@@ -10,8 +10,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -24,23 +25,36 @@ import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassBottom
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import com.ulap.domain.model.BackupStatus
@@ -59,12 +73,23 @@ private fun mediaPermissions(): Array<String> =
     }
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun TimelineScreen(
     onItemClick: (String) -> Unit,
     viewModel: TimelineViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val groups by viewModel.groups.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshCompleted.collect {
+            snackbarHostState.showSnackbar("Up to date")
+        }
+    }
 
     var permissionGranted by remember {
         mutableStateOf(mediaPermissions().all {
@@ -77,35 +102,132 @@ fun TimelineScreen(
         permissionGranted = results.values.all { it }
         if (permissionGranted) viewModel.refresh()
     }
-    LaunchedEffect(Unit) {
-        if (!permissionGranted) {
-            permissionLauncher.launch(mediaPermissions())
+
+    val currentPermissionGranted by rememberUpdatedState(permissionGranted)
+    DisposableEffect(lifecycleOwner, context) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = mediaPermissions().all {
+                    ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+                }
+                if (granted && !currentPermissionGranted) {
+                    permissionGranted = true
+                    viewModel.refresh()
+                } else {
+                    permissionGranted = granted
+                }
+            }
         }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (groups.isEmpty()) {
-        Box(modifier = Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
-            Text("No media found. Select folders in Settings to start backup.", style = MaterialTheme.typography.bodyMedium)
-        }
-        return
-    }
-
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
-        horizontalArrangement = Arrangement.spacedBy(2.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
-    ) {
-        groups.forEach { group ->
-            item(span = { GridItemSpan(3) }) {
-                Text(
-                    text = group.label,
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                )
+    Scaffold { innerPadding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding),
+        ) {
+            when {
+                isLoading -> {
+                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                }
+                !permissionGranted -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Cloud,
+                                contentDescription = "Permission required",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp),
+                            )
+                            Text(
+                                text = "Allow access to your photos",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Button(onClick = { permissionLauncher.launch(mediaPermissions()) }) {
+                                Text("Grant Permission")
+                            }
+                        }
+                    }
+                }
+                groups.isEmpty() -> {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(24.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Cloud,
+                                contentDescription = "No backups",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(56.dp),
+                            )
+                            Text(
+                                text = "No backed-up media yet",
+                                style = MaterialTheme.typography.titleMedium,
+                            )
+                            Text(
+                                text = "Select folders in Settings",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Button(
+                                onClick = viewModel::refresh,
+                                enabled = !isRefreshing,
+                            ) {
+                                Text(if (isRefreshing) "Refreshing..." else "Refresh")
+                            }
+                        }
+                    }
+                }
+                else -> {
+                    PullToRefreshBox(
+                        isRefreshing = isRefreshing,
+                        onRefresh = viewModel::refresh,
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(3),
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
+                        ) {
+                            groups.forEach { group ->
+                                item(span = { GridItemSpan(3) }) {
+                                    Text(
+                                        text = group.label,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                                    )
+                                }
+                                items(group.items, key = { it.id }) { item ->
+                                    MediaThumbnail(item = item, onClick = { onItemClick(item.id) })
+                                }
+                            }
+                        }
+                    }
+                }
             }
-            items(group.items, key = { it.id }) { item ->
-                MediaThumbnail(item = item, onClick = { onItemClick(item.id) })
-            }
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(16.dp),
+            )
         }
     }
 }
@@ -119,11 +241,14 @@ fun MediaThumbnail(item: MediaItem, onClick: () -> Unit) {
     ) {
         val imageModel = item.streamUrl ?: item.contentUri
         if (imageModel.isNotBlank()) {
+            val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
             AsyncImage(
                 model = if (item.streamUrl != null) imageModel else Uri.parse(imageModel),
                 contentDescription = item.fileName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.matchParentSize(),
+                placeholder = painter,
+                error = painter,
             )
         } else {
             Box(
@@ -182,8 +307,8 @@ fun BackupStatusIcon(status: BackupStatus, modifier: Modifier = Modifier) {
         BackupStatus.EXCLUDED -> null
     }
     val tint = when (status) {
-        BackupStatus.BACKED_UP -> Color(0xFF4CAF50)
-        BackupStatus.CLOUD_ONLY -> Color(0xFF2196F3)
+        BackupStatus.BACKED_UP -> MaterialTheme.colorScheme.tertiary
+        BackupStatus.CLOUD_ONLY -> MaterialTheme.colorScheme.primary
         BackupStatus.FAILED -> MaterialTheme.colorScheme.error
         else -> Color(0xFFFFFFFF)
     }

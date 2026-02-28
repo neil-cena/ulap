@@ -6,6 +6,7 @@ import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.MediaType
+import com.ulap.debug.DebugLogBuffer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -44,6 +45,7 @@ class BackupIndexManager @Inject constructor(
     private val api: TelegramBotApi,
     private val rateLimiter: TelegramRateLimiter,
     private val downloader: TelegramDownloader,
+    private val debugLog: DebugLogBuffer,
 ) {
 
     private val gson = Gson()
@@ -98,6 +100,7 @@ class BackupIndexManager @Inject constructor(
 
     /** Fetches index from the chat's pinned message (works across all devices with the same credentials). */
     suspend fun fetchAndMerge(token: String, chatId: String): Result<Int> = withContext(Dispatchers.IO) {
+        debugLog.log("IndexManager", "fetchAndMerge: querying pinned message for chatId=$chatId")
         val safeToken = sanitizeTokenForPath(token)
         val chatResponse = rateLimiter.withRateLimit {
             api.getChat(safeToken, chatId)
@@ -107,28 +110,37 @@ class BackupIndexManager @Inject constructor(
                 val retryAfterMs = (chatResponse.parameters?.retryAfter ?: 30) * 1_000L
                 throw TelegramRateLimitException(retryAfterMs)
             }
+            debugLog.log("IndexManager", "fetchAndMerge: getChat failed — ${chatResponse.description}")
             return@withContext Result.failure(Exception(chatResponse.description ?: "getChat failed"))
         }
         val pinnedMessage = chatResponse.result.pinnedMessage
         if (pinnedMessage?.document == null || pinnedMessage.caption != INDEX_CAPTION) {
+            debugLog.log("IndexManager", "fetchAndMerge: no valid pinned index found")
             return@withContext Result.success(0)
         }
         val fileId = pinnedMessage.document.fileId
+        debugLog.log("IndexManager", "fetchAndMerge: found index document fileId=$fileId")
         fetchAndMergeFromFileId(token, fileId)
     }
 
     /** Downloads the backup index by file_id and merges into local DB. Use for "Sync from other device" (index from another phone). */
     suspend fun fetchAndMergeFromFileId(token: String, fileId: String): Result<Int> = withContext(Dispatchers.IO) {
+        debugLog.log("IndexManager", "fetchAndMergeFromFileId: downloading index fileId=$fileId")
         val out = ByteArrayOutputStream()
         when (val dr = downloader.download(token, fileId, out)) {
-            is DownloadResult.Error -> return@withContext Result.failure(dr.cause)
+            is DownloadResult.Error -> {
+                debugLog.log("IndexManager", "fetchAndMergeFromFileId: download error — ${dr.cause.message}")
+                return@withContext Result.failure(dr.cause)
+            }
             is DownloadResult.Success -> { }
         }
         val manifest = try {
             gson.fromJson(out.toString(Charsets.UTF_8.name()), IndexManifest::class.java)
         } catch (e: Exception) {
+            debugLog.log("IndexManager", "fetchAndMergeFromFileId: parse error — ${e.message}")
             return@withContext Result.failure(e)
         }
+        debugLog.log("IndexManager", "fetchAndMergeFromFileId: index has ${manifest.items.size} entries, exportedAt=${manifest.exportedAt}")
         var merged = 0
         for (entry in manifest.items) {
             if (mediaItemDao.findByTelegramFileId(entry.telegramFileId) != null) continue
@@ -171,6 +183,7 @@ class BackupIndexManager @Inject constructor(
                 merged++
             }
         }
+        debugLog.log("IndexManager", "fetchAndMergeFromFileId: merged $merged new items")
         Result.success(merged)
     }
 

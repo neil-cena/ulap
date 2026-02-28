@@ -1,11 +1,18 @@
 package com.ulap.ui.settings
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -18,10 +25,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 
 @Composable
@@ -114,6 +126,11 @@ fun SettingsScreen(
                 )
             }
         }
+
+        // ── DEV ONLY ─────────────────────────────────────────────────────────
+        Spacer(Modifier.height(24.dp))
+        DebugLogPanel(viewModel)
+        // ─────────────────────────────────────────────────────────────────────
     }
 
     if (state.showClearConfirm) {
@@ -150,5 +167,54 @@ private fun SettingRow(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(value.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+// ── DEV ONLY — remove before release ──────────────────────────────────────────
+
+@Composable
+private fun DebugLogPanel(viewModel: SettingsViewModel) {
+    val entries by viewModel.debugEntries.collectAsState()
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(entries.size) {
+        if (entries.isNotEmpty()) listState.animateScrollToItem(entries.size - 1)
+    }
+
+    SectionTitle("Debug Log (dev only)")
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${entries.size} entries",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = viewModel::clearDebugLog) { Text("Clear") }
+            }
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 80.dp, max = 320.dp)
+                    .background(Color(0xFF1E1E1E)),
+            ) {
+                items(entries) { line ->
+                    Text(
+                        text = line,
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        color = Color(0xFFD4D4D4),
+                        modifier = Modifier
+                            .padding(horizontal = 6.dp, vertical = 1.dp)
+                            .horizontalScroll(rememberScrollState()),
+                    )
+                }
+            }
+        }
     }
 }
