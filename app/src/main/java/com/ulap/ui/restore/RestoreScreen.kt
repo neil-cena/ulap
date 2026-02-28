@@ -31,6 +31,7 @@ import com.ulap.ui.rememberRunWithNotificationPermission
 fun RestoreScreen(viewModel: RestoreViewModel = hiltViewModel()) {
     val context = LocalContext.current
     val progress by viewModel.progress.collectAsState()
+    val restoreRequested by viewModel.restoreRequested.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     val startRestore = rememberRunWithNotificationPermission(viewModel::startRestore)
@@ -74,6 +75,14 @@ fun RestoreScreen(viewModel: RestoreViewModel = hiltViewModel()) {
                     progress = { progress.progressFraction },
                     modifier = Modifier.fillMaxWidth(),
                 )
+            } else if (restoreRequested) {
+                Text(
+                    "Starting restore…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
             } else {
                 Button(
                     onClick = startRestore,

@@ -36,7 +36,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
@@ -64,7 +63,7 @@ class SyncEngine @Inject constructor(
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
-    private var uploadCancelled = false
+    private var uploadCancelled = false  // must be reset by startUpload() before each run
 
     private val _progress = MutableStateFlow(SyncProgress())
     val progress: StateFlow<SyncProgress> = _progress.asStateFlow()
@@ -100,87 +99,93 @@ class SyncEngine @Inject constructor(
     }
 
     private suspend fun runUploadPipeline() {
-        val token = credentialRepository.getBotToken() ?: return
-        val chatId = credentialRepository.getChatId() ?: return
-
-        // Sweep orphaned temp files before fetchAndMerge to avoid racing with new temp files.
-        appContext.cacheDir.listFiles { f ->
-            f.name.startsWith("ulap_raw_") || f.name.startsWith("ulap_fs_")
-        }?.forEach { it.delete() }
-
-        // Any item left in UPLOADING state means the previous run crashed mid-upload.
-        // Reset them to PENDING so they are re-attempted in this run.
-        // resetStaleUploadingToPending intentionally does NOT clear uploadedChunkCount —
-        // the chunk progress is the resume seed for the next run.
-        mediaItemDao.resetStaleUploadingToPending()
-        // Mark chunked items from old 45MB chunks as FAILED so they re-upload with 19MB (streamable) chunks.
-        mediaItemDao.markOversizedChunkedItemsAsFailed()
-        // Clear chunk progress for items in terminal states (BACKED_UP/EXCLUDED/CLOUD_ONLY).
-        // PENDING and FAILED items keep their progress for resume on the next attempt.
-        mediaItemDao.clearOrphanedChunkProgress()
-
-        backupIndexManager.fetchAndMerge(token, chatId)
-
-        // scanAndSync already marked non-enabled-bucket items as EXCLUDED,
-        // so getPendingOrFailed() only returns items in currently enabled buckets.
-        val items = mediaItemDao.getPendingOrFailed()
-        if (items.isEmpty()) return
-
-        debugLog.log("SyncEngine", "upload pipeline: starting — ${items.size} pending/failed items (large=${items.count { it.size > CHUNKED_THRESHOLD }}, small=${items.count { it.size <= CHUNKED_THRESHOLD }})")
         _progress.update {
-            SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = items.size)
+            SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = 0)
         }
-
-        // Partition into large/small queues to prevent a large chunked upload from starving
-        // small files. Large files (1 worker) and small files (3 workers) run concurrently.
-        val (largeItems, smallItems) = items.partition { it.size > CHUNKED_THRESHOLD }
-
-        val largeQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
-        val smallQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
-
-        // Use for loops — Channel.send is a suspend function.
-        // Collection.forEach does not accept a suspend lambda; forEach { send(it) } is a compile error.
-        for (item in largeItems) largeQueue.send(item)
-        largeQueue.close()
-        for (item in smallItems) smallQueue.send(item)
-        smallQueue.close()
-
         try {
-            supervisorScope {
-                val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
-                    launch { for (e in largeQueue) processUpload(e, token, chatId) }
+            val token = credentialRepository.getBotToken() ?: return
+            val chatId = credentialRepository.getChatId() ?: return
+
+            // Sweep orphaned temp files before fetchAndMerge to avoid racing with new temp files.
+            appContext.cacheDir.listFiles { f ->
+                f.name.startsWith("ulap_raw_") || f.name.startsWith("ulap_fs_")
+            }?.forEach { it.delete() }
+
+            // Any item left in UPLOADING state means the previous run crashed mid-upload.
+            // Reset them to PENDING so they are re-attempted in this run.
+            // resetStaleUploadingToPending intentionally does NOT clear uploadedChunkCount —
+            // the chunk progress is the resume seed for the next run.
+            mediaItemDao.resetStaleUploadingToPending()
+            // Mark chunked items from old 45MB chunks as FAILED so they re-upload with 19MB (streamable) chunks.
+            mediaItemDao.markOversizedChunkedItemsAsFailed()
+            // Clear chunk progress for items in terminal states (BACKED_UP/EXCLUDED/CLOUD_ONLY).
+            // PENDING and FAILED items keep their progress for resume on the next attempt.
+            mediaItemDao.clearOrphanedChunkProgress()
+
+            backupIndexManager.fetchAndMerge(token, chatId)
+
+            // scanAndSync already marked non-enabled-bucket items as EXCLUDED,
+            // so getPendingOrFailed() only returns items in currently enabled buckets.
+            val items = mediaItemDao.getPendingOrFailed()
+            if (items.isEmpty()) return
+
+            debugLog.log("SyncEngine", "upload pipeline: starting — ${items.size} pending/failed items (large=${items.count { it.size > CHUNKED_THRESHOLD }}, small=${items.count { it.size <= CHUNKED_THRESHOLD }})")
+            _progress.update { it.copy(itemsTotal = items.size) }
+
+            // Partition into large/small queues to prevent a large chunked upload from starving
+            // small files. Large files (1 worker) and small files (3 workers) run concurrently.
+            val (largeItems, smallItems) = items.partition { it.size > CHUNKED_THRESHOLD }
+
+            val largeQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
+            val smallQueue = Channel<MediaItemEntity>(Channel.UNLIMITED)
+
+            // Use for loops — Channel.send is a suspend function.
+            // Collection.forEach does not accept a suspend lambda; forEach { send(it) } is a compile error.
+            for (item in largeItems) largeQueue.send(item)
+            largeQueue.close()
+            for (item in smallItems) smallQueue.send(item)
+            smallQueue.close()
+
+            try {
+                supervisorScope {
+                    val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
+                        launch { for (e in largeQueue) processUpload(e, token, chatId) }
+                    }
+                    val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
+                        launch { for (e in smallQueue) processUpload(e, token, chatId) }
+                    }
+                    // supervisorScope awaits all children before returning; joinAll() is not needed.
                 }
-                val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
-                    launch { for (e in smallQueue) processUpload(e, token, chatId) }
+                debugLog.log("SyncEngine", "upload pipeline: all workers completed normally")
+            } catch (e: CancellationException) {
+                uploadCancelled = true
+                debugLog.log("SyncEngine", "upload pipeline: cancelled")
+                throw e
+            } catch (e: Exception) {
+                // One or more workers failed (e.g. TelegramRateLimitException).
+                // Fall through to finally so exportAndUpload still runs for successful files.
+                debugLog.log("SyncEngine", "upload pipeline: worker exception — ${e.message}")
+            } finally {
+                // Export the index for any items that succeeded in this run.
+                // Only reached when items were actually queued (early-exit paths before this try
+                // return before any work is done and do not need an export).
+                // NonCancellable ensures the suspend call proceeds even when the coroutine is being cancelled.
+                // exportAndUpload internally guards: if there are no indexable items it returns success(null).
+                debugLog.log("SyncEngine", "upload pipeline: exporting index")
+                withContext(NonCancellable) {
+                    val result = backupIndexManager.exportAndUpload(token, chatId)
+                    result.getOrNull()?.let { fileId ->
+                        credentialRepository.setLastIndexFileId(fileId)
+                        debugLog.log("SyncEngine", "upload pipeline: index exported, fileId=$fileId")
+                    }
+                    if (result.isFailure) {
+                        debugLog.log("SyncEngine", "upload pipeline: index export failed — ${result.exceptionOrNull()?.message}")
+                    }
                 }
-                // supervisorScope awaits all children before returning; joinAll() is not needed.
             }
-            debugLog.log("SyncEngine", "upload pipeline: all workers completed normally")
-        } catch (e: CancellationException) {
-            uploadCancelled = true
-            debugLog.log("SyncEngine", "upload pipeline: cancelled")
-            throw e
-        } catch (e: Exception) {
-            // One or more workers failed (e.g. TelegramRateLimitException).
-            // Fall through to finally so exportAndUpload still runs for successful files.
-            debugLog.log("SyncEngine", "upload pipeline: worker exception — ${e.message}")
         } finally {
-            // Always export the index for items that did succeed, and always reset progress.
-            // NonCancellable ensures the suspend call proceeds even when the coroutine is being cancelled.
-            // exportAndUpload internally guards: if getAllBackedUp() is empty it returns success(null).
-            debugLog.log("SyncEngine", "upload pipeline: exporting index")
-            withContext(NonCancellable) {
-                val result = backupIndexManager.exportAndUpload(token, chatId)
-                result.getOrNull()?.let { fileId ->
-                    credentialRepository.setLastIndexFileId(fileId)
-                    debugLog.log("SyncEngine", "upload pipeline: index exported, fileId=$fileId")
-                }
-                if (result.isFailure) {
-                    debugLog.log("SyncEngine", "upload pipeline: index export failed — ${result.exceptionOrNull()?.message}")
-                }
-            }
             val snapshot = _progress.value
-            val completionEvent = if (!uploadCancelled) {
+            val completionEvent = if (!uploadCancelled && snapshot.itemsTotal > 0) {
                 BackupCompletionEvent(
                     succeeded = snapshot.itemsDone,
                     failed = snapshot.itemsTotal - snapshot.itemsDone,
@@ -439,38 +444,43 @@ class SyncEngine @Inject constructor(
     }
 
     private suspend fun runDownloadPipeline() {
-        val token = credentialRepository.getBotToken() ?: return
-        val items = mediaItemDao.getPendingOrFailed()
-            .filter { it.backupStatus == BackupStatus.BACKED_UP }
-            .filter { it.telegramFileId != null }
-
-        if (items.isEmpty()) {
-            val backedUp = withContext(Dispatchers.IO) {
-                mediaItemDao.observeByStatus(BackupStatus.BACKED_UP)
-            }
-            return
-        }
-
-        val queue = Channel<MediaItemEntity>(Channel.UNLIMITED)
-        val backedUpItems = mediaItemDao.let {
-            val flow = it.observeByStatus(BackupStatus.BACKED_UP)
-            emptyList<MediaItemEntity>()
-        }
-
         _progress.update {
             SyncProgress(isActive = true, operation = SyncOperation.DOWNLOADING, itemsTotal = 0)
         }
 
-        val workers = (1..DOWNLOAD_CONCURRENCY).map {
-            engineScope.launch {
-                for (entity in queue) {
-                    processDownload(entity, token)
+        try {
+            val token = credentialRepository.getBotToken() ?: return
+            val items = mediaItemDao.getAllCloudOnlyItems()
+
+            if (items.isEmpty()) return
+
+            val queue = Channel<MediaItemEntity>(Channel.UNLIMITED)
+            for (item in items) queue.send(item)
+            queue.close()
+
+            _progress.update { it.copy(itemsTotal = items.size) }
+
+            supervisorScope {
+                (1..DOWNLOAD_CONCURRENCY).map {
+                    launch { for (entity in queue) processDownload(entity, token) }
                 }
             }
+        } finally {
+            val snapshot = _progress.value
+            val completionEvent = if (snapshot.itemsTotal > 0) {
+                BackupCompletionEvent(
+                    succeeded = snapshot.itemsDone,
+                    failed = maxOf(0, snapshot.itemsTotal - snapshot.itemsDone),
+                )
+            } else null
+            _progress.update {
+                it.copy(
+                    isActive = false,
+                    operation = SyncOperation.IDLE,
+                    completionEvent = completionEvent,
+                )
+            }
         }
-        queue.close()
-        workers.joinAll()
-        _progress.update { it.copy(isActive = false, operation = SyncOperation.IDLE) }
     }
 
     suspend fun downloadItem(item: MediaItem) {

@@ -8,6 +8,9 @@
     <string name="notification_backup_done">Backup complete</string>
     <string name="notification_backup_done_body">%1$d files backed up successfully.</string>
     <string name="notification_backup_done_with_failures_body">%1$d backed up, %2$d failed. Tap to retry.</string>
+    <string name="notification_restore_done">Restore complete</string>
+    <string name="notification_restore_done_body">%1$d files restored successfully.</string>
+    <string name="notification_restore_done_with_failures_body">%1$d restored, %2$d failed.</string>
     <string name="notification_backup_rate_limited">Slowed by Telegram — resuming shortly…</string>
 
     <!-- In-app UI strings -->

@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import com.ulap.MainActivity
 import com.ulap.R
 import com.ulap.data.remote.CHUNK_MAX_RETRIES
+import com.ulap.domain.model.SyncOperation
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -65,22 +66,35 @@ class BackupForegroundService : Service() {
 
     private fun observeProgress() {
         serviceScope.launch {
+            var observedActiveRun = false
+            // Seed from current value so the completion path knows the operation type even
+            // if an idle emission fires before any active emission is observed (race-safe).
+            var lastOperation = syncEngine.progress.value.operation
             syncEngine.progress.collectLatest { progress ->
+                if (progress.isActive) {
+                    observedActiveRun = true
+                    lastOperation = progress.operation
+                }
                 if (!progress.isActive) {
+                    // Ignore the initial idle emission before startUpload/startDownload updates progress.
+                    if (!observedActiveRun) return@collectLatest
                     progress.completionEvent?.let { event ->
-                        postCompletionNotification(event.succeeded, event.failed)
+                        postCompletionNotification(event.succeeded, event.failed, isRestore = lastOperation == SyncOperation.DOWNLOADING)
                         syncEngine.clearCompletionEvent()
                     }
                     stopSelf()
                     return@collectLatest
                 }
+                val isRestore = progress.operation == SyncOperation.DOWNLOADING
                 val text = when {
                     progress.isRateLimited ->
                         getString(R.string.notification_backup_rate_limited)
                     progress.chunkRetryAttempt > 0 ->
                         "Part ${progress.currentChunk}/${progress.totalChunks} — attempt ${progress.chunkRetryAttempt} of $CHUNK_MAX_RETRIES"
-                    progress.totalChunks > 0 ->
+                    progress.totalChunks > 0 && !isRestore ->
                         "${progress.itemsDone + 1}/${progress.itemsTotal} · Part ${progress.currentChunk}/${progress.totalChunks}"
+                    progress.itemsTotal > 0 && isRestore ->
+                        "${progress.itemsDone} of ${progress.itemsTotal} restored"
                     progress.itemsTotal > 0 ->
                         "${progress.itemsDone} of ${progress.itemsTotal} backed up"
                     else -> "Preparing…"
@@ -98,7 +112,7 @@ class BackupForegroundService : Service() {
         }
     }
 
-    private fun postCompletionNotification(succeeded: Int, failed: Int) {
+    private fun postCompletionNotification(succeeded: Int, failed: Int, isRestore: Boolean = false) {
         val nm = getSystemService(NotificationManager::class.java)
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
@@ -107,14 +121,24 @@ class BackupForegroundService : Service() {
             this, 0, tapIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        val body = if (failed == 0) {
-            getString(R.string.notification_backup_done_body, succeeded)
+        val (title, body) = if (isRestore) {
+            val bodyText = if (failed == 0) {
+                getString(R.string.notification_restore_done_body, succeeded)
+            } else {
+                getString(R.string.notification_restore_done_with_failures_body, succeeded, failed)
+            }
+            getString(R.string.notification_restore_done) to bodyText
         } else {
-            getString(R.string.notification_backup_done_with_failures_body, succeeded, failed)
+            val bodyText = if (failed == 0) {
+                getString(R.string.notification_backup_done_body, succeeded)
+            } else {
+                getString(R.string.notification_backup_done_with_failures_body, succeeded, failed)
+            }
+            getString(R.string.notification_backup_done) to bodyText
         }
         val notification = NotificationCompat.Builder(this, CHANNEL_COMPLETE_ID)
             .setSmallIcon(android.R.drawable.ic_menu_upload)
-            .setContentTitle(getString(R.string.notification_backup_done))
+            .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
             .setContentIntent(tapPending)
