@@ -21,15 +21,21 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.ulap.R
 import com.ulap.domain.model.SyncOperation
+import com.ulap.ui.rememberRunWithNotificationPermission
 
 @Composable
 fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
     val stats by viewModel.stats.collectAsState()
     val progress by viewModel.progress.collectAsState()
+
+    val startBackup = rememberRunWithNotificationPermission(viewModel::startBackup)
+    val retryFailed = rememberRunWithNotificationPermission(viewModel::retryFailed)
 
     Column(
         modifier = Modifier
@@ -72,59 +78,69 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
         if (progress.isActive && progress.operation == SyncOperation.UPLOADING) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "Uploading ${progress.itemsDone + 1} of ${progress.itemsTotal}",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    if (progress.currentFileName.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
+                    if (progress.isRateLimited) {
                         Text(
-                            progress.currentFileName,
-                            style = MaterialTheme.typography.bodySmall,
+                            stringResource(R.string.backup_rate_limited_ui),
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
                         )
                         Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { progress.currentFileFraction },
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        if (progress.currentFileBytesTotal > 0) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                "${formatBytes(progress.currentFileBytes)} / ${formatBytes(progress.currentFileBytesTotal)}",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        // Show chunk position label for multi-chunk uploads (totalChunks == 1 cannot
-                        // occur in practice: chunking requires >50MB, ceil(50MB/19MB) = 3 chunks min).
-                        if (progress.totalChunks > 1) {
-                            Spacer(Modifier.height(4.dp))
-                            val chunkLabel = if (progress.chunkRetryAttempt > 0)
-                                "Part ${progress.currentChunk} of ${progress.totalChunks} — retrying…"
-                            else
-                                "Part ${progress.currentChunk} of ${progress.totalChunks}"
-                            Text(
-                                chunkLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     } else {
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(
-                            progress = { progress.progressFraction },
-                            modifier = Modifier.fillMaxWidth(),
+                        Text(
+                            "Uploading ${progress.itemsDone + 1} of ${progress.itemsTotal}",
+                            style = MaterialTheme.typography.bodyMedium,
                         )
+                        if (progress.currentFileName.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                progress.currentFileName,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.currentFileFraction },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            if (progress.currentFileBytesTotal > 0) {
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    "${formatBytes(progress.currentFileBytes)} / ${formatBytes(progress.currentFileBytesTotal)}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // Show chunk position label for multi-chunk uploads (totalChunks == 1 cannot
+                            // occur in practice: chunking requires >50MB, ceil(50MB/19MB) = 3 chunks min).
+                            if (progress.totalChunks > 1) {
+                                Spacer(Modifier.height(4.dp))
+                                val chunkLabel = if (progress.chunkRetryAttempt > 0)
+                                    "Part ${progress.currentChunk} of ${progress.totalChunks} — retrying…"
+                                else
+                                    "Part ${progress.currentChunk} of ${progress.totalChunks}"
+                                Text(
+                                    chunkLabel,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        } else {
+                            Spacer(Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = { progress.progressFraction },
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
                     }
                 }
             }
         } else {
             Row {
                 Button(
-                    onClick = viewModel::startBackup,
+                    onClick = startBackup,
                     modifier = Modifier.weight(1f),
                 ) { Text("Back Up Now") }
                 Spacer(Modifier.width(8.dp))
@@ -135,7 +151,7 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                 if ((stats?.failed ?: 0) > 0) {
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(
-                        onClick = viewModel::retryFailed,
+                        onClick = retryFailed,
                         modifier = Modifier.weight(1f),
                     ) { Text("Retry Failed") }
                 }

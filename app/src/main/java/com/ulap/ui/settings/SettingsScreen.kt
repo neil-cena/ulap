@@ -19,9 +19,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,14 +39,18 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.ulap.ui.theme.ThemePreference
 
 @Composable
+@OptIn(ExperimentalMaterial3Api::class)
 fun SettingsScreen(
     onNavigateToFolderPicker: () -> Unit,
+    onNavigateToRestore: () -> Unit,
     onNavigateToQrShow: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val themePreference by viewModel.themePreference.collectAsState()
 
     Column(
         modifier = Modifier
@@ -53,6 +61,37 @@ fun SettingsScreen(
         Text("Settings", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
 
+        SectionTitle("Appearance")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Theme",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    ThemePreference.entries.forEachIndexed { index, pref ->
+                        SegmentedButton(
+                            selected = themePreference == pref,
+                            onClick = { viewModel.setTheme(pref) },
+                            shape = SegmentedButtonDefaults.itemShape(index, ThemePreference.entries.size),
+                            label = {
+                                Text(
+                                    when (pref) {
+                                        ThemePreference.SYSTEM -> "System"
+                                        ThemePreference.LIGHT -> "Light"
+                                        ThemePreference.DARK -> "Dark"
+                                    }
+                                )
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
         SectionTitle("Account")
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -93,6 +132,23 @@ fun SettingsScreen(
                     onClick = onNavigateToFolderPicker,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Manage Backup Folders") }
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+        SectionTitle("Restore")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Download your backed-up photos and videos from Telegram back to this device.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onNavigateToRestore,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Restore to this device") }
             }
         }
 

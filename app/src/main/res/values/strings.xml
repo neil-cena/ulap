@@ -2,6 +2,17 @@
 <resources>
     <string name="app_name">Ulap</string>
     <string name="notification_channel_backup">Backup</string>
+    <string name="notification_channel_complete">Backup status</string>
     <string name="notification_backup_title">Backing up your media</string>
     <string name="notification_restore_title">Restoring your media</string>
+    <string name="notification_backup_done">Backup complete</string>
+    <string name="notification_backup_done_body">%1$d files backed up successfully.</string>
+    <string name="notification_backup_done_with_failures_body">%1$d backed up, %2$d failed. Tap to retry.</string>
+    <string name="notification_backup_rate_limited">Slowed by Telegram — resuming shortly…</string>
+
+    <!-- In-app UI strings -->
+    <string name="backup_rate_limited_ui">Slowed by Telegram — resuming shortly</string>
+    <string name="restore_button">Restore All Backed-Up Files</string>
+    <string name="restore_complete_body">Restored %1$d files to Pictures / Ulap Restore</string>
+    <string name="restore_complete_with_failures_body">%1$d restored, %2$d failed</string>
 </resources>

@@ -48,6 +48,12 @@ class RetryFailedUseCase @Inject constructor(
     suspend operator fun invoke() = syncEngine.retryFailed()
 }
 
+class ResetFailedToPendingUseCase @Inject constructor(
+    private val syncEngine: SyncEngine,
+) {
+    suspend operator fun invoke() = syncEngine.resetFailedToPending()
+}
+
 class StartRestoreUseCase @Inject constructor(
     private val syncEngine: SyncEngine,
 ) {

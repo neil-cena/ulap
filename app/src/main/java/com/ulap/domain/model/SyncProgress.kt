@@ -15,10 +15,17 @@ data class SyncProgress(
     val currentChunk: Int = 0,
     val totalChunks: Int = 0,
     val chunkRetryAttempt: Int = 0,   // 0 = not currently retrying
+    val isRateLimited: Boolean = false,
+    val completionEvent: BackupCompletionEvent? = null,
 ) {
     val progressFraction: Float get() = if (itemsTotal == 0) 0f else itemsDone.toFloat() / itemsTotal
     val currentFileFraction: Float get() = if (currentFileBytesTotal == 0L) 0f
         else (currentFileBytes.toFloat() / currentFileBytesTotal).coerceIn(0f, 1f)
 }
+
+data class BackupCompletionEvent(
+    val succeeded: Int,
+    val failed: Int,
+)
 
 enum class SyncOperation { IDLE, UPLOADING, DOWNLOADING }

@@ -124,6 +124,7 @@ fun MediaViewerScreen(
                         } else {
                             ZoomableImage(
                                 uri = Uri.parse(item.contentUri),
+                                contentDescription = item.fileName,
                                 onTap = onToggleOverlay,
                             )
                         }
@@ -160,6 +161,7 @@ fun MediaViewerScreen(
                                 } else {
                                     ZoomableImage(
                                         uri = Uri.parse(urls.first()),
+                                        contentDescription = item.fileName,
                                         onTap = onToggleOverlay,
                                     )
                                 }
@@ -252,7 +254,7 @@ fun MediaViewerScreen(
 }
 
 @Composable
-private fun ZoomableImage(uri: Uri, onTap: () -> Unit = {}) {
+private fun ZoomableImage(uri: Uri, contentDescription: String? = null, onTap: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(1f) }
     val offset = remember { Animatable(Offset.Zero, Offset.VectorConverter) }
@@ -336,7 +338,7 @@ private fun ZoomableImage(uri: Uri, onTap: () -> Unit = {}) {
     ) {
         AsyncImage(
             model = uri,
-            contentDescription = null,
+            contentDescription = contentDescription,
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()

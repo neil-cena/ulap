@@ -74,4 +74,10 @@ object DatabaseModule {
     @Provides
     fun provideContentResolver(@ApplicationContext context: Context): ContentResolver =
         context.contentResolver
+
+    @Provides
+    @Singleton
+    @PlainPrefs
+    fun providePlainSharedPreferences(@ApplicationContext context: Context): SharedPreferences =
+        context.getSharedPreferences("ulap_prefs", Context.MODE_PRIVATE)
 }

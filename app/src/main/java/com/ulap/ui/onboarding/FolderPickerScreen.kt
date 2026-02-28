@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.domain.model.BackupFolder
+import com.ulap.ui.rememberRunWithNotificationPermission
 
 private fun mediaPermissions(): Array<String> =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -49,6 +50,7 @@ private fun mediaPermissions(): Array<String> =
 @Composable
 fun FolderPickerScreen(
     onDone: () -> Unit,
+    fromOnboarding: Boolean = false,
     viewModel: FolderPickerViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
@@ -69,6 +71,14 @@ fun FolderPickerScreen(
         if (permissionGranted) {
             viewModel.refreshAfterPermission()
         }
+    }
+
+    // During onboarding, request POST_NOTIFICATIONS before calling onDone so the service
+    // can post progress notifications immediately on Android 13+.
+    val onStartBackupClicked: () -> Unit = if (fromOnboarding) {
+        rememberRunWithNotificationPermission(onDone)
+    } else {
+        onDone
     }
 
     LaunchedEffect(Unit) {
@@ -121,7 +131,7 @@ fun FolderPickerScreen(
 
         Spacer(Modifier.height(16.dp))
         Button(
-            onClick = onDone,
+            onClick = onStartBackupClicked,
             modifier = Modifier.fillMaxWidth(),
             enabled = uiState.hasEnabledAny,
         ) {

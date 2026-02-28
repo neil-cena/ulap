@@ -152,6 +152,16 @@ interface MediaItemDao {
     @Query(
         """
         SELECT * FROM media_items
+        WHERE backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND telegramFileId IS NOT NULL
+        ORDER BY dateTaken DESC
+        """
+    )
+    suspend fun getAllIndexedItems(): List<MediaItemEntity>
+
+    @Query(
+        """
+        SELECT * FROM media_items
         WHERE fileName = :fileName AND size = :size AND dateTaken = :dateTaken
         LIMIT 1
         """

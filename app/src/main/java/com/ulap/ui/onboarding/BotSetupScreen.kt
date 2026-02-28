@@ -198,7 +198,7 @@ fun BotSetupScreen(
                 IconButton(onClick = { tokenVisible = !tokenVisible }) {
                     Icon(
                         if (tokenVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                        contentDescription = null,
+                        contentDescription = if (tokenVisible) "Hide token" else "Show token",
                     )
                 }
             },

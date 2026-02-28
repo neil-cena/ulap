@@ -2,11 +2,13 @@ package com.ulap.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.usecase.ClearCredentialsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
+import com.ulap.ui.theme.ThemePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -31,6 +33,7 @@ class SettingsViewModel @Inject constructor(
     private val clearCredentials: ClearCredentialsUseCase,
     private val verifyBot: VerifyBotCredentialsUseCase,
     val debugLog: DebugLogBuffer,
+    private val userPrefs: UserPreferencesRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -38,6 +41,9 @@ class SettingsViewModel @Inject constructor(
 
     val debugEntries: StateFlow<List<String>> = debugLog.entries
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val themePreference: StateFlow<ThemePreference> = userPrefs.theme
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThemePreference.SYSTEM)
 
     init {
         loadState()
@@ -70,6 +76,8 @@ class SettingsViewModel @Inject constructor(
             }
         }
     }
+
+    fun setTheme(preference: ThemePreference) = userPrefs.setTheme(preference)
 
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }

@@ -21,6 +21,7 @@ import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.SyncOperation
 import com.ulap.domain.model.SyncProgress
+import com.ulap.domain.model.BackupCompletionEvent
 import com.ulap.domain.repository.CredentialRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -63,12 +64,14 @@ class SyncEngine @Inject constructor(
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
+    private var uploadCancelled = false
 
     private val _progress = MutableStateFlow(SyncProgress())
     val progress: StateFlow<SyncProgress> = _progress.asStateFlow()
 
     suspend fun startUpload() {
         activeJob?.cancelAndJoin()
+        uploadCancelled = false
         activeJob = engineScope.launch { runUploadPipeline() }
     }
 
@@ -77,14 +80,23 @@ class SyncEngine @Inject constructor(
         startUpload()
     }
 
+    suspend fun resetFailedToPending() {
+        mediaItemDao.resetFailedToPending()
+    }
+
     suspend fun startDownload() {
         activeJob?.cancelAndJoin()
         activeJob = engineScope.launch { runDownloadPipeline() }
     }
 
     fun cancel() {
+        uploadCancelled = true
         activeJob?.cancel()
         _progress.update { SyncProgress() }
+    }
+
+    fun clearCompletionEvent() {
+        _progress.update { it.copy(completionEvent = null) }
     }
 
     private suspend fun runUploadPipeline() {
@@ -145,6 +157,7 @@ class SyncEngine @Inject constructor(
             }
             debugLog.log("SyncEngine", "upload pipeline: all workers completed normally")
         } catch (e: CancellationException) {
+            uploadCancelled = true
             debugLog.log("SyncEngine", "upload pipeline: cancelled")
             throw e
         } catch (e: Exception) {
@@ -166,7 +179,21 @@ class SyncEngine @Inject constructor(
                     debugLog.log("SyncEngine", "upload pipeline: index export failed — ${result.exceptionOrNull()?.message}")
                 }
             }
-            _progress.update { it.copy(isActive = false, operation = SyncOperation.IDLE) }
+            val snapshot = _progress.value
+            val completionEvent = if (!uploadCancelled) {
+                BackupCompletionEvent(
+                    succeeded = snapshot.itemsDone,
+                    failed = snapshot.itemsTotal - snapshot.itemsDone,
+                )
+            } else null
+            _progress.update {
+                it.copy(
+                    isActive = false,
+                    operation = SyncOperation.IDLE,
+                    isRateLimited = false,
+                    completionEvent = completionEvent,
+                )
+            }
         }
     }
 
@@ -184,7 +211,7 @@ class SyncEngine @Inject constructor(
             // to PENDING with its uploadedChunkCount intact so it can resume.
             // Because SyncEngine uses SupervisorJob, only this worker is cancelled —
             // other workers continue with their current items.
-            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
+            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0, isRateLimited = true) }
             throw e
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
@@ -208,6 +235,8 @@ class SyncEngine @Inject constructor(
         token: String,
         chatId: String,
     ) {
+        // Clear rate-limited flag when we successfully start processing the next item
+        _progress.update { it.copy(isRateLimited = false) }
         val existing = mediaItemDao.findByFileNameSizeDate(entity.fileName, entity.size, entity.dateTaken)
         if (existing != null && existing.id != entity.id && existing.telegramFileId != null &&
             (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.CLOUD_ONLY)

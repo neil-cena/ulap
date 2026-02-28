@@ -16,6 +16,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
@@ -32,7 +33,9 @@ import androidx.navigation.compose.rememberNavController
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.SaveCredentialsUseCase
 import com.ulap.domain.usecase.ScanMediaUseCase
-import com.ulap.domain.usecase.StartBackupUseCase
+import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.sync.BackupForegroundService
+import com.ulap.ui.theme.ThemePreference
 import com.ulap.ui.Screen
 import com.ulap.ui.backup.BackupScreen
 import com.ulap.ui.gallery.FoldersScreen
@@ -60,10 +63,10 @@ class MainActivity : ComponentActivity() {
     lateinit var saveCredentials: SaveCredentialsUseCase
 
     @Inject
-    lateinit var startBackup: StartBackupUseCase
+    lateinit var scanMedia: ScanMediaUseCase
 
     @Inject
-    lateinit var scanMedia: ScanMediaUseCase
+    lateinit var userPrefs: UserPreferencesRepository
 
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
@@ -74,12 +77,12 @@ class MainActivity : ComponentActivity() {
         if (getCredentials.hasCredentials()) SyncWorker.schedule(this)
 
         setContent {
-            UlapTheme {
+            val themePreference by userPrefs.theme.collectAsState()
+            UlapTheme(themePreference = themePreference) {
                 UlapNavHost(
                     startDestination = startDestination,
                     getCredentials = getCredentials,
                     saveCredentials = saveCredentials,
-                    startBackup = startBackup,
                     scanMedia = scanMedia,
                 )
             }
@@ -92,7 +95,6 @@ private fun UlapNavHost(
     startDestination: String,
     getCredentials: GetCredentialsUseCase,
     saveCredentials: SaveCredentialsUseCase,
-    startBackup: StartBackupUseCase,
     scanMedia: ScanMediaUseCase,
 ) {
     val navController = rememberNavController()
@@ -146,19 +148,23 @@ private fun UlapNavHost(
             }
             composable(Screen.FolderPicker.route) { backStack ->
                 val fromOnboarding = backStack.arguments?.getString("fromOnboarding") == "true"
-                FolderPickerScreen(onDone = {
-                    if (fromOnboarding) {
-                        scope.launch {
-                            scanMedia(fullScan = false)
-                            startBackup()
+                val context = LocalContext.current
+                FolderPickerScreen(
+                    onDone = {
+                        if (fromOnboarding) {
+                            scope.launch {
+                                try { scanMedia(fullScan = false) } catch (_: Exception) { }
+                            }
+                            BackupForegroundService.startBackup(context)
+                            navController.navigate(Screen.Timeline.route) {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        } else {
+                            navController.popBackStack()
                         }
-                        navController.navigate(Screen.Timeline.route) {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    } else {
-                        navController.popBackStack()
-                    }
-                })
+                    },
+                    fromOnboarding = fromOnboarding,
+                )
             }
             composable(Screen.Timeline.route) {
                 TimelineScreen(onItemClick = { id ->
@@ -174,6 +180,7 @@ private fun UlapNavHost(
                     onNavigateToFolderPicker = {
                         navController.navigate(Screen.FolderPicker.createRoute(false))
                     },
+                    onNavigateToRestore = { navController.navigate(Screen.Restore.route) },
                     onNavigateToQrShow = {
                         navController.navigate(Screen.QrShow.route)
                     },

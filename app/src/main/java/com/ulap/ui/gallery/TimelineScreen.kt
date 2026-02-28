@@ -312,10 +312,18 @@ fun BackupStatusIcon(status: BackupStatus, modifier: Modifier = Modifier) {
         BackupStatus.FAILED -> MaterialTheme.colorScheme.error
         else -> Color(0xFFFFFFFF)
     }
+    val description = when (status) {
+        BackupStatus.BACKED_UP -> "Backed up"
+        BackupStatus.CLOUD_ONLY -> "Cloud only"
+        BackupStatus.FAILED -> "Backup failed"
+        BackupStatus.UPLOADING -> "Uploading"
+        BackupStatus.PENDING -> "Pending backup"
+        BackupStatus.EXCLUDED -> null
+    }
     icon?.let {
         Icon(
             imageVector = it,
-            contentDescription = status.name,
+            contentDescription = description,
             tint = tint,
             modifier = modifier.size(16.dp),
         )
