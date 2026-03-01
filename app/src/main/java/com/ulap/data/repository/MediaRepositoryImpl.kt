@@ -30,6 +30,10 @@ class MediaRepositoryImpl @Inject constructor(
     override fun observeByFolder(bucketName: String): Flow<List<MediaItem>> =
         mediaItemDao.observeByBuckets(listOf(bucketName)).map { entities -> entities.map { it.toDomain() } }
 
+    override fun observeByMediaType(type: com.ulap.domain.model.MediaType): Flow<List<MediaItem>> =
+        mediaItemDao.observeByMediaType(com.ulap.data.local.entity.MediaType.valueOf(type.name))
+            .map { entities -> entities.map { it.toDomain() } }
+
     override fun observeBackupStats(): Flow<BackupStats> = combine(
         mediaItemDao.countByStatus(BackupStatus.BACKED_UP),
         mediaItemDao.countByStatus(BackupStatus.PENDING),

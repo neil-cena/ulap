@@ -10,6 +10,7 @@ sealed class Screen(val route: String) {
     }
     object Timeline : Screen("timeline")
     object Folders : Screen("folders")
+    object MediaType : Screen("media_type")
     object Backup : Screen("backup")
     object Settings : Screen("settings")
     object MediaViewer : Screen("media_viewer/{mediaId}") {

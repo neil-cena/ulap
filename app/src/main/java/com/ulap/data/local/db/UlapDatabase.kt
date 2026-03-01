@@ -4,6 +4,8 @@ import androidx.room.Database
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverter
 import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.ulap.data.local.dao.BackupFolderDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.dao.SyncStateDao
@@ -23,9 +25,21 @@ class BackupStatusConverter {
     @TypeConverter fun toBackupStatus(value: String): BackupStatus = BackupStatus.valueOf(value)
 }
 
+val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE media_items ADD COLUMN thumbnailMessageId INTEGER")
+    }
+}
+
+val MIGRATION_5_6 = object : Migration(5, 6) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE media_items ADD COLUMN chunkMessageIds TEXT")
+    }
+}
+
 @Database(
     entities = [MediaItemEntity::class, BackupFolderEntity::class, SyncStateEntity::class],
-    version = 4,
+    version = 6,
     exportSchema = true,
 )
 @TypeConverters(MediaTypeConverter::class, BackupStatusConverter::class)

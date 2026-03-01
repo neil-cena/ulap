@@ -5,9 +5,11 @@ import androidx.lifecycle.viewModelScope
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.usecase.ClearCredentialsUseCase
+import com.ulap.domain.usecase.DeleteAllBackupsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
+import com.ulap.sync.DeleteAllBackupsResult
 import com.ulap.ui.theme.ThemePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,7 +27,17 @@ data class SettingsUiState(
     val isVerifying: Boolean = false,
     val verifyResult: String? = null,
     val showClearConfirm: Boolean = false,
+    val showDeleteBackupsConfirm: Boolean = false,
+    val isDeletingBackups: Boolean = false,
+    val deleteBackupsProgress: Pair<Int, Int>? = null,
+    val deleteBackupsResult: DeleteBackupsUiResult? = null,
 )
+
+sealed class DeleteBackupsUiResult {
+    object Success : DeleteBackupsUiResult()
+    data class PartialSuccess(val failedBatches: Int) : DeleteBackupsUiResult()
+    data class Failure(val message: String) : DeleteBackupsUiResult()
+}
 
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
@@ -34,6 +46,7 @@ class SettingsViewModel @Inject constructor(
     private val verifyBot: VerifyBotCredentialsUseCase,
     val debugLog: DebugLogBuffer,
     private val userPrefs: UserPreferencesRepository,
+    private val deleteAllBackupsUseCase: DeleteAllBackupsUseCase,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -85,6 +98,27 @@ class SettingsViewModel @Inject constructor(
     fun clearAccount() {
         clearCredentials()
         _uiState.update { SettingsUiState() }
+    }
+
+    fun requestDeleteBackups() = _uiState.update { it.copy(showDeleteBackupsConfirm = true) }
+    fun dismissDeleteBackups() = _uiState.update { it.copy(showDeleteBackupsConfirm = false) }
+    fun dismissDeleteBackupsResult() = _uiState.update { it.copy(deleteBackupsResult = null) }
+
+    fun deleteAllBackups() {
+        _uiState.update { it.copy(showDeleteBackupsConfirm = false, isDeletingBackups = true, deleteBackupsProgress = null) }
+        viewModelScope.launch {
+            val engineResult = deleteAllBackupsUseCase { deleted, total ->
+                _uiState.update { it.copy(deleteBackupsProgress = Pair(deleted, total)) }
+            }
+            val uiResult = when (engineResult) {
+                is DeleteAllBackupsResult.Success -> DeleteBackupsUiResult.Success
+                is DeleteAllBackupsResult.PartialSuccess ->
+                    DeleteBackupsUiResult.PartialSuccess(engineResult.failedBatches)
+                is DeleteAllBackupsResult.Failure ->
+                    DeleteBackupsUiResult.Failure(engineResult.cause.message ?: "Unknown error")
+            }
+            _uiState.update { it.copy(isDeletingBackups = false, deleteBackupsProgress = null, deleteBackupsResult = uiResult) }
+        }
     }
 
     fun clearDebugLog() = debugLog.clear()

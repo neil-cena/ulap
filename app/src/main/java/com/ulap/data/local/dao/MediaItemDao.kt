@@ -79,7 +79,9 @@ interface MediaItemDao {
         """
         UPDATE media_items
         SET backupStatus = :status, errorMessage = :error, lastSyncedAt = :syncedAt,
-            telegramFileId = :fileId, telegramMessageId = :messageId, thumbnailFileId = :thumbnailFileId
+            telegramFileId = :fileId, telegramMessageId = :messageId,
+            thumbnailFileId = :thumbnailFileId, thumbnailMessageId = :thumbnailMessageId,
+            chunkMessageIds = :chunkMessageIds
         WHERE id = :id
         """
     )
@@ -91,6 +93,8 @@ interface MediaItemDao {
         fileId: String?,
         messageId: Long?,
         thumbnailFileId: String?,
+        thumbnailMessageId: Long? = null,
+        chunkMessageIds: String? = null,
     )
 
     @Query("UPDATE media_items SET backupStatus = 'PENDING', errorMessage = NULL WHERE backupStatus = 'FAILED'")
@@ -194,4 +198,46 @@ interface MediaItemDao {
         WHERE uploadedChunkCount > 0 AND backupStatus IN ('BACKED_UP', 'EXCLUDED', 'CLOUD_ONLY')
     """)
     suspend fun clearOrphanedChunkProgress()
+
+    @Query("""
+        SELECT telegramMessageId FROM media_items
+        WHERE telegramMessageId IS NOT NULL
+        AND telegramMessageId != 0
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+    """)
+    suspend fun getAllBackupMessageIds(): List<Long>
+
+    @Query("""
+        SELECT thumbnailMessageId FROM media_items
+        WHERE thumbnailMessageId IS NOT NULL
+        AND thumbnailMessageId != 0
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+    """)
+    suspend fun getAllThumbnailMessageIds(): List<Long>
+
+    @Query("""
+        SELECT chunkMessageIds FROM media_items
+        WHERE chunkMessageIds IS NOT NULL
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+    """)
+    suspend fun getAllChunkMessageIdsJson(): List<String>
+
+    @Query("""
+        UPDATE media_items
+        SET backupStatus = 'PENDING',
+            errorMessage = NULL,
+            telegramFileId = NULL,
+            telegramMessageId = NULL,
+            thumbnailFileId = NULL,
+            thumbnailMessageId = NULL,
+            chunkMessageIds = NULL,
+            uploadedChunks = NULL,
+            uploadedChunkCount = 0,
+            lastSyncedAt = NULL
+        WHERE backupStatus = 'BACKED_UP'
+    """)
+    suspend fun resetBackedUpToPending()
+
+    @Query("DELETE FROM media_items WHERE backupStatus = 'CLOUD_ONLY'")
+    suspend fun deleteCloudOnlyItems()
 }

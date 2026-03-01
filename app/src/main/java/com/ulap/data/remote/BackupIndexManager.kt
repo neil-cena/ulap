@@ -32,6 +32,7 @@ data class IndexEntry(
     @SerializedName("mediaType") val mediaType: String,
     @SerializedName("durationMs") val durationMs: Long?,
     @SerializedName("thumbnailFileId") val thumbnailFileId: String? = null,
+    @SerializedName("chunkMessageIds") val chunkMessageIds: List<Long>? = null,
 )
 
 data class IndexManifest(
@@ -184,6 +185,21 @@ class BackupIndexManager @Inject constructor(
         return mergeEntriesByFileId(pinnedItems, localItems)
     }
 
+    /** Returns all message IDs from the pinned backup index (non-null, non-zero). Used for "delete all backups". */
+    suspend fun loadMessageIdsFromPinnedIndex(token: String, chatId: String): List<Long> {
+        val result = loadPinnedIndexEntries(token, chatId)
+        if (result.isFailure) {
+            debugLog.log("IndexManager", "loadMessageIdsFromPinnedIndex: failed — ${result.exceptionOrNull()?.message}")
+            return emptyList()
+        }
+        val entries = result.getOrThrow()
+        val directIds = entries.mapNotNull { it.telegramMessageId }.filter { it > 0L }
+        val chunkIds = entries.flatMap { it.chunkMessageIds.orEmpty() }.filter { it > 0L }
+        val all = (directIds + chunkIds).distinct()
+        debugLog.log("IndexManager", "loadMessageIdsFromPinnedIndex: ${entries.size} entries, ${directIds.size} direct, ${chunkIds.size} chunk IDs, total=${all.size}")
+        return all
+    }
+
     private suspend fun loadPinnedIndexEntries(token: String, chatId: String): Result<List<IndexEntry>> = withContext(Dispatchers.IO) {
         val safeToken = sanitizeTokenForPath(token)
         val chatResponse = rateLimiter.withRateLimit {
@@ -302,5 +318,10 @@ class BackupIndexManager @Inject constructor(
         mediaType = mediaType.name,
         durationMs = durationMs,
         thumbnailFileId = thumbnailFileId,
+        chunkMessageIds = chunkMessageIds?.let {
+            runCatching {
+                gson.fromJson(it, Array<Long>::class.java)?.toList()
+            }.getOrNull()
+        },
     )
 }

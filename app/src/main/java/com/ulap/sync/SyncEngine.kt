@@ -3,20 +3,27 @@ package com.ulap.sync
 import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
+import android.graphics.Bitmap
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
+import com.google.gson.Gson
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.data.remote.DownloadResult
 import com.ulap.data.remote.Mp4FastStart
+import com.ulap.data.remote.TelegramBotApi
 import com.ulap.data.remote.TelegramDownloader
+import com.ulap.data.remote.TelegramApiException
 import com.ulap.data.remote.TelegramRateLimitException
+import com.ulap.data.remote.TelegramRateLimiter
 import com.ulap.data.remote.TelegramUploader
 import com.ulap.data.remote.UploadResult
 import com.ulap.data.remote.MAX_FILE_SIZE
+import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.SyncOperation
@@ -60,6 +67,8 @@ class SyncEngine @Inject constructor(
     private val backupIndexManager: BackupIndexManager,
     private val debugLog: DebugLogBuffer,
     @ApplicationContext private val appContext: Context,
+    private val api: TelegramBotApi,
+    private val rateLimiter: TelegramRateLimiter,
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
@@ -96,6 +105,111 @@ class SyncEngine @Inject constructor(
 
     fun clearCompletionEvent() {
         _progress.update { it.copy(completionEvent = null) }
+    }
+
+    suspend fun deleteAllBackups(
+        onProgress: (deleted: Int, total: Int) -> Unit = { _, _ -> },
+    ): DeleteAllBackupsResult = withContext(Dispatchers.IO) {
+        // Stop any ongoing sync first.
+        cancel()
+
+        val token = credentialRepository.getBotToken()
+            ?: return@withContext DeleteAllBackupsResult.Failure(Exception("No credentials"))
+        val chatId = credentialRepository.getChatId()
+            ?: return@withContext DeleteAllBackupsResult.Failure(Exception("No credentials"))
+        val safeToken = sanitizeTokenForPath(token)
+        val gson = Gson()
+
+        // Collect all message IDs to delete.
+        // Primary source: the pinned Telegram index — the ground truth of what's in the chat.
+        // Supplemental: local DB (covers items uploaded in this session before index export).
+        val indexIds = backupIndexManager.loadMessageIdsFromPinnedIndex(token, chatId)
+        val dbBackupIds = mediaItemDao.getAllBackupMessageIds()
+        val thumbIds = mediaItemDao.getAllThumbnailMessageIds()
+        val chunkIds = mediaItemDao.getAllChunkMessageIdsJson()
+            .flatMap { json ->
+                runCatching {
+                    gson.fromJson(json, Array<Long>::class.java)?.toList() ?: emptyList()
+                }.getOrElse { emptyList() }
+            }
+
+        // Also include the pinned index message itself.
+        val indexMessageId: Long? = try {
+            val chatResponse = rateLimiter.withRateLimit { api.getChat(safeToken, chatId) }
+            val pinned = chatResponse.result?.pinnedMessage
+            if (pinned != null && pinned.caption == "[ulap-backup-index]") pinned.messageId else null
+        } catch (e: Exception) {
+            debugLog.log("SyncEngine", "deleteAllBackups: getChat failed — ${e.message}")
+            null
+        }
+
+        // Deduplicate all message IDs.
+        val allIds = (indexIds + dbBackupIds + thumbIds + chunkIds + listOfNotNull(indexMessageId))
+            .distinct()
+            .filter { it > 0L }
+        val total = allIds.size
+        debugLog.log("SyncEngine", "deleteAllBackups: indexIds=${indexIds.size}, dbIds=${dbBackupIds.size}, thumbIds=${thumbIds.size}, chunkIds=${chunkIds.size}, total=$total ids=${allIds.take(5)}")
+        if (allIds.isEmpty()) {
+            debugLog.log("SyncEngine", "deleteAllBackups: no message IDs found — nothing to delete from Telegram")
+            mediaItemDao.resetBackedUpToPending()
+            mediaItemDao.deleteCloudOnlyItems()
+            credentialRepository.setLastIndexFileId(null)
+            return@withContext DeleteAllBackupsResult.Success
+        }
+        var deletedSoFar = 0
+        var failedBatches = 0
+
+        for (batch in allIds.chunked(100)) {
+            try {
+                val idsJson = gson.toJson(batch)
+                debugLog.log("SyncEngine", "deleteAllBackups: sending batch of ${batch.size}, first=${batch.first()}")
+                val response = rateLimiter.withRateLimit {
+                    api.deleteMessages(safeToken, chatId, idsJson)
+                }
+                debugLog.log("SyncEngine", "deleteAllBackups: deleteMessages ok=${response.ok} err=${response.errorCode} desc=${response.description}")
+                if (!response.ok) {
+                    // Bulk delete rejected — fall back to per-message delete.
+                    for (msgId in batch) {
+                        try {
+                            val r = rateLimiter.withRateLimit { api.deleteMessage(safeToken, chatId, msgId) }
+                            if (!r.ok) debugLog.log("SyncEngine", "deleteAllBackups: deleteMessage($msgId) ok=false err=${r.errorCode} ${r.description}")
+                        } catch (e: TelegramApiException) {
+                            if (e.errorCode == 400 && e.description?.contains("not found", ignoreCase = true) == true) {
+                                // already gone — no-op
+                            } else {
+                                debugLog.log("SyncEngine", "deleteAllBackups: deleteMessage($msgId) exception — ${e.message}")
+                                failedBatches++
+                            }
+                        } catch (e: Exception) {
+                            debugLog.log("SyncEngine", "deleteAllBackups: deleteMessage($msgId) exception — ${e.message}")
+                            failedBatches++
+                        }
+                    }
+                }
+            } catch (e: TelegramApiException) {
+                if (e.errorCode == 400 && e.description?.contains("not found", ignoreCase = true) == true) {
+                    // already gone — no-op
+                } else {
+                    debugLog.log("SyncEngine", "deleteAllBackups: batch exception — ${e.message}")
+                    failedBatches++
+                }
+            } catch (e: Exception) {
+                debugLog.log("SyncEngine", "deleteAllBackups: batch exception — ${e.message}")
+                failedBatches++
+            }
+            deletedSoFar += batch.size
+            onProgress(deletedSoFar, total)
+        }
+
+        // Always reset local DB regardless of API failures (best-effort Telegram delete).
+        mediaItemDao.resetBackedUpToPending()
+        mediaItemDao.deleteCloudOnlyItems()
+        credentialRepository.setLastIndexFileId(null)
+
+        debugLog.log("SyncEngine", "deleteAllBackups: done. failedBatches=$failedBatches, total=$total")
+
+        if (failedBatches == 0) DeleteAllBackupsResult.Success
+        else DeleteAllBackupsResult.PartialSuccess(failedBatches)
     }
 
     private suspend fun runUploadPipeline() {
@@ -355,6 +469,37 @@ class SyncEngine @Inject constructor(
         val resumeFromChunk = entity.uploadedChunkCount
         val existingFileIdsJson = entity.uploadedChunks ?: "[]"
 
+        // For chunked video uploads, extract a first-frame thumbnail and upload it separately.
+        // This provides thumbnails for large (>50MB) videos that Telegram never returns a thumbnail for.
+        var videoThumbnailFileId: String? = null
+        var videoThumbnailMessageId: Long? = null
+        if (isVideo && willChunk) {
+            val thumbSourceFile = when {
+                tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted
+                tempRaw != null && tempRaw.exists() -> tempRaw
+                else -> null
+            }
+            if (thumbSourceFile != null) {
+                val retriever = MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(thumbSourceFile.absolutePath)
+                    val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    if (bitmap != null) {
+                        val out = java.io.ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 40, out)
+                        bitmap.recycle()
+                        val thumbResult = uploader.uploadThumbnail(token, chatId, out.toByteArray())
+                        videoThumbnailFileId = thumbResult?.first
+                        videoThumbnailMessageId = thumbResult?.second
+                    }
+                } catch (_: Exception) {
+                    // Thumbnail extraction is non-fatal; proceed without it.
+                } finally {
+                    retriever.release()
+                }
+            }
+        }
+
         var result: UploadResult? = null
         try {
             result = uploadStream.use {
@@ -390,6 +535,8 @@ class SyncEngine @Inject constructor(
                     onChunkRetry = { attempt ->
                         _progress.update { it.copy(chunkRetryAttempt = attempt) }
                     },
+                    thumbnailFileId = videoThumbnailFileId,
+                    thumbnailMessageId = videoThumbnailMessageId,
                 )
             }
         } finally {
@@ -414,6 +561,8 @@ class SyncEngine @Inject constructor(
                     fileId = result.fileId,
                     messageId = result.messageId,
                     thumbnailFileId = result.thumbnailFileId,
+                    thumbnailMessageId = result.thumbnailMessageId,
+                    chunkMessageIds = result.chunkMessageIds,
                 )
             }
             is UploadResult.Error -> {
@@ -584,4 +733,10 @@ class SyncEngine @Inject constructor(
             }
         }
     }
+}
+
+sealed class DeleteAllBackupsResult {
+    object Success : DeleteAllBackupsResult()
+    data class PartialSuccess(val failedBatches: Int) : DeleteAllBackupsResult()
+    data class Failure(val cause: Exception) : DeleteAllBackupsResult()
 }

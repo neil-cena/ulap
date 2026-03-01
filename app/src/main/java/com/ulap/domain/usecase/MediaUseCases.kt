@@ -2,6 +2,7 @@ package com.ulap.domain.usecase
 
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
+import com.ulap.domain.model.MediaType
 import com.ulap.domain.repository.MediaRepository
 import kotlinx.coroutines.flow.Flow
 import javax.inject.Inject
@@ -16,6 +17,12 @@ class GetBackupStatsUseCase @Inject constructor(
     private val mediaRepository: MediaRepository,
 ) {
     operator fun invoke(): Flow<BackupStats> = mediaRepository.observeBackupStats()
+}
+
+class GetMediaByTypeUseCase @Inject constructor(
+    private val mediaRepository: MediaRepository,
+) {
+    operator fun invoke(type: MediaType): Flow<List<MediaItem>> = mediaRepository.observeByMediaType(type)
 }
 
 class ScanMediaUseCase @Inject constructor(

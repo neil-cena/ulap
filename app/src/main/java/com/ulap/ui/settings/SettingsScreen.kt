@@ -45,7 +45,6 @@ import com.ulap.ui.theme.ThemePreference
 @OptIn(ExperimentalMaterial3Api::class)
 fun SettingsScreen(
     onNavigateToFolderPicker: () -> Unit,
-    onNavigateToRestore: () -> Unit,
     onNavigateToQrShow: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
@@ -136,23 +135,6 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-        SectionTitle("Restore")
-        Card(modifier = Modifier.fillMaxWidth()) {
-            Column(modifier = Modifier.padding(16.dp)) {
-                Text(
-                    "Download your backed-up photos and videos from Telegram back to this device.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onNavigateToRestore,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Restore to this device") }
-            }
-        }
-
-        Spacer(Modifier.height(16.dp))
         SectionTitle("Other devices")
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
@@ -202,6 +184,7 @@ fun SettingsScreen(
             },
         )
     }
+
 }
 
 @Composable

@@ -66,6 +66,7 @@
     <string name="nav_folders">Folders</string>
     <string name="nav_backup">Backup</string>
     <string name="nav_settings">Settings</string>
+    <string name="nav_media_type">Browse</string>
     <string name="content_desc_permission_required">Permission required</string>
     <string name="content_desc_no_backups">No backups</string>
     <string name="content_desc_back">Back</string>
@@ -78,6 +79,10 @@
     <string name="content_desc_pending_backup">Pending backup</string>
     <string name="content_desc_view_grid">Grid view</string>
     <string name="content_desc_view_list">List view</string>
+    <string name="media_type_images">Images</string>
+    <string name="media_type_videos">Videos</string>
+    <string name="media_type_empty_images">No images found</string>
+    <string name="media_type_empty_videos">No videos found</string>
 
     <!-- Onboarding & folder picker -->
     <string name="start_backup">Start Backup</string>

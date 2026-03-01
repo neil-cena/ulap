@@ -2,6 +2,8 @@ package com.ulap.data.remote
 
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import retrofit2.http.Field
+import retrofit2.http.FormUrlEncoded
 import retrofit2.http.GET
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -58,6 +60,14 @@ interface TelegramBotApi {
         @Path(value = "token", encoded = true) token: String,
         @Query("chat_id") chatId: String,
         @Query("message_id") messageId: Long,
+    ): TelegramResponse<Boolean>
+
+    @FormUrlEncoded
+    @POST("bot{token}/deleteMessages")
+    suspend fun deleteMessages(
+        @Path(value = "token", encoded = true) token: String,
+        @Field("chat_id") chatId: String,
+        @Field("message_ids") messageIdsJson: String,
     ): TelegramResponse<Boolean>
 
     @GET("bot{token}/getUpdates")

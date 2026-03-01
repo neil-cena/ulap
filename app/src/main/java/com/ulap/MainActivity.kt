@@ -7,8 +7,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Backup
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -42,6 +42,7 @@ import com.ulap.ui.theme.ThemePreference
 import com.ulap.ui.Screen
 import com.ulap.ui.backup.BackupScreen
 import com.ulap.ui.gallery.FoldersScreen
+import com.ulap.ui.gallery.MediaTypeScreen
 import com.ulap.ui.gallery.MediaViewerScreen
 import com.ulap.ui.gallery.TimelineScreen
 import com.ulap.ui.onboarding.BotSetupScreen
@@ -119,7 +120,7 @@ private fun UlapNavHost(
         }
     }
 
-    val bottomNavRoutes = listOf(Screen.Timeline.route, Screen.Folders.route, Screen.Backup.route, Screen.Settings.route)
+    val bottomNavRoutes = listOf(Screen.Timeline.route, Screen.MediaType.route, Screen.Backup.route, Screen.Settings.route)
     val showBottomNav = currentRoute in bottomNavRoutes
 
     Scaffold(
@@ -193,6 +194,13 @@ private fun UlapNavHost(
             composable(Screen.Folders.route) {
                 FoldersScreen(onFolderClick = { _ -> })
             }
+            composable(Screen.MediaType.route) {
+                MediaTypeScreen(
+                    onItemClick = { id ->
+                        navController.navigate(Screen.MediaViewer.createRoute(id))
+                    },
+                )
+            }
             composable(Screen.Backup.route) {
                 BackupScreen(
                     onOpenWithRetry = pendingOpenBackupRetry,
@@ -204,7 +212,6 @@ private fun UlapNavHost(
                     onNavigateToFolderPicker = {
                         navController.navigate(Screen.FolderPicker.createRoute(false))
                     },
-                    onNavigateToRestore = { navController.navigate(Screen.Restore.route) },
                     onNavigateToQrShow = {
                         navController.navigate(Screen.QrShow.route)
                     },
@@ -233,10 +240,10 @@ private fun BottomBar(navController: NavController, currentRoute: String?) {
             label = { Text(stringResource(R.string.nav_timeline)) },
         )
         NavigationBarItem(
-            selected = currentRoute == Screen.Folders.route,
-            onClick = { navController.navigateToTab(Screen.Folders.route) },
-            icon = { Icon(Icons.Default.Folder, contentDescription = null) },
-            label = { Text(stringResource(R.string.nav_folders)) },
+            selected = currentRoute == Screen.MediaType.route,
+            onClick = { navController.navigateToTab(Screen.MediaType.route) },
+            icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+            label = { Text(stringResource(R.string.nav_media_type)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Backup.route,

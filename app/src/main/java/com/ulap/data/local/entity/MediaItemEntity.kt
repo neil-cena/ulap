@@ -35,6 +35,8 @@ data class MediaItemEntity(
     val lastSyncedAt: Long? = null,
     val errorMessage: String? = null,
     val thumbnailFileId: String? = null,
+    val thumbnailMessageId: Long? = null,
     val uploadedChunks: String? = null,    // JSON array of completed chunk file_ids
     val uploadedChunkCount: Int = 0,       // count of entries; 0 = no resume state
+    val chunkMessageIds: String? = null,   // JSON array of Telegram message IDs for each chunk
 )

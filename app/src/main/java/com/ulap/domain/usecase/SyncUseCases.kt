@@ -2,6 +2,7 @@ package com.ulap.domain.usecase
 
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.domain.repository.CredentialRepository
+import com.ulap.sync.DeleteAllBackupsResult
 import com.ulap.sync.SyncEngine
 import javax.inject.Inject
 
@@ -64,4 +65,12 @@ class CancelSyncUseCase @Inject constructor(
     private val syncEngine: SyncEngine,
 ) {
     operator fun invoke() = syncEngine.cancel()
+}
+
+class DeleteAllBackupsUseCase @Inject constructor(
+    private val syncEngine: SyncEngine,
+) {
+    suspend operator fun invoke(
+        onProgress: (deleted: Int, total: Int) -> Unit = { _, _ -> },
+    ) = syncEngine.deleteAllBackups(onProgress)
 }

@@ -59,6 +59,8 @@ class TelegramUploader @Inject constructor(
         // Kept separate from onChunkSaved to set totalChunks before the first chunk completes,
         // preventing "Part 1 of 0" in the UI.
         onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
+        thumbnailFileId: String? = null,
+        thumbnailMessageId: Long? = null,
     ): UploadResult = withContext(Dispatchers.IO) {
         if (fileSize > MAX_FILE_SIZE) {
             return@withContext UploadResult.FileTooLarge(fileSize)
@@ -89,6 +91,8 @@ class TelegramUploader @Inject constructor(
                 onChunkSaved = onChunkSaved,
                 onChunkRetry = onChunkRetry,
                 onTotalChunksKnown = onTotalChunksKnown,
+                thumbnailFileId = thumbnailFileId,
+                thumbnailMessageId = thumbnailMessageId,
             )
         }
     }
@@ -179,7 +183,7 @@ class TelegramUploader @Inject constructor(
             ?: msg.photo?.maxByOrNull { it.fileSize ?: 0 }?.fileId
             ?: return UploadResult.Error(Exception("No file_id in response"))
         val thumbId = when {
-            msg.photo != null -> msg.photo.minByOrNull { it.fileSize ?: Long.MAX_VALUE }?.fileId
+            msg.photo != null -> msg.photo.maxByOrNull { it.fileSize ?: 0 }?.fileId
             msg.video != null -> msg.video.thumbnail?.fileId
             msg.document != null -> msg.document.thumbnail?.fileId
             else -> null
@@ -201,6 +205,8 @@ class TelegramUploader @Inject constructor(
         onChunkSaved: suspend (chunkCount: Int, fileIdsJson: String) -> Unit = { _, _ -> },
         onChunkRetry: (attempt: Int) -> Unit = {},
         onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
+        thumbnailFileId: String? = null,
+        thumbnailMessageId: Long? = null,
     ): UploadResult = withContext(Dispatchers.IO) {
         val safeToken = sanitizeTokenForPath(token)
         val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
@@ -214,6 +220,7 @@ class TelegramUploader @Inject constructor(
         // parseFileIdJson reads the same format via the same Gson instance.
         // If either side is changed, update both together.
         val fileIds = parseFileIdJson(existingFileIdsJson).toMutableList()
+        val chunkMsgIds = mutableListOf<Long>()
         var partIndex = resumeFromChunk
 
         // Safe skip with short-skip guard:
@@ -247,7 +254,7 @@ class TelegramUploader @Inject constructor(
             val chunkCaption = "[ulap-chunk] $fileName part $partIndex/$totalChunks"
             val captionBody = chunkCaption.toRequestBody("text/plain".toMediaType())
 
-            val fileId = uploadChunkWithRetry(
+            val (fileId, chunkMsgId) = uploadChunkWithRetry(
                 safeToken = safeToken,
                 chatIdBody = chatIdBody,
                 captionBody = captionBody,
@@ -261,6 +268,7 @@ class TelegramUploader @Inject constructor(
             )
 
             fileIds.add(fileId)
+            chunkMsgIds.add(chunkMsgId)
             uploadedSoFar += read
             onProgress(uploadedSoFar, fileSize)
 
@@ -270,10 +278,13 @@ class TelegramUploader @Inject constructor(
         }
 
         val fileIdJson = gson.toJson(fileIds.toTypedArray())
+        val chunkMsgIdsJson = gson.toJson(chunkMsgIds.toTypedArray())
         UploadResult.Success(
             messageId = 0L,
             fileId = fileIdJson,
-            thumbnailFileId = null,
+            thumbnailFileId = thumbnailFileId,
+            thumbnailMessageId = thumbnailMessageId,
+            chunkMessageIds = chunkMsgIdsJson,
         )
     }
 
@@ -282,6 +293,7 @@ class TelegramUploader @Inject constructor(
     // onChunkRetry is called BEFORE the backoff delay — intentional: shows "retrying…"
     // during the sleep rather than after, giving the user immediate feedback.
     // chunkRetryAttempt is set to (attempt + 1) — the upcoming attempt number.
+    // Returns Pair(fileId, messageId).
     private suspend fun uploadChunkWithRetry(
         safeToken: String,
         chatIdBody: RequestBody,
@@ -293,7 +305,7 @@ class TelegramUploader @Inject constructor(
         fileSize: Long,
         onProgress: (Long, Long) -> Unit,
         onChunkRetry: (attempt: Int) -> Unit = {},
-    ): String {
+    ): Pair<String, Long> {
         var attempt = 0
         // highWaterMark clamps progress so the UI bar never regresses during a retry.
         // ProgressRequestBody callbacks run sequentially on OkHttp's thread; the lambda
@@ -317,7 +329,7 @@ class TelegramUploader @Inject constructor(
                 }
                 if (response.ok && response.result?.document != null) {
                     rateLimiter.recordSuccess()
-                    return response.result.document.fileId
+                    return Pair(response.result.document.fileId, response.result.messageId)
                 }
                 if (response.errorCode in PERMANENT_ERROR_CODES) {
                     rateLimiter.recordFailure()
@@ -346,6 +358,37 @@ class TelegramUploader @Inject constructor(
         }
     }
 
+    /** Upload a JPEG thumbnail as sendPhoto. Returns (fileId, messageId), or null on error. */
+    suspend fun uploadThumbnail(
+        token: String,
+        chatId: String,
+        jpeg: ByteArray,
+    ): Pair<String, Long>? = withContext(Dispatchers.IO) {
+        try {
+            val safeToken = sanitizeTokenForPath(token)
+            val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
+            val part = MultipartBody.Part.createFormData(
+                "photo",
+                "thumb.jpg",
+                jpeg.toRequestBody("image/jpeg".toMediaType()),
+            )
+            val response = rateLimiter.withRateLimit {
+                api.sendPhoto(safeToken, chatIdBody, part, null)
+            }
+            if (response.ok && response.result?.photo != null) {
+                rateLimiter.recordSuccess()
+                val fileId = response.result.photo.maxByOrNull { it.fileSize ?: 0 }?.fileId
+                    ?: return@withContext null
+                Pair(fileId, response.result.messageId)
+            } else {
+                rateLimiter.recordFailure()
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun parseFileIdJson(json: String): List<String> {
         if (json.isBlank() || json == "[]") return emptyList()
         return gson.fromJson(json, Array<String>::class.java).toList()
@@ -354,7 +397,13 @@ class TelegramUploader @Inject constructor(
 }
 
 sealed class UploadResult {
-    data class Success(val messageId: Long, val fileId: String, val thumbnailFileId: String? = null) : UploadResult()
+    data class Success(
+        val messageId: Long,
+        val fileId: String,
+        val thumbnailFileId: String? = null,
+        val thumbnailMessageId: Long? = null,
+        val chunkMessageIds: String? = null,  // JSON array of Long, set for chunked uploads
+    ) : UploadResult()
     data class Error(val cause: Throwable) : UploadResult()
     data class FileTooLarge(val actualSize: Long) : UploadResult()
 }
