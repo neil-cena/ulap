@@ -1,8 +1,6 @@
 package com.ulap.ui.onboarding
 
-import android.Manifest
 import android.content.pm.PackageManager
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -22,7 +20,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,21 +28,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.ulap.R
+import com.ulap.ui.mediaPermissions
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.domain.model.BackupFolder
 import com.ulap.ui.rememberRunWithNotificationPermission
-
-private fun mediaPermissions(): Array<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        arrayOf(
-            Manifest.permission.READ_MEDIA_IMAGES,
-            Manifest.permission.READ_MEDIA_VIDEO,
-        )
-    } else {
-        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }
 
 @Composable
 fun FolderPickerScreen(
@@ -76,22 +66,19 @@ fun FolderPickerScreen(
     // During onboarding, request POST_NOTIFICATIONS before calling onDone so the service
     // can post progress notifications immediately on Android 13+.
     val onStartBackupClicked: () -> Unit = if (fromOnboarding) {
-        rememberRunWithNotificationPermission(onDone)
+        rememberRunWithNotificationPermission {
+            viewModel.scanAfterOnboarding()
+            onDone()
+        }
     } else {
         onDone
     }
 
-    LaunchedEffect(Unit) {
-        if (!permissionGranted) {
-            permissionLauncher.launch(mediaPermissions())
-        }
-    }
-
     Column(modifier = Modifier.fillMaxSize().padding(24.dp)) {
-        Text("Choose Folders", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.folder_picker_title), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Select which folders to back up. You can change this later in Settings.",
+            stringResource(R.string.folder_picker_subtitle),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -104,20 +91,26 @@ fun FolderPickerScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "Ulap needs access to your photos and videos to back them up.",
+                    stringResource(R.string.permission_storage_reason),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(16.dp))
                 Button(onClick = { permissionLauncher.launch(mediaPermissions()) }) {
-                    Text("Grant Permission")
+                    Text(stringResource(R.string.grant_permission))
                 }
             }
         } else if (uiState.isLoading) {
             CircularProgressIndicator()
         } else if (folders.isEmpty()) {
-            Text("No media folders found on this device.", style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(R.string.folder_picker_no_folders), style = MaterialTheme.typography.bodyMedium)
         } else {
+            Text(
+                stringResource(R.string.onboarding_folder_nudge),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
             LazyColumn(modifier = Modifier.weight(1f)) {
                 items(folders, key = { it.bucketName }) { folder ->
                     FolderRow(
@@ -130,12 +123,14 @@ fun FolderPickerScreen(
         }
 
         Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = onStartBackupClicked,
-            modifier = Modifier.fillMaxWidth(),
-            enabled = uiState.hasEnabledAny,
-        ) {
-            Text("Start Backup")
+        if (permissionGranted) {
+            Button(
+                onClick = onStartBackupClicked,
+                modifier = Modifier.fillMaxWidth(),
+                enabled = uiState.hasEnabledAny,
+            ) {
+                Text(stringResource(R.string.start_backup))
+            }
         }
     }
 }
@@ -151,7 +146,7 @@ private fun FolderRow(folder: BackupFolder, onToggle: (Boolean) -> Unit) {
         Column(modifier = Modifier.weight(1f)) {
             Text(folder.displayName, style = MaterialTheme.typography.titleMedium)
             Text(
-                "${folder.itemCount} items",
+                stringResource(R.string.folder_picker_item_count, folder.itemCount),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

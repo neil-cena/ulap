@@ -1,9 +1,7 @@
 package com.ulap.ui.gallery
 
-import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -15,17 +13,28 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.HourglassBottom
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.Button
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -50,8 +59,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.ulap.R
+import com.ulap.ui.mediaPermissions
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -62,32 +76,29 @@ import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.MediaType
 import java.util.concurrent.TimeUnit
 
-private fun mediaPermissions(): Array<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        arrayOf(
-            Manifest.permission.READ_MEDIA_IMAGES,
-            Manifest.permission.READ_MEDIA_VIDEO,
-        )
-    } else {
-        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }
-
 @Composable
 @OptIn(ExperimentalMaterial3Api::class)
 fun TimelineScreen(
     onItemClick: (String) -> Unit,
+    onSelectFolders: () -> Unit = {},
     viewModel: TimelineViewModel = hiltViewModel(),
 ) {
     val context = LocalContext.current
     val groups by viewModel.groups.collectAsState()
+    val viewMode by viewModel.viewMode.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    val upToDateText = stringResource(R.string.up_to_date)
     LaunchedEffect(Unit) {
-        viewModel.refreshCompleted.collect {
-            snackbarHostState.showSnackbar("Up to date")
+        try {
+            viewModel.refreshCompleted.collect {
+                snackbarHostState.showSnackbar(upToDateText)
+            }
+        } catch (_: Exception) {
+            // SharedFlow collection should not throw in practice; guard defensively.
         }
     }
 
@@ -122,7 +133,34 @@ fun TimelineScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    Scaffold { innerPadding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.nav_timeline)) },
+                actions = {
+                    if (groups.isNotEmpty()) {
+                        IconButton(
+                            onClick = {
+                                viewModel.setViewMode(
+                                    if (viewMode == TimelineViewMode.GRID) TimelineViewMode.LIST else TimelineViewMode.GRID
+                                )
+                            },
+                            modifier = Modifier.minimumInteractiveComponentSize(),
+                        ) {
+                            Icon(
+                                imageVector = if (viewMode == TimelineViewMode.LIST) Icons.Default.ViewModule else Icons.AutoMirrored.Filled.List,
+                                contentDescription = if (viewMode == TimelineViewMode.GRID)
+                                    stringResource(R.string.content_desc_view_list)
+                                else
+                                    stringResource(R.string.content_desc_view_grid),
+                            )
+                        }
+                    }
+                },
+            )
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) },
+    ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -145,17 +183,17 @@ fun TimelineScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Cloud,
-                                contentDescription = "Permission required",
+                                contentDescription = stringResource(R.string.content_desc_permission_required),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(56.dp),
                             )
                             Text(
-                                text = "Allow access to your photos",
+                                text = stringResource(R.string.permission_required_photos),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Button(onClick = { permissionLauncher.launch(mediaPermissions()) }) {
-                                Text("Grant Permission")
+                                Text(stringResource(R.string.grant_permission))
                             }
                         }
                     }
@@ -173,24 +211,31 @@ fun TimelineScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Cloud,
-                                contentDescription = "No backups",
+                                contentDescription = stringResource(R.string.content_desc_no_backups),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(56.dp),
                             )
                             Text(
-                                text = "No backed-up media yet",
+                                text = stringResource(R.string.timeline_empty_title),
                                 style = MaterialTheme.typography.titleMedium,
                             )
                             Text(
-                                text = "Select folders in Settings",
+                                text = stringResource(R.string.timeline_empty_subtitle),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Button(
-                                onClick = viewModel::refresh,
+                                onClick = onSelectFolders,
                                 enabled = !isRefreshing,
                             ) {
-                                Text(if (isRefreshing) "Refreshing..." else "Refresh")
+                                Text(stringResource(R.string.timeline_cta_select_folders))
+                            }
+                            OutlinedButton(
+                                onClick = viewModel::refresh,
+                                enabled = !isRefreshing,
+                                modifier = Modifier.padding(top = 8.dp),
+                            ) {
+                                Text(if (isRefreshing) stringResource(R.string.refreshing) else stringResource(R.string.sync_now))
                             }
                         }
                     }
@@ -201,34 +246,113 @@ fun TimelineScreen(
                         onRefresh = viewModel::refresh,
                         modifier = Modifier.fillMaxSize(),
                     ) {
-                        LazyVerticalGrid(
-                            columns = GridCells.Fixed(3),
-                            horizontalArrangement = Arrangement.spacedBy(2.dp),
-                            verticalArrangement = Arrangement.spacedBy(2.dp),
-                        ) {
-                            groups.forEach { group ->
-                                item(span = { GridItemSpan(3) }) {
-                                    Text(
-                                        text = group.label,
-                                        style = MaterialTheme.typography.titleMedium,
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-                                    )
+                        if (viewMode == TimelineViewMode.LIST) {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(1.dp),
+                            ) {
+                                groups.forEach { group ->
+                                    item(key = "header_${group.label}") {
+                                        Text(
+                                            text = group.label,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                        )
+                                    }
+                                    items(group.items, key = { it.id }) { item ->
+                                        TimelineListRow(item = item, onClick = { onItemClick(item.id) })
+                                    }
                                 }
-                                items(group.items, key = { it.id }) { item ->
-                                    MediaThumbnail(item = item, onClick = { onItemClick(item.id) })
+                            }
+                        } else {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalArrangement = Arrangement.spacedBy(2.dp),
+                            ) {
+                                groups.forEach { group ->
+                                    item(span = { GridItemSpan(3) }) {
+                                        Text(
+                                            text = group.label,
+                                            style = MaterialTheme.typography.titleSmall,
+                                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                                        )
+                                    }
+                                    items(group.items, key = { it.id }) { item ->
+                                        MediaThumbnail(item = item, onClick = { onItemClick(item.id) })
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            SnackbarHost(
-                hostState = snackbarHostState,
+        }
+    }
+}
+
+@Composable
+private fun TimelineListRow(item: MediaItem, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(56.dp),
+        ) {
+            val imageModel = item.streamUrl ?: item.contentUri
+            if (imageModel.isNotBlank()) {
+                val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
+                AsyncImage(
+                    model = if (item.streamUrl != null) imageModel else Uri.parse(imageModel),
+                    contentDescription = item.fileName,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.matchParentSize(),
+                    placeholder = painter,
+                    error = painter,
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .matchParentSize()
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Cloud,
+                        contentDescription = stringResource(R.string.content_desc_cloud_only),
+                        modifier = Modifier.size(24.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            if (item.mediaType == MediaType.VIDEO) {
+                Icon(
+                    imageVector = Icons.Default.PlayCircle,
+                    contentDescription = stringResource(R.string.content_desc_video),
+                    tint = Color.White,
+                    modifier = Modifier
+                        .align(Alignment.Center)
+                        .size(20.dp),
+                )
+            }
+            BackupStatusIcon(
+                status = item.backupStatus,
                 modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(16.dp),
+                    .align(Alignment.TopEnd)
+                    .padding(2.dp),
             )
         }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = item.fileName,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -259,7 +383,7 @@ fun MediaThumbnail(item: MediaItem, onClick: () -> Unit) {
             ) {
                 Icon(
                     imageVector = Icons.Default.Cloud,
-                    contentDescription = "Cloud",
+                    contentDescription = stringResource(R.string.content_desc_cloud_only),
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -269,7 +393,7 @@ fun MediaThumbnail(item: MediaItem, onClick: () -> Unit) {
         if (item.mediaType == MediaType.VIDEO) {
             Icon(
                 imageVector = Icons.Default.PlayCircle,
-                contentDescription = "Video",
+                contentDescription = stringResource(R.string.content_desc_video),
                 tint = Color.White,
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -313,11 +437,11 @@ fun BackupStatusIcon(status: BackupStatus, modifier: Modifier = Modifier) {
         else -> Color(0xFFFFFFFF)
     }
     val description = when (status) {
-        BackupStatus.BACKED_UP -> "Backed up"
-        BackupStatus.CLOUD_ONLY -> "Cloud only"
-        BackupStatus.FAILED -> "Backup failed"
-        BackupStatus.UPLOADING -> "Uploading"
-        BackupStatus.PENDING -> "Pending backup"
+        BackupStatus.BACKED_UP -> stringResource(R.string.content_desc_backed_up)
+        BackupStatus.CLOUD_ONLY -> stringResource(R.string.content_desc_cloud_only)
+        BackupStatus.FAILED -> stringResource(R.string.content_desc_backup_failed)
+        BackupStatus.UPLOADING -> stringResource(R.string.content_desc_uploading)
+        BackupStatus.PENDING -> stringResource(R.string.content_desc_pending_backup)
         BackupStatus.EXCLUDED -> null
     }
     icon?.let {
@@ -331,7 +455,9 @@ fun BackupStatusIcon(status: BackupStatus, modifier: Modifier = Modifier) {
 }
 
 private fun formatDuration(ms: Long): String {
-    val minutes = TimeUnit.MILLISECONDS.toMinutes(ms)
+    val hours = TimeUnit.MILLISECONDS.toHours(ms)
+    val minutes = TimeUnit.MILLISECONDS.toMinutes(ms) % 60
     val seconds = TimeUnit.MILLISECONDS.toSeconds(ms) % 60
-    return "%d:%02d".format(minutes, seconds)
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds)
+    else "%d:%02d".format(minutes, seconds)
 }

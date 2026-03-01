@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.ulap.domain.model.BackupFolder
 import com.ulap.domain.usecase.ObserveFoldersUseCase
 import com.ulap.domain.usecase.RefreshFoldersUseCase
+import com.ulap.domain.usecase.ScanMediaUseCase
 import com.ulap.domain.usecase.ToggleFolderBackupUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,6 +26,7 @@ class FolderPickerViewModel @Inject constructor(
     private val observeFolders: ObserveFoldersUseCase,
     private val refreshFolders: RefreshFoldersUseCase,
     private val toggleFolderBackup: ToggleFolderBackupUseCase,
+    private val scanMedia: ScanMediaUseCase,
 ) : ViewModel() {
 
     val folders: StateFlow<List<BackupFolder>> = observeFolders()
@@ -56,6 +58,12 @@ class FolderPickerViewModel @Inject constructor(
             _uiState.update { it.copy(isLoading = true) }
             refreshFolders()
             _uiState.update { it.copy(isLoading = false) }
+        }
+    }
+
+    fun scanAfterOnboarding() {
+        viewModelScope.launch {
+            try { scanMedia(fullScan = false) } catch (_: Exception) { }
         }
     }
 }

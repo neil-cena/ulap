@@ -48,12 +48,12 @@ class BackupForegroundService : Service() {
         when (intent?.action) {
             ACTION_START_BACKUP -> {
                 val nm = getSystemService(NotificationManager::class.java)
-                nm.notify(NOTIFICATION_ID, buildProgressNotification("Starting backup…"))
+                nm.notify(NOTIFICATION_ID, buildProgressNotification(getString(R.string.backup_starting)))
                 serviceScope.launch { syncEngine.startUpload() }
             }
             ACTION_START_RESTORE -> {
                 val nm = getSystemService(NotificationManager::class.java)
-                nm.notify(NOTIFICATION_ID, buildProgressNotification("Starting restore…", title = getString(R.string.notification_restore_title)))
+                nm.notify(NOTIFICATION_ID, buildProgressNotification(getString(R.string.restore_starting), title = getString(R.string.notification_restore_title)))
                 serviceScope.launch { syncEngine.startDownload() }
             }
             ACTION_CANCEL -> {
@@ -90,14 +90,16 @@ class BackupForegroundService : Service() {
                     progress.isRateLimited ->
                         getString(R.string.notification_backup_rate_limited)
                     progress.chunkRetryAttempt > 0 ->
-                        "Part ${progress.currentChunk}/${progress.totalChunks} — attempt ${progress.chunkRetryAttempt} of $CHUNK_MAX_RETRIES"
+                        getString(R.string.backup_chunk_retry_notification, progress.currentChunk, progress.totalChunks, progress.chunkRetryAttempt, CHUNK_MAX_RETRIES)
                     progress.totalChunks > 0 && !isRestore ->
-                        "${progress.itemsDone + 1}/${progress.itemsTotal} · Part ${progress.currentChunk}/${progress.totalChunks}"
+                        getString(R.string.backup_chunk_progress, progress.currentChunk, progress.totalChunks).let {
+                            "${progress.itemsDone + 1}/${progress.itemsTotal} · $it"
+                        }
                     progress.itemsTotal > 0 && isRestore ->
-                        "${progress.itemsDone} of ${progress.itemsTotal} restored"
+                        getString(R.string.backup_progress_restoring, progress.itemsDone, progress.itemsTotal)
                     progress.itemsTotal > 0 ->
-                        "${progress.itemsDone} of ${progress.itemsTotal} backed up"
-                    else -> "Preparing…"
+                        getString(R.string.backup_progress_backed_up, progress.itemsDone, progress.itemsTotal)
+                    else -> getString(R.string.backup_preparing)
                 }
                 val nm = getSystemService(NotificationManager::class.java)
                 nm.notify(
@@ -116,28 +118,33 @@ class BackupForegroundService : Service() {
         val nm = getSystemService(NotificationManager::class.java)
         val tapIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            if (!isRestore && failed > 0) {
+                putExtra(MainActivity.EXTRA_OPEN_BACKUP_RETRY, true)
+            }
         }
+        // Use distinct request codes so backup and restore PendingIntents don't overwrite each other.
+        val requestCode = if (isRestore) 2 else 1
         val tapPending = PendingIntent.getActivity(
-            this, 0, tapIntent,
+            this, requestCode, tapIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val (title, body) = if (isRestore) {
             val bodyText = if (failed == 0) {
-                getString(R.string.notification_restore_done_body, succeeded)
+                resources.getQuantityString(R.plurals.notification_restore_done_body, succeeded, succeeded)
             } else {
                 getString(R.string.notification_restore_done_with_failures_body, succeeded, failed)
             }
             getString(R.string.notification_restore_done) to bodyText
         } else {
             val bodyText = if (failed == 0) {
-                getString(R.string.notification_backup_done_body, succeeded)
+                resources.getQuantityString(R.plurals.notification_backup_done_body, succeeded, succeeded)
             } else {
                 getString(R.string.notification_backup_done_with_failures_body, succeeded, failed)
             }
             getString(R.string.notification_backup_done) to bodyText
         }
         val notification = NotificationCompat.Builder(this, CHANNEL_COMPLETE_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(body)
             .setAutoCancel(true)
@@ -153,7 +160,7 @@ class BackupForegroundService : Service() {
         title: String = getString(R.string.notification_backup_title),
     ): Notification =
         NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_menu_upload)
+            .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)

@@ -13,6 +13,8 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.Button
+import androidx.compose.ui.res.stringResource
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +35,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import com.ulap.R
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -55,27 +59,18 @@ fun QrScanScreen(onScanned: (ScannedCredentials) -> Unit) {
         ActivityResultContracts.RequestPermission()
     ) { granted -> hasCameraPermission = granted }
 
-    LaunchedEffect(Unit) {
-        if (!hasCameraPermission) {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
-        }
-    }
-
     if (!hasCameraPermission) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
                 Text(
-                    "Camera access is needed to scan the QR code.",
+                    stringResource(R.string.permission_camera_reason),
                     style = MaterialTheme.typography.bodyLarge,
                     textAlign = TextAlign.Center,
                 )
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    "Please allow camera access when prompted.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center,
-                )
+                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                    Text(stringResource(R.string.grant_permission))
+                }
             }
         }
         return
@@ -96,7 +91,7 @@ fun QrScanScreen(onScanned: (ScannedCredentials) -> Unit) {
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "Point the camera at the QR code shown on your other phone",
+                stringResource(R.string.qr_scan_instruction),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimary,
                 textAlign = TextAlign.Center,
@@ -115,6 +110,10 @@ private fun CameraPreview(
     val executor = remember { Executors.newSingleThreadExecutor() }
     var alreadyScanned by remember { mutableStateOf(false) }
 
+    DisposableEffect(Unit) {
+        onDispose { executor.shutdown() }
+    }
+
     AndroidView(
         factory = { ctx ->
             val previewView = PreviewView(ctx)
@@ -127,12 +126,14 @@ private fun CameraPreview(
                 val imageAnalysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .build()
-                imageAnalysis.setAnalyzer(executor, UlapBarcodeAnalyzer { raw ->
+                val analyzer = UlapBarcodeAnalyzer { raw ->
                     if (!alreadyScanned) {
                         alreadyScanned = true
                         onBarcodeDetected(raw)
                     }
-                })
+                }
+                imageAnalysis.setAnalyzer(executor, analyzer)
+                previewView.tag = analyzer
                 cameraProvider.unbindAll()
                 cameraProvider.bindToLifecycle(
                     lifecycleOwner,
@@ -142,6 +143,9 @@ private fun CameraPreview(
                 )
             }, ContextCompat.getMainExecutor(ctx))
             previewView
+        },
+        onRelease = { view ->
+            (view.tag as? UlapBarcodeAnalyzer)?.close()
         },
         modifier = modifier,
     )
@@ -164,6 +168,8 @@ private class UlapBarcodeAnalyzer(
             }
             .addOnCompleteListener { imageProxy.close() }
     }
+
+    fun close() = scanner.close()
 }
 
 private fun parseUlapQr(raw: String): ScannedCredentials? {

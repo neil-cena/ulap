@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <plurals name="notification_backup_done_body">
+        <item quantity="one">%1$d file backed up successfully.</item>
+        <item quantity="other">%1$d files backed up successfully.</item>
+    </plurals>
+    <plurals name="notification_restore_done_body">
+        <item quantity="one">%1$d file restored successfully.</item>
+        <item quantity="other">%1$d files restored successfully.</item>
+    </plurals>
+</resources>

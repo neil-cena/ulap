@@ -16,12 +16,16 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
-import kotlinx.coroutines.launch
+import androidx.compose.ui.res.stringResource
+import com.ulap.R
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavController
@@ -32,7 +36,6 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.SaveCredentialsUseCase
-import com.ulap.domain.usecase.ScanMediaUseCase
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.sync.BackupForegroundService
 import com.ulap.ui.theme.ThemePreference
@@ -56,14 +59,15 @@ import javax.inject.Inject
 @AndroidEntryPoint
 class MainActivity : ComponentActivity() {
 
+    companion object {
+        const val EXTRA_OPEN_BACKUP_RETRY = "com.ulap.OPEN_BACKUP_RETRY"
+    }
+
     @Inject
     lateinit var getCredentials: GetCredentialsUseCase
 
     @Inject
     lateinit var saveCredentials: SaveCredentialsUseCase
-
-    @Inject
-    lateinit var scanMedia: ScanMediaUseCase
 
     @Inject
     lateinit var userPrefs: UserPreferencesRepository
@@ -76,6 +80,10 @@ class MainActivity : ComponentActivity() {
         else Screen.Onboarding.route
         if (getCredentials.hasCredentials()) SyncWorker.schedule(this)
 
+        // Capture once before setContent so the value doesn't change across recompositions.
+        val openBackupRetry = intent.getBooleanExtra(EXTRA_OPEN_BACKUP_RETRY, false)
+        intent.removeExtra(EXTRA_OPEN_BACKUP_RETRY)
+
         setContent {
             val themePreference by userPrefs.theme.collectAsState()
             UlapTheme(themePreference = themePreference) {
@@ -83,7 +91,7 @@ class MainActivity : ComponentActivity() {
                     startDestination = startDestination,
                     getCredentials = getCredentials,
                     saveCredentials = saveCredentials,
-                    scanMedia = scanMedia,
+                    openBackupRetryFromIntent = openBackupRetry,
                 )
             }
         }
@@ -95,12 +103,21 @@ private fun UlapNavHost(
     startDestination: String,
     getCredentials: GetCredentialsUseCase,
     saveCredentials: SaveCredentialsUseCase,
-    scanMedia: ScanMediaUseCase,
+    openBackupRetryFromIntent: Boolean = false,
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
-    val scope = rememberCoroutineScope()
+    // Start as false; only flip to true after navigation to Backup has been issued so
+    // BackupScreen's LaunchedEffect fires after the screen is on the back-stack.
+    var pendingOpenBackupRetry by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        if (openBackupRetryFromIntent) {
+            navController.navigateToTab(Screen.Backup.route)
+            pendingOpenBackupRetry = true
+        }
+    }
 
     val bottomNavRoutes = listOf(Screen.Timeline.route, Screen.Folders.route, Screen.Backup.route, Screen.Settings.route)
     val showBottomNav = currentRoute in bottomNavRoutes
@@ -152,9 +169,6 @@ private fun UlapNavHost(
                 FolderPickerScreen(
                     onDone = {
                         if (fromOnboarding) {
-                            scope.launch {
-                                try { scanMedia(fullScan = false) } catch (_: Exception) { }
-                            }
                             BackupForegroundService.startBackup(context)
                             navController.navigate(Screen.Timeline.route) {
                                 popUpTo(0) { inclusive = true }
@@ -167,14 +181,24 @@ private fun UlapNavHost(
                 )
             }
             composable(Screen.Timeline.route) {
-                TimelineScreen(onItemClick = { id ->
-                    navController.navigate(Screen.MediaViewer.createRoute(id))
-                })
+                TimelineScreen(
+                    onItemClick = { id ->
+                        navController.navigate(Screen.MediaViewer.createRoute(id))
+                    },
+                    onSelectFolders = {
+                        navController.navigate(Screen.FolderPicker.createRoute(false))
+                    },
+                )
             }
             composable(Screen.Folders.route) {
                 FoldersScreen(onFolderClick = { _ -> })
             }
-            composable(Screen.Backup.route) { BackupScreen() }
+            composable(Screen.Backup.route) {
+                BackupScreen(
+                    onOpenWithRetry = pendingOpenBackupRetry,
+                    onConsumeRetry = { pendingOpenBackupRetry = false },
+                )
+            }
             composable(Screen.Settings.route) {
                 SettingsScreen(
                     onNavigateToFolderPicker = {
@@ -205,26 +229,26 @@ private fun BottomBar(navController: NavController, currentRoute: String?) {
         NavigationBarItem(
             selected = currentRoute == Screen.Timeline.route,
             onClick = { navController.navigateToTab(Screen.Timeline.route) },
-            icon = { Icon(Icons.Default.GridView, null) },
-            label = { Text("Timeline") },
+            icon = { Icon(Icons.Default.GridView, contentDescription = null) },
+            label = { Text(stringResource(R.string.nav_timeline)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Folders.route,
             onClick = { navController.navigateToTab(Screen.Folders.route) },
-            icon = { Icon(Icons.Default.Folder, null) },
-            label = { Text("Folders") },
+            icon = { Icon(Icons.Default.Folder, contentDescription = null) },
+            label = { Text(stringResource(R.string.nav_folders)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Backup.route,
             onClick = { navController.navigateToTab(Screen.Backup.route) },
-            icon = { Icon(Icons.Default.Backup, null) },
-            label = { Text("Backup") },
+            icon = { Icon(Icons.Default.Backup, contentDescription = null) },
+            label = { Text(stringResource(R.string.nav_backup)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Settings.route,
             onClick = { navController.navigateToTab(Screen.Settings.route) },
-            icon = { Icon(Icons.Default.Settings, null) },
-            label = { Text("Settings") },
+            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+            label = { Text(stringResource(R.string.nav_settings)) },
         )
     }
 }

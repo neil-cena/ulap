@@ -17,8 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -30,28 +33,44 @@ import com.ulap.domain.model.SyncOperation
 import com.ulap.ui.rememberRunWithNotificationPermission
 
 @Composable
-fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
+fun BackupScreen(
+    onOpenWithRetry: Boolean = false,
+    onConsumeRetry: () -> Unit = {},
+    viewModel: BackupViewModel = hiltViewModel(),
+) {
     val stats by viewModel.stats.collectAsState()
     val progress by viewModel.progress.collectAsState()
 
     val startBackup = rememberRunWithNotificationPermission(viewModel::startBackup)
     val retryFailed = rememberRunWithNotificationPermission(viewModel::retryFailed)
 
+    LaunchedEffect(onOpenWithRetry) {
+        if (onOpenWithRetry) {
+            onConsumeRetry()
+            // Wait for stats to load before retrying so we don't fire a no-op when
+            // failed count is not yet known. A short timeout guards against a stall.
+            withTimeoutOrNull(3_000) {
+                viewModel.stats.first { it != null }
+            }
+            retryFailed()
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             .padding(16.dp),
     ) {
-        Text("Backup", style = MaterialTheme.typography.headlineMedium)
+        Text(stringResource(R.string.nav_backup), style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(16.dp))
 
         stats?.let { s ->
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     val statusText = if (s.cloudOnly > 0) {
-                        "${s.backedUp} local + ${s.cloudOnly} cloud of ${s.total} total"
+                        stringResource(R.string.backup_stats_local_cloud_total, s.backedUp, s.cloudOnly, s.total)
                     } else {
-                        "${s.backedUp} of ${s.total} backed up"
+                        stringResource(R.string.backup_stats_backed_up_total, s.backedUp, s.total)
                     }
                     Text(statusText, style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(8.dp))
@@ -61,12 +80,12 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                     )
                     Spacer(Modifier.height(8.dp))
                     Row {
-                        StatChip("Pending", s.pending)
+                        StatChip(stringResource(R.string.backup_stat_pending, s.pending))
                         Spacer(Modifier.width(8.dp))
-                        StatChip("Failed", s.failed)
+                        StatChip(stringResource(R.string.backup_stat_failed, s.failed))
                         if (s.cloudOnly > 0) {
                             Spacer(Modifier.width(8.dp))
-                            StatChip("Cloud", s.cloudOnly)
+                            StatChip(stringResource(R.string.backup_stat_cloud, s.cloudOnly))
                         }
                     }
                 }
@@ -88,7 +107,7 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                         LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     } else {
                         Text(
-                            "Uploading ${progress.itemsDone + 1} of ${progress.itemsTotal}",
+                            stringResource(R.string.backup_progress_uploading, progress.itemsDone + 1, progress.itemsTotal),
                             style = MaterialTheme.typography.bodyMedium,
                         )
                         if (progress.currentFileName.isNotEmpty()) {
@@ -118,9 +137,9 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                             if (progress.totalChunks > 1) {
                                 Spacer(Modifier.height(4.dp))
                                 val chunkLabel = if (progress.chunkRetryAttempt > 0)
-                                    "Part ${progress.currentChunk} of ${progress.totalChunks} — retrying…"
+                                    stringResource(R.string.backup_chunk_retry, progress.currentChunk, progress.totalChunks)
                                 else
-                                    "Part ${progress.currentChunk} of ${progress.totalChunks}"
+                                    stringResource(R.string.backup_chunk_progress, progress.currentChunk, progress.totalChunks)
                                 Text(
                                     chunkLabel,
                                     style = MaterialTheme.typography.labelSmall,
@@ -142,18 +161,18 @@ fun BackupScreen(viewModel: BackupViewModel = hiltViewModel()) {
                 Button(
                     onClick = startBackup,
                     modifier = Modifier.weight(1f),
-                ) { Text("Back Up Now") }
+                ) { Text(stringResource(R.string.back_up_now)) }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(
                     onClick = viewModel::syncNow,
                     modifier = Modifier.weight(1f),
-                ) { Text("Sync Now") }
+                ) { Text(stringResource(R.string.sync_now)) }
                 if ((stats?.failed ?: 0) > 0) {
                     Spacer(Modifier.width(8.dp))
                     OutlinedButton(
                         onClick = retryFailed,
                         modifier = Modifier.weight(1f),
-                    ) { Text("Retry Failed") }
+                    ) { Text(stringResource(R.string.retry_failed)) }
                 }
             }
         }
@@ -168,9 +187,9 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 @Composable
-private fun StatChip(label: String, count: Int) {
+private fun StatChip(text: String) {
     Text(
-        text = "$count $label",
+        text = text,
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )

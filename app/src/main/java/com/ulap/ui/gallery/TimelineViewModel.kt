@@ -1,9 +1,11 @@
 package com.ulap.ui.gallery
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ulap.data.local.ThumbnailUrlCache
 import com.ulap.data.remote.TelegramDownloader
+import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.BackupStatus
 import com.ulap.domain.model.MediaItem
@@ -14,9 +16,13 @@ import com.ulap.domain.usecase.GetTimelineUseCase
 import com.ulap.domain.usecase.RefreshFoldersUseCase
 import com.ulap.domain.usecase.ScanMediaUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.transformLatest
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -39,6 +45,7 @@ import javax.inject.Inject
 
 @HiltViewModel
 class TimelineViewModel @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val getTimeline: GetTimelineUseCase,
     private val scanMedia: ScanMediaUseCase,
     private val getCredentials: GetCredentialsUseCase,
@@ -47,6 +54,7 @@ class TimelineViewModel @Inject constructor(
     private val refreshFolders: RefreshFoldersUseCase,
     private val thumbnailUrlCache: ThumbnailUrlCache,
     private val debugLog: DebugLogBuffer,
+    private val userPrefs: UserPreferencesRepository,
 ) : ViewModel() {
 
     private val streamUrlCache = MutableStateFlow<Map<String, String>>(thumbnailUrlCache.getAll())
@@ -56,6 +64,8 @@ class TimelineViewModel @Inject constructor(
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     private val _refreshCompleted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val refreshCompleted: SharedFlow<Unit> = _refreshCompleted.asSharedFlow()
+
+    val viewMode: StateFlow<TimelineViewMode> = userPrefs.timelineViewMode
 
     val groups: StateFlow<List<TimelineGroup>> = combine(
         getTimeline().map { groupByTimelineLabel(it) },
@@ -69,31 +79,47 @@ class TimelineViewModel @Inject constructor(
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    fun setViewMode(mode: TimelineViewMode) {
+        userPrefs.setTimelineViewMode(mode)
+    }
+
     init {
+        // Show UI after first DB emission so cold start doesn't flash an empty state.
+        // We collect from the raw getTimeline() flow (not from groups which starts with
+        // emptyList() immediately) so _isLoading stays true until the DB actually responds.
         viewModelScope.launch {
-            // Keep the loading spinner visible until both the init work and the first
-            // groups emission have resolved, preventing a flash of the empty-state UI.
             try {
-                val currentItems = try { getTimeline().first() } catch (_: Exception) { emptyList() }
-                debugLog.log("Timeline", "init: ${currentItems.size} items in DB")
-                if (getCredentials.hasCredentials() && currentItems.isEmpty()) {
-                    debugLog.log("Timeline", "init: DB empty with credentials — fetching index")
-                    try { fetchIndex() } catch (e: Exception) { debugLog.log("Timeline", "init fetchIndex error: ${e.message}") }
-                    try { refreshFolders() } catch (e: Exception) { debugLog.log("Timeline", "init refreshFolders error: ${e.message}") }
-                }
-                debugLog.log("Timeline", "init: starting scanMedia(fullScan=false)")
-                try { scanMedia(fullScan = false) } catch (e: Exception) { debugLog.log("Timeline", "init scanMedia error: ${e.message}") }
-                debugLog.log("Timeline", "init: waiting for first groups emission")
-                groups.first { it.isNotEmpty() || !getCredentials.hasCredentials() }
-                debugLog.log("Timeline", "init: complete — ${groups.value.sumOf { it.items.size }} total items across ${groups.value.size} groups")
+                withTimeout(3_000) { getTimeline().first() }
+                debugLog.log("Timeline", "init: first paint — ${groups.value.sumOf { it.items.size }} items")
+            } catch (_: Exception) {
+                // Timeout or flow error — unblock the UI regardless.
             } finally {
                 _isLoading.value = false
             }
         }
+        // Defer heavy work so first paint is not blocked.
         viewModelScope.launch {
             try {
-                getTimeline().collect { items ->
-                    val token = getCredentials.getToken() ?: return@collect
+                val currentItems = try { getTimeline().first() } catch (_: Exception) { emptyList() }
+                debugLog.log("Timeline", "init: background — ${currentItems.size} items in DB")
+                if (getCredentials.hasCredentials() && currentItems.isEmpty()) {
+                    debugLog.log("Timeline", "init: fetching index")
+                    try { fetchIndex() } catch (e: Exception) { debugLog.log("Timeline", "init fetchIndex error: ${e.message}") }
+                    try { refreshFolders() } catch (e: Exception) { debugLog.log("Timeline", "init refreshFolders error: ${e.message}") }
+                }
+                debugLog.log("Timeline", "init: scanMedia(fullScan=true)")
+                try { scanMedia(fullScan = true) } catch (e: Exception) { debugLog.log("Timeline", "init scanMedia error: ${e.message}") }
+                debugLog.log("Timeline", "init: background complete — ${groups.value.sumOf { it.items.size }} total items")
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) { }
+        }
+        // transformLatest cancels any in-flight batch when a new DB emission arrives,
+        // preventing overlapping fetch loops on rapid updates (e.g. during full scan).
+        viewModelScope.launch {
+            try {
+                getTimeline().transformLatest<List<MediaItem>, Unit> { items ->
+                    val token = getCredentials.getToken() ?: return@transformLatest
                     var cache = streamUrlCache.value
                     val uncached = items
                         .filter { it.backupStatus == BackupStatus.CLOUD_ONLY && (it.thumbnailFileId != null || it.telegramFileId != null) && cache[it.id] == null }
@@ -110,13 +136,15 @@ class TimelineViewModel @Inject constructor(
                             }
                             if (url != null) {
                                 cache = cache + (item.id to url)
-                                viewModelScope.launch { thumbnailUrlCache.put(item.id, url) }
+                                thumbnailUrlCache.put(item.id, url)
                             }
                         }
                         streamUrlCache.value = cache
                         delay(300)
                     }
-                }
+                }.collect {}
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
                 // Swallow flow collection errors to prevent crashing the app
             }
@@ -159,6 +187,8 @@ class TimelineViewModel @Inject constructor(
         val currentWeekYear = now.get(weekFields.weekBasedYear())
         val currentMonth = YearMonth.from(now)
         val monthFormatter = DateTimeFormatter.ofPattern("MMMM yyyy", Locale.getDefault())
+        val labelThisWeek = context.getString(com.ulap.R.string.timeline_group_this_week)
+        val labelThisMonth = context.getString(com.ulap.R.string.timeline_group_this_month)
         // Sort descending so the first item in each group has the latest dateTaken.
         val sortedItems = items.sortedByDescending { it.dateTaken }
 
@@ -167,20 +197,20 @@ class TimelineViewModel @Inject constructor(
             val itemDate = Instant.ofEpochMilli(item.dateTaken).atZone(zone)
             val label = when {
                 itemDate.get(weekFields.weekOfWeekBasedYear()) == currentWeek &&
-                    itemDate.get(weekFields.weekBasedYear()) == currentWeekYear -> "This week"
-                YearMonth.from(itemDate) == currentMonth -> "This month"
+                    itemDate.get(weekFields.weekBasedYear()) == currentWeekYear -> labelThisWeek
+                YearMonth.from(itemDate) == currentMonth -> labelThisMonth
                 else -> itemDate.format(monthFormatter)
             }
             grouped.getOrPut(label) { mutableListOf() }.add(item)
         }
 
         val ordered = mutableListOf<TimelineGroup>()
-        grouped["This week"]?.let { ordered.add(TimelineGroup("This week", it)) }
-        grouped["This month"]?.let { ordered.add(TimelineGroup("This month", it)) }
+        grouped[labelThisWeek]?.let { ordered.add(TimelineGroup(labelThisWeek, it)) }
+        grouped[labelThisMonth]?.let { ordered.add(TimelineGroup(labelThisMonth, it)) }
         // Since sortedItems is already descending, the first element of each group carries
         // the latest dateTaken for that group — no separate tracking map needed.
         grouped.keys
-            .filter { it != "This week" && it != "This month" }
+            .filter { it != labelThisWeek && it != labelThisMonth }
             .sortedByDescending { grouped[it]!!.first().dateTaken }
             .forEach { label ->
                 ordered.add(TimelineGroup(label, grouped[label].orEmpty()))
