@@ -54,6 +54,9 @@
     <string name="retry_failed">Retry failed</string>
 
     <!-- Permission explanations -->
+    <string name="permission_notifications_title">Notifications</string>
+    <string name="permission_notifications_allow">Allow</string>
+    <string name="permission_notifications_not_now">Not now</string>
     <string name="permission_storage_reason">Ulap needs access to your photos and videos so it can back them up to your Telegram. We only read the folders you choose.</string>
     <string name="permission_camera_reason">We need camera access to scan the QR code from your other device so you can transfer your backup settings without typing.</string>
     <string name="permission_notifications_reason">We’ll show a notification when backup finishes or if something fails, so you don’t have to keep the app open.</string>

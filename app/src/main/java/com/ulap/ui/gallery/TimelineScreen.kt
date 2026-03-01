@@ -35,7 +35,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -74,6 +73,7 @@ import coil3.compose.AsyncImage
 import com.ulap.domain.model.BackupStatus
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.MediaType
+import com.ulap.ui.theme.ShimmerBox
 import java.util.concurrent.TimeUnit
 
 @Composable
@@ -168,7 +168,19 @@ fun TimelineScreen(
         ) {
             when {
                 isLoading -> {
-                    CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(3),
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                        userScrollEnabled = false,
+                    ) {
+                        items((1..9).toList(), key = { it }) {
+                            Box(Modifier.aspectRatio(1f)) {
+                                ShimmerBox(Modifier.fillMaxSize())
+                            }
+                        }
+                    }
                 }
                 !permissionGranted -> {
                     Box(
@@ -303,6 +315,9 @@ private fun TimelineListRow(item: MediaItem, onClick: () -> Unit) {
             modifier = Modifier.size(56.dp),
         ) {
             val imageModel = item.streamUrl ?: item.contentUri
+            if (imageModel.isBlank()) {
+                ShimmerBox(Modifier.matchParentSize())
+            }
             if (imageModel.isNotBlank()) {
                 val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
                 AsyncImage(
@@ -364,6 +379,9 @@ fun MediaThumbnail(item: MediaItem, onClick: () -> Unit) {
             .clickable(onClick = onClick),
     ) {
         val imageModel = item.streamUrl ?: item.contentUri
+        if (imageModel.isBlank()) {
+            ShimmerBox(Modifier.matchParentSize())
+        }
         if (imageModel.isNotBlank()) {
             val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
             AsyncImage(

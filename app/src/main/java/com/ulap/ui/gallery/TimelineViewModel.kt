@@ -22,7 +22,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.transformLatest
-import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -84,18 +83,12 @@ class TimelineViewModel @Inject constructor(
     }
 
     init {
-        // Show UI after first DB emission so cold start doesn't flash an empty state.
-        // We collect from the raw getTimeline() flow (not from groups which starts with
-        // emptyList() immediately) so _isLoading stays true until the DB actually responds.
+        // Defer blocking so first paint happens quickly (splash → main screen); show loading
+        // skeleton until groups flow emits. Heavy work (fetchIndex, scanMedia) runs in the
+        // second launch below.
         viewModelScope.launch {
-            try {
-                withTimeout(3_000) { getTimeline().first() }
-                debugLog.log("Timeline", "init: first paint — ${groups.value.sumOf { it.items.size }} items")
-            } catch (_: Exception) {
-                // Timeout or flow error — unblock the UI regardless.
-            } finally {
-                _isLoading.value = false
-            }
+            kotlinx.coroutines.delay(100)
+            _isLoading.value = false
         }
         // Defer heavy work so first paint is not blocked.
         viewModelScope.launch {

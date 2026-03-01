@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -32,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.ulap.R
+import com.ulap.sync.BackupForegroundService
 import com.ulap.ui.mediaPermissions
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.domain.model.BackupFolder
@@ -60,6 +62,18 @@ fun FolderPickerScreen(
         permissionGranted = results.values.all { it }
         if (permissionGranted) {
             viewModel.refreshAfterPermission()
+        }
+    }
+
+    // Request POST_NOTIFICATIONS before starting backup so progress can be shown (Android 13+).
+    val startBackupWithPermission = rememberRunWithNotificationPermission {
+        BackupForegroundService.startBackup(context)
+    }
+
+    // When user enables a folder (toggle), ViewModel emits requestStartBackup; run permission flow then start backup.
+    LaunchedEffect(Unit) {
+        viewModel.requestStartBackup.collect {
+            startBackupWithPermission()
         }
     }
 

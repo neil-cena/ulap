@@ -5,13 +5,18 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.core.content.ContextCompat
+import com.ulap.R
 
 fun mediaPermissions(): Array<String> =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -25,7 +30,8 @@ fun mediaPermissions(): Array<String> =
 
 /**
  * Returns a function that runs [action] immediately if POST_NOTIFICATIONS is already granted
- * (or not required on this API level), otherwise requests the permission first and then runs it.
+ * (or not required on this API level). Otherwise shows an explanation dialog first, then
+ * requests the permission and runs [action] if granted.
  */
 @Composable
 fun rememberRunWithNotificationPermission(action: () -> Unit): () -> Unit {
@@ -40,9 +46,30 @@ fun rememberRunWithNotificationPermission(action: () -> Unit): () -> Unit {
         )
     }
 
+    var showExplanationDialog by remember { mutableStateOf(false) }
+
     val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { result ->
         granted = result
         if (result) action()
+    }
+
+    if (showExplanationDialog) {
+        AlertDialog(
+            onDismissRequest = { showExplanationDialog = false },
+            title = { Text(stringResource(R.string.permission_notifications_title)) },
+            text = { Text(stringResource(R.string.permission_notifications_reason)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showExplanationDialog = false
+                    launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }) { Text(stringResource(R.string.permission_notifications_allow)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showExplanationDialog = false }) {
+                    Text(stringResource(R.string.permission_notifications_not_now))
+                }
+            }
+        )
     }
 
     return remember(granted, action) {
@@ -50,7 +77,7 @@ fun rememberRunWithNotificationPermission(action: () -> Unit): () -> Unit {
             if (granted) {
                 action()
             } else {
-                launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                showExplanationDialog = true
             }
         }
     }

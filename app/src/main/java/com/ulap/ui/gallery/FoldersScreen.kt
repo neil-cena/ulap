@@ -14,20 +14,34 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.domain.model.BackupFolder
+import com.ulap.sync.BackupForegroundService
+import com.ulap.ui.rememberRunWithNotificationPermission
 
 @Composable
 fun FoldersScreen(
     onFolderClick: (String) -> Unit,
     viewModel: FoldersViewModel = hiltViewModel(),
 ) {
+    val context = LocalContext.current
     val folders by viewModel.folders.collectAsState()
+
+    val startBackupWithPermission = rememberRunWithNotificationPermission {
+        BackupForegroundService.startBackup(context)
+    }
+    LaunchedEffect(Unit) {
+        viewModel.requestStartBackup.collect {
+            startBackupWithPermission()
+        }
+    }
 
     if (folders.isEmpty()) {
         Text("No folders found.", modifier = Modifier.padding(24.dp))

@@ -236,25 +236,25 @@ private fun BottomBar(navController: NavController, currentRoute: String?) {
         NavigationBarItem(
             selected = currentRoute == Screen.Timeline.route,
             onClick = { navController.navigateToTab(Screen.Timeline.route) },
-            icon = { Icon(Icons.Default.GridView, contentDescription = null) },
+            icon = { Icon(Icons.Default.GridView, contentDescription = stringResource(R.string.nav_timeline)) },
             label = { Text(stringResource(R.string.nav_timeline)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.MediaType.route,
             onClick = { navController.navigateToTab(Screen.MediaType.route) },
-            icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+            icon = { Icon(Icons.Default.PhotoLibrary, contentDescription = stringResource(R.string.nav_media_type)) },
             label = { Text(stringResource(R.string.nav_media_type)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Backup.route,
             onClick = { navController.navigateToTab(Screen.Backup.route) },
-            icon = { Icon(Icons.Default.Backup, contentDescription = null) },
+            icon = { Icon(Icons.Default.Backup, contentDescription = stringResource(R.string.nav_backup)) },
             label = { Text(stringResource(R.string.nav_backup)) },
         )
         NavigationBarItem(
             selected = currentRoute == Screen.Settings.route,
             onClick = { navController.navigateToTab(Screen.Settings.route) },
-            icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+            icon = { Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.nav_settings)) },
             label = { Text(stringResource(R.string.nav_settings)) },
         )
     }
