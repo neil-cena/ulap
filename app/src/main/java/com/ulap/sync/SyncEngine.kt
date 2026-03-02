@@ -30,6 +30,7 @@ import com.ulap.domain.model.SyncOperation
 import com.ulap.domain.model.SyncProgress
 import com.ulap.domain.model.BackupCompletionEvent
 import com.ulap.domain.repository.CredentialRepository
+import com.ulap.data.repository.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.security.MessageDigest
+import androidx.exifinterface.media.ExifInterface
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -69,6 +72,7 @@ class SyncEngine @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val api: TelegramBotApi,
     private val rateLimiter: TelegramRateLimiter,
+    private val userPrefs: UserPreferencesRepository,
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
@@ -368,6 +372,7 @@ class SyncEngine @Inject constructor(
                 fileId = existing.telegramFileId,
                 messageId = existing.telegramMessageId,
                 thumbnailFileId = existing.thumbnailFileId,
+                contentHash = existing.contentHash,
             )
             _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
             return
@@ -424,10 +429,81 @@ class SyncEngine @Inject constructor(
             return
         }
 
+        // Compute MD5 from a separate stream open so the upload stream is untouched.
+        // Non-fatal: if hashing fails (e.g. stream error) we proceed without it.
+        val contentUri = Uri.parse(entity.contentUri)
+        val contentHash: String? = computeMd5(contentUri)
+
+        // Hash-based dedup: if another item with identical content is already backed up, reuse it.
+        if (contentHash != null) {
+            val hashMatch = mediaItemDao.findByContentHash(contentHash)
+            if (hashMatch != null && hashMatch.id != entity.id && hashMatch.telegramFileId != null) {
+                inputStream.close()
+                mediaItemDao.updateBackupResult(
+                    id = entity.id,
+                    status = BackupStatus.BACKED_UP,
+                    error = null,
+                    syncedAt = System.currentTimeMillis(),
+                    fileId = hashMatch.telegramFileId,
+                    messageId = hashMatch.telegramMessageId,
+                    thumbnailFileId = hashMatch.thumbnailFileId,
+                    contentHash = contentHash,
+                )
+                _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+                return
+            }
+        }
+
         val isVideo = entity.mimeType.startsWith("video/")
         val willChunk = entity.size > CHUNKED_THRESHOLD
         var tempRaw: File? = null
         var tempFastStarted: File? = null
+        var tempExif: File? = null
+
+        // Strip GPS EXIF from JPEG images when the user has opted in.
+        // We copy to a temp file, strip the GPS tags in-place, then stream from there.
+        // Non-fatal: if stripping fails we fall through and re-open the original stream.
+        var strippedInputStream = inputStream
+        if (!isVideo && entity.mimeType == "image/jpeg" && userPrefs.stripExif.value) {
+            val dest = File(appContext.cacheDir, "ulap_exif_${entity.id}.jpg")
+            var strippingSucceeded = false
+            try {
+                inputStream.use { src ->
+                    FileOutputStream(dest).use { dst -> src.copyTo(dst) }
+                }
+                val exif = ExifInterface(dest.absolutePath)
+                exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_LATITUDE_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_LONGITUDE_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_ALTITUDE_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_TIMESTAMP, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_DATESTAMP, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_SPEED, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_SPEED_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_TRACK, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_TRACK_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_IMG_DIRECTION_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_DEST_LATITUDE, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_DEST_LATITUDE_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_DEST_LONGITUDE, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_DEST_LONGITUDE_REF, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_PROCESSING_METHOD, null)
+                exif.setAttribute(ExifInterface.TAG_GPS_AREA_INFORMATION, null)
+                exif.saveAttributes()
+                tempExif = dest
+                strippingSucceeded = true
+            } catch (_: Exception) {
+                dest.delete()
+            }
+            if (!strippingSucceeded) {
+                // inputStream was consumed during the copy attempt; re-open the original.
+                strippedInputStream = contentResolver.openInputStream(Uri.parse(entity.contentUri))
+                    ?: inputStream
+            }
+        }
 
         // entity.id is the DB primary key in "external_1234" / "internal_1234" format —
         // no slashes, unique by definition. Use it directly as a temp filename component.
@@ -435,7 +511,7 @@ class SyncEngine @Inject constructor(
             tempRaw = File(appContext.cacheDir, "ulap_raw_${entity.id}.mp4")
             tempFastStarted = File(appContext.cacheDir, "ulap_fs_${entity.id}.mp4")
             try {
-                inputStream.use { src ->
+                strippedInputStream.use { src ->
                     FileOutputStream(tempRaw).use { dst -> src.copyTo(dst) }
                 }
                 val success = Mp4FastStart.fastStart(tempRaw, tempFastStarted)
@@ -457,46 +533,53 @@ class SyncEngine @Inject constructor(
                 }
             }
         } else {
-            inputStream
+            // If EXIF stripping produced a temp file, stream from it; otherwise use the original.
+            if (tempExif != null) FileInputStream(tempExif) else strippedInputStream
         }
 
         val actualFileSize = when {
             tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted.length()
             tempRaw != null && tempRaw.exists() -> tempRaw.length()
+            tempExif != null && tempExif.exists() -> tempExif.length()
             else -> entity.size
         }
 
         val resumeFromChunk = entity.uploadedChunkCount
         val existingFileIdsJson = entity.uploadedChunks ?: "[]"
 
-        // For chunked video uploads, extract a first-frame thumbnail and upload it separately.
-        // This provides thumbnails for large (>50MB) videos that Telegram never returns a thumbnail for.
+        // Extract a first-frame thumbnail for all video uploads and upload it separately.
+        // For chunked videos (>50MB) use the temp file already on disk.
+        // For small videos (≤50MB) use the content URI directly — no extra copy needed.
         var videoThumbnailFileId: String? = null
         var videoThumbnailMessageId: Long? = null
-        if (isVideo && willChunk) {
-            val thumbSourceFile = when {
-                tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted
-                tempRaw != null && tempRaw.exists() -> tempRaw
-                else -> null
-            }
-            if (thumbSourceFile != null) {
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(thumbSourceFile.absolutePath)
-                    val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                    if (bitmap != null) {
-                        val out = java.io.ByteArrayOutputStream()
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 40, out)
-                        bitmap.recycle()
-                        val thumbResult = uploader.uploadThumbnail(token, chatId, out.toByteArray())
-                        videoThumbnailFileId = thumbResult?.first
-                        videoThumbnailMessageId = thumbResult?.second
+        if (isVideo) {
+            val retriever = MediaMetadataRetriever()
+            try {
+                if (willChunk) {
+                    val thumbSourceFile = when {
+                        tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted
+                        tempRaw != null && tempRaw.exists() -> tempRaw
+                        else -> null
                     }
-                } catch (_: Exception) {
-                    // Thumbnail extraction is non-fatal; proceed without it.
-                } finally {
-                    retriever.release()
+                    if (thumbSourceFile != null) {
+                        retriever.setDataSource(thumbSourceFile.absolutePath)
+                    }
+                } else {
+                    retriever.setDataSource(appContext, Uri.parse(entity.contentUri))
                 }
+                val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                if (bitmap != null) {
+                    val out = java.io.ByteArrayOutputStream()
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                    bitmap.recycle()
+                    val thumbResult = uploader.uploadThumbnail(token, chatId, out.toByteArray())
+                    videoThumbnailFileId = thumbResult?.first
+                    videoThumbnailMessageId = thumbResult?.second
+                }
+            } catch (_: Exception) {
+                // Thumbnail extraction is non-fatal; proceed without it.
+            } finally {
+                retriever.release()
             }
         }
 
@@ -544,6 +627,7 @@ class SyncEngine @Inject constructor(
             // Do NOT add itemsDone+1 here — rate-limited items are not completed.
             tempRaw?.delete()
             tempFastStarted?.delete()
+            tempExif?.delete()
         }
         // result is null only when an exception escaped the try block (e.g. TelegramRateLimitException
         // or coroutine cancellation), in which case the exception propagates past this point anyway.
@@ -553,6 +637,9 @@ class SyncEngine @Inject constructor(
             is UploadResult.Success -> {
                 mediaItemDao.clearChunkProgress(entity.id)
                 _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
+                // Prefer Telegram's returned thumbnail; fall back to our pre-extracted one for videos.
+                val effectiveThumbnailFileId = result.thumbnailFileId ?: videoThumbnailFileId
+                val effectiveThumbnailMessageId = if (result.thumbnailFileId != null) result.thumbnailMessageId else videoThumbnailMessageId
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
                     status = BackupStatus.BACKED_UP,
@@ -560,9 +647,10 @@ class SyncEngine @Inject constructor(
                     syncedAt = System.currentTimeMillis(),
                     fileId = result.fileId,
                     messageId = result.messageId,
-                    thumbnailFileId = result.thumbnailFileId,
-                    thumbnailMessageId = result.thumbnailMessageId,
+                    thumbnailFileId = effectiveThumbnailFileId,
+                    thumbnailMessageId = effectiveThumbnailMessageId,
                     chunkMessageIds = result.chunkMessageIds,
+                    contentHash = contentHash,
                 )
             }
             is UploadResult.Error -> {
@@ -731,6 +819,27 @@ class SyncEngine @Inject constructor(
                 contentResolver.delete(insertedUri, null, null)
                 Result.failure(result.cause)
             }
+        }
+    }
+
+    /**
+     * Streams the file at [uri] through MD5 and returns the hex digest, or null if the file
+     * cannot be opened. Uses a fixed 64KB buffer to keep memory usage constant for large files.
+     */
+    private fun computeMd5(uri: Uri): String? {
+        return try {
+            val digest = MessageDigest.getInstance("MD5")
+            val buf = ByteArray(65_536)
+            val opened = contentResolver.openInputStream(uri) ?: return null
+            opened.use { stream ->
+                var read: Int
+                while (stream.read(buf).also { read = it } != -1) {
+                    digest.update(buf, 0, read)
+                }
+            }
+            digest.digest().joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            null
         }
     }
 }

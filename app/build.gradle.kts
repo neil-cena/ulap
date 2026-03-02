@@ -125,6 +125,7 @@ dependencies {
 
     // Security
     implementation(libs.security.crypto)
+    implementation(libs.exifinterface)
 
     // QR Code
     implementation(libs.zxing.core)

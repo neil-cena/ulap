@@ -12,6 +12,7 @@ import javax.inject.Singleton
 
 private const val KEY_THEME = "theme_preference"
 private const val KEY_TIMELINE_VIEW_MODE = "timeline_view_mode"
+private const val KEY_STRIP_EXIF = "strip_exif"
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
@@ -23,6 +24,9 @@ class UserPreferencesRepository @Inject constructor(
     private val _timelineViewMode = MutableStateFlow(loadTimelineViewMode())
     val timelineViewMode: StateFlow<TimelineViewMode> = _timelineViewMode.asStateFlow()
 
+    private val _stripExif = MutableStateFlow(loadStripExif())
+    val stripExif: StateFlow<Boolean> = _stripExif.asStateFlow()
+
     fun setTheme(preference: ThemePreference) {
         prefs.edit().putString(KEY_THEME, preference.name).apply()
         _theme.value = preference
@@ -31,6 +35,11 @@ class UserPreferencesRepository @Inject constructor(
     fun setTimelineViewMode(mode: TimelineViewMode) {
         prefs.edit().putString(KEY_TIMELINE_VIEW_MODE, mode.name).apply()
         _timelineViewMode.value = mode
+    }
+
+    fun setStripExif(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_STRIP_EXIF, enabled).apply()
+        _stripExif.value = enabled
     }
 
     private fun loadTheme(): ThemePreference {
@@ -42,4 +51,6 @@ class UserPreferencesRepository @Inject constructor(
         val name = prefs.getString(KEY_TIMELINE_VIEW_MODE, null) ?: return TimelineViewMode.GRID
         return runCatching { TimelineViewMode.valueOf(name) }.getOrDefault(TimelineViewMode.GRID)
     }
+
+    private fun loadStripExif(): Boolean = prefs.getBoolean(KEY_STRIP_EXIF, false)
 }

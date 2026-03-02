@@ -58,6 +58,9 @@ class SettingsViewModel @Inject constructor(
     val themePreference: StateFlow<ThemePreference> = userPrefs.theme
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ThemePreference.SYSTEM)
 
+    val stripExif: StateFlow<Boolean> = userPrefs.stripExif
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
     init {
         loadState()
     }
@@ -91,6 +94,7 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setTheme(preference: ThemePreference) = userPrefs.setTheme(preference)
+    fun setStripExif(enabled: Boolean) = userPrefs.setStripExif(enabled)
 
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }

@@ -81,7 +81,7 @@ interface MediaItemDao {
         SET backupStatus = :status, errorMessage = :error, lastSyncedAt = :syncedAt,
             telegramFileId = :fileId, telegramMessageId = :messageId,
             thumbnailFileId = :thumbnailFileId, thumbnailMessageId = :thumbnailMessageId,
-            chunkMessageIds = :chunkMessageIds
+            chunkMessageIds = :chunkMessageIds, contentHash = :contentHash
         WHERE id = :id
         """
     )
@@ -95,6 +95,7 @@ interface MediaItemDao {
         thumbnailFileId: String?,
         thumbnailMessageId: Long? = null,
         chunkMessageIds: String? = null,
+        contentHash: String? = null,
     )
 
     @Query("UPDATE media_items SET backupStatus = 'PENDING', errorMessage = NULL WHERE backupStatus = 'FAILED'")
@@ -181,6 +182,17 @@ interface MediaItemDao {
         """
     )
     suspend fun findByFileNameSizeDate(fileName: String, size: Long, dateTaken: Long): MediaItemEntity?
+
+    @Query(
+        """
+        SELECT * FROM media_items
+        WHERE contentHash = :hash
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND telegramFileId IS NOT NULL
+        LIMIT 1
+        """
+    )
+    suspend fun findByContentHash(hash: String): MediaItemEntity?
 
     @Query("SELECT * FROM media_items WHERE telegramFileId = :fileId LIMIT 1")
     suspend fun findByTelegramFileId(fileId: String): MediaItemEntity?

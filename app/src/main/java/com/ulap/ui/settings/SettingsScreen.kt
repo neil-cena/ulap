@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -50,6 +51,7 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val themePreference by viewModel.themePreference.collectAsState()
+    val stripExif by viewModel.stripExif.collectAsState()
 
     Column(
         modifier = Modifier
@@ -131,6 +133,26 @@ fun SettingsScreen(
                     onClick = onNavigateToFolderPicker,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Manage Backup Folders") }
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Strip location from photos", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Removes GPS coordinates from JPEG images before uploading",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = stripExif,
+                        onCheckedChange = { viewModel.setStripExif(it) },
+                    )
+                }
             }
         }
 
