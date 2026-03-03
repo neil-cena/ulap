@@ -13,6 +13,8 @@ import javax.inject.Singleton
 private const val KEY_THEME = "theme_preference"
 private const val KEY_TIMELINE_VIEW_MODE = "timeline_view_mode"
 private const val KEY_STRIP_EXIF = "strip_exif"
+private const val KEY_WIFI_ONLY = "wifi_only_backup"
+private const val KEY_PAUSE_ON_LOW_BATTERY = "pause_on_low_battery"
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
@@ -27,6 +29,12 @@ class UserPreferencesRepository @Inject constructor(
     private val _stripExif = MutableStateFlow(loadStripExif())
     val stripExif: StateFlow<Boolean> = _stripExif.asStateFlow()
 
+    private val _wifiOnly = MutableStateFlow(prefs.getBoolean(KEY_WIFI_ONLY, false))
+    val wifiOnly: StateFlow<Boolean> = _wifiOnly.asStateFlow()
+
+    private val _pauseOnLowBattery = MutableStateFlow(prefs.getBoolean(KEY_PAUSE_ON_LOW_BATTERY, false))
+    val pauseOnLowBattery: StateFlow<Boolean> = _pauseOnLowBattery.asStateFlow()
+
     fun setTheme(preference: ThemePreference) {
         prefs.edit().putString(KEY_THEME, preference.name).apply()
         _theme.value = preference
@@ -40,6 +48,16 @@ class UserPreferencesRepository @Inject constructor(
     fun setStripExif(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_STRIP_EXIF, enabled).apply()
         _stripExif.value = enabled
+    }
+
+    fun setWifiOnly(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_WIFI_ONLY, enabled).apply()
+        _wifiOnly.value = enabled
+    }
+
+    fun setPauseOnLowBattery(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_PAUSE_ON_LOW_BATTERY, enabled).apply()
+        _pauseOnLowBattery.value = enabled
     }
 
     private fun loadTheme(): ThemePreference {

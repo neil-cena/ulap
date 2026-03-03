@@ -70,10 +70,17 @@ fun FolderPickerScreen(
         BackupForegroundService.startBackup(context)
     }
 
-    // When user enables a folder (toggle), ViewModel emits requestStartBackup; run permission flow then start backup.
+    // When user enables a folder (toggle), ViewModel emits requestStartBackup.
+    // During onboarding: skip the notification permission flow — the "Start Backup" button
+    // owns it. Just start the service directly (permission will be requested on button tap).
+    // Outside onboarding: run the full permission flow before starting.
     LaunchedEffect(Unit) {
         viewModel.requestStartBackup.collect {
-            startBackupWithPermission()
+            if (fromOnboarding) {
+                BackupForegroundService.startBackup(context)
+            } else {
+                startBackupWithPermission()
+            }
         }
     }
 

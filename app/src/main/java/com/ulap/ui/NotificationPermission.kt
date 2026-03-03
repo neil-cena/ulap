@@ -74,7 +74,13 @@ fun rememberRunWithNotificationPermission(action: () -> Unit): () -> Unit {
 
     return remember(granted, action) {
         {
-            if (granted) {
+            // Re-check the system permission at call time: if it was granted by a previous
+            // request in this session, the remembered `granted` flag may not have updated.
+            val actuallyGranted = !needsPermission ||
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                PackageManager.PERMISSION_GRANTED
+            if (actuallyGranted) {
+                if (!granted) granted = true  // sync flag with reality
                 action()
             } else {
                 showExplanationDialog = true

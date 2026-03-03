@@ -34,17 +34,17 @@ class SyncWorker @AssistedInject constructor(
     companion object {
         private const val WORK_NAME = "ulap_periodic_sync"
 
-        fun schedule(context: Context) {
+        fun schedule(context: Context, wifiOnly: Boolean = false, pauseOnLowBattery: Boolean = false) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
+                .setRequiresBatteryNotLow(pauseOnLowBattery)
+                .build()
             val request = PeriodicWorkRequestBuilder<SyncWorker>(30, TimeUnit.MINUTES)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
+                .setConstraints(constraints)
                 .build()
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 WORK_NAME,
-                ExistingPeriodicWorkPolicy.KEEP,
+                ExistingPeriodicWorkPolicy.REPLACE,
                 request
             )
         }

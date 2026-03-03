@@ -31,3 +31,15 @@ class ScanMediaUseCase @Inject constructor(
     suspend operator fun invoke(fullScan: Boolean = false) =
         mediaRepository.scanAndSync(fullScan)
 }
+
+class GetBackedUpWithLocalUseCase @Inject constructor(
+    private val mediaRepository: MediaRepository,
+) {
+    suspend operator fun invoke(): List<MediaItem> = mediaRepository.getBackedUpWithLocal()
+}
+
+class MarkAsCloudOnlyUseCase @Inject constructor(
+    private val mediaRepository: MediaRepository,
+) {
+    suspend operator fun invoke(ids: List<String>) = mediaRepository.markAsCloudOnly(ids)
+}

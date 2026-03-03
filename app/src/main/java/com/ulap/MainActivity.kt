@@ -79,7 +79,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val startDestination = if (getCredentials.hasCredentials()) Screen.Timeline.route
         else Screen.Onboarding.route
-        if (getCredentials.hasCredentials()) SyncWorker.schedule(this)
+        if (getCredentials.hasCredentials()) SyncWorker.schedule(
+            this,
+            wifiOnly = userPrefs.wifiOnly.value,
+            pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
+        )
 
         // Capture once before setContent so the value doesn't change across recompositions.
         val openBackupRetry = intent.getBooleanExtra(EXTRA_OPEN_BACKUP_RETRY, false)
@@ -92,6 +96,7 @@ class MainActivity : ComponentActivity() {
                     startDestination = startDestination,
                     getCredentials = getCredentials,
                     saveCredentials = saveCredentials,
+                    userPrefs = userPrefs,
                     openBackupRetryFromIntent = openBackupRetry,
                 )
             }
@@ -104,6 +109,7 @@ private fun UlapNavHost(
     startDestination: String,
     getCredentials: GetCredentialsUseCase,
     saveCredentials: SaveCredentialsUseCase,
+    userPrefs: UserPreferencesRepository,
     openBackupRetryFromIntent: Boolean = false,
 ) {
     val navController = rememberNavController()
@@ -152,7 +158,11 @@ private fun UlapNavHost(
                 val context = LocalContext.current
                 QrScanScreen(onScanned = { creds ->
                     saveCredentials(creds.token, creds.chatId)
-                    SyncWorker.schedule(context.applicationContext)
+                    SyncWorker.schedule(
+                        context.applicationContext,
+                        wifiOnly = userPrefs.wifiOnly.value,
+                        pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
+                    )
                     navController.navigate(Screen.Timeline.route) {
                         popUpTo(0) { inclusive = true }
                     }

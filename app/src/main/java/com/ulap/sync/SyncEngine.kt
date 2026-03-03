@@ -84,6 +84,7 @@ class SyncEngine @Inject constructor(
     suspend fun startUpload() {
         activeJob?.cancelAndJoin()
         uploadCancelled = false
+        _progress.update { it.copy(isPaused = false) }
         activeJob = engineScope.launch { runUploadPipeline() }
     }
 
@@ -105,6 +106,19 @@ class SyncEngine @Inject constructor(
         uploadCancelled = true
         activeJob?.cancel()
         _progress.update { SyncProgress() }
+    }
+
+    fun pause() {
+        uploadCancelled = true
+        activeJob?.cancel()
+        // Keep progress visible but mark as paused so the service doesn't auto-stop.
+        _progress.update { it.copy(isActive = false, isPaused = true) }
+        // Reset any item that got stuck in UPLOADING status back to PENDING.
+        engineScope.launch { mediaItemDao.resetStaleUploadingToPending() }
+    }
+
+    suspend fun resume() {
+        startUpload()
     }
 
     fun clearCompletionEvent() {

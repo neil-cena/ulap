@@ -135,6 +135,9 @@ interface MediaItemDao {
     @Query("SELECT COUNT(*) FROM media_items WHERE backupStatus = :status")
     fun countByStatus(status: BackupStatus): Flow<Int>
 
+    @Query("SELECT COALESCE(SUM(size), 0) FROM media_items WHERE backupStatus = :status")
+    fun sumSizeByStatus(status: BackupStatus): Flow<Long>
+
     @Query(
         """
         SELECT * FROM media_items
@@ -153,6 +156,15 @@ interface MediaItemDao {
         """
     )
     suspend fun getAllBackedUp(): List<MediaItemEntity>
+
+    @Query(
+        """
+        UPDATE media_items
+        SET backupStatus = 'CLOUD_ONLY', path = '', contentUri = ''
+        WHERE id IN (:ids)
+        """
+    )
+    suspend fun markAsCloudOnly(ids: List<String>)
 
     @Query(
         """

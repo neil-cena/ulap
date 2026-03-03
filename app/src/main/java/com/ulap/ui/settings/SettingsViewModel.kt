@@ -2,16 +2,21 @@ package com.ulap.ui.settings
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.content.Context
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
+import com.ulap.domain.model.BackupStats
 import com.ulap.domain.usecase.ClearCredentialsUseCase
 import com.ulap.domain.usecase.DeleteAllBackupsUseCase
+import com.ulap.domain.usecase.GetBackupStatsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
 import com.ulap.sync.DeleteAllBackupsResult
+import com.ulap.sync.SyncWorker
 import com.ulap.ui.theme.ThemePreference
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -47,6 +52,8 @@ class SettingsViewModel @Inject constructor(
     val debugLog: DebugLogBuffer,
     private val userPrefs: UserPreferencesRepository,
     private val deleteAllBackupsUseCase: DeleteAllBackupsUseCase,
+    private val getBackupStats: GetBackupStatsUseCase,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(SettingsUiState())
@@ -60,6 +67,15 @@ class SettingsViewModel @Inject constructor(
 
     val stripExif: StateFlow<Boolean> = userPrefs.stripExif
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val wifiOnly: StateFlow<Boolean> = userPrefs.wifiOnly
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val pauseOnLowBattery: StateFlow<Boolean> = userPrefs.pauseOnLowBattery
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val backupStats: StateFlow<BackupStats?> = getBackupStats()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     init {
         loadState()
@@ -95,6 +111,16 @@ class SettingsViewModel @Inject constructor(
 
     fun setTheme(preference: ThemePreference) = userPrefs.setTheme(preference)
     fun setStripExif(enabled: Boolean) = userPrefs.setStripExif(enabled)
+
+    fun setWifiOnly(enabled: Boolean) {
+        userPrefs.setWifiOnly(enabled)
+        SyncWorker.schedule(context, wifiOnly = enabled, pauseOnLowBattery = userPrefs.pauseOnLowBattery.value)
+    }
+
+    fun setPauseOnLowBattery(enabled: Boolean) {
+        userPrefs.setPauseOnLowBattery(enabled)
+        SyncWorker.schedule(context, wifiOnly = userPrefs.wifiOnly.value, pauseOnLowBattery = enabled)
+    }
 
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }

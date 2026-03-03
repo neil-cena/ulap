@@ -56,6 +56,14 @@ class BackupForegroundService : Service() {
                 nm.notify(NOTIFICATION_ID, buildProgressNotification(getString(R.string.restore_starting), title = getString(R.string.notification_restore_title)))
                 serviceScope.launch { syncEngine.startDownload() }
             }
+            ACTION_PAUSE -> {
+                syncEngine.pause()
+                val nm = getSystemService(NotificationManager::class.java)
+                nm.notify(NOTIFICATION_ID, buildPausedNotification())
+            }
+            ACTION_RESUME -> {
+                serviceScope.launch { syncEngine.resume() }
+            }
             ACTION_CANCEL -> {
                 syncEngine.cancel()
                 stopSelf()
@@ -76,6 +84,12 @@ class BackupForegroundService : Service() {
                     lastOperation = progress.operation
                 }
                 if (!progress.isActive) {
+                    // While paused, keep the service alive with a paused notification.
+                    if (progress.isPaused) {
+                        val nm = getSystemService(NotificationManager::class.java)
+                        nm.notify(NOTIFICATION_ID, buildPausedNotification())
+                        return@collectLatest
+                    }
                     // Ignore the initial idle emission before startUpload/startDownload updates progress.
                     if (!observedActiveRun) return@collectLatest
                     progress.completionEvent?.let { event ->
@@ -108,6 +122,7 @@ class BackupForegroundService : Service() {
                         text = text,
                         progressFraction = progress.currentFileFraction,
                         indeterminate = progress.itemsTotal == 0 || progress.isRateLimited,
+                        showPause = !isRestore,
                     )
                 )
             }
@@ -158,15 +173,41 @@ class BackupForegroundService : Service() {
         progressFraction: Float = 0f,
         indeterminate: Boolean = true,
         title: String = getString(R.string.notification_backup_title),
-    ): Notification =
-        NotificationCompat.Builder(this, CHANNEL_ID)
+        showPause: Boolean = false,
+    ): Notification {
+        val pauseIntent = PendingIntent.getService(
+            this, 10,
+            Intent(this, BackupForegroundService::class.java).apply { action = ACTION_PAUSE },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
             .setSilent(true)
             .setProgress(100, (progressFraction * 100).toInt(), indeterminate)
+            .apply {
+                if (showPause) addAction(0, getString(R.string.pause), pauseIntent)
+            }
             .build()
+    }
+
+    private fun buildPausedNotification(): Notification {
+        val resumeIntent = PendingIntent.getService(
+            this, 11,
+            Intent(this, BackupForegroundService::class.java).apply { action = ACTION_RESUME },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle(getString(R.string.notification_backup_title))
+            .setContentText(getString(R.string.backup_paused))
+            .setOngoing(true)
+            .setSilent(true)
+            .addAction(0, getString(R.string.resume), resumeIntent)
+            .build()
+    }
 
     private fun createNotificationChannels() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -186,6 +227,8 @@ class BackupForegroundService : Service() {
     companion object {
         const val ACTION_START_BACKUP = "com.ulap.action.START_BACKUP"
         const val ACTION_START_RESTORE = "com.ulap.action.START_RESTORE"
+        const val ACTION_PAUSE = "com.ulap.action.PAUSE"
+        const val ACTION_RESUME = "com.ulap.action.RESUME"
         const val ACTION_CANCEL = "com.ulap.action.CANCEL"
 
         fun startBackup(context: Context) {
@@ -198,6 +241,20 @@ class BackupForegroundService : Service() {
         fun startRestore(context: Context) {
             val intent = Intent(context, BackupForegroundService::class.java).apply {
                 action = ACTION_START_RESTORE
+            }
+            context.startForegroundService(intent)
+        }
+
+        fun pause(context: Context) {
+            val intent = Intent(context, BackupForegroundService::class.java).apply {
+                action = ACTION_PAUSE
+            }
+            context.startService(intent)
+        }
+
+        fun resume(context: Context) {
+            val intent = Intent(context, BackupForegroundService::class.java).apply {
+                action = ACTION_RESUME
             }
             context.startForegroundService(intent)
         }

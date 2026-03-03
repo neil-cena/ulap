@@ -53,6 +53,12 @@ class MediaRepositoryImpl @Inject constructor(
             excluded = excluded,
             cloudOnly = cloudOnly,
         )
+    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.BACKED_UP)) { stats, backedUpBytes ->
+        stats.copy(backedUpBytes = backedUpBytes)
+    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.PENDING)) { stats, pendingBytes ->
+        stats.copy(pendingBytes = pendingBytes)
+    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.CLOUD_ONLY)) { stats, cloudOnlyBytes ->
+        stats.copy(cloudOnlyBytes = cloudOnlyBytes)
     }
 
     override suspend fun scanAndSync(fullScan: Boolean) {
@@ -112,6 +118,14 @@ class MediaRepositoryImpl @Inject constructor(
 
     override suspend fun getItemById(id: String): MediaItem? =
         mediaItemDao.findById(id)?.toDomain()
+
+    override suspend fun getBackedUpWithLocal(): List<MediaItem> =
+        mediaItemDao.getAllBackedUp()
+            .filter { it.contentUri.isNotEmpty() }
+            .map { it.toDomain() }
+
+    override suspend fun markAsCloudOnly(ids: List<String>) =
+        mediaItemDao.markAsCloudOnly(ids)
 
     private fun MediaItemEntity.toDomain() = MediaItem(
         id = id,

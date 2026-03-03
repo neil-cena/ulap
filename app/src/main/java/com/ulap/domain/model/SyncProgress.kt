@@ -2,6 +2,7 @@ package com.ulap.domain.model
 
 data class SyncProgress(
     val isActive: Boolean = false,
+    val isPaused: Boolean = false,
     val operation: SyncOperation = SyncOperation.IDLE,
     val currentItem: MediaItem? = null,
     val currentFileName: String = "",

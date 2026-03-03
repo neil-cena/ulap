@@ -13,4 +13,8 @@ interface MediaRepository {
     fun observeBackupStats(): Flow<BackupStats>
     suspend fun scanAndSync(fullScan: Boolean = false)
     suspend fun getItemById(id: String): MediaItem?
+    /** Returns all BACKED_UP items that have a local copy (non-empty contentUri). */
+    suspend fun getBackedUpWithLocal(): List<MediaItem>
+    /** Mark the given items as CLOUD_ONLY in the DB (caller has already deleted from MediaStore). */
+    suspend fun markAsCloudOnly(ids: List<String>)
 }

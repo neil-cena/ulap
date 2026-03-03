@@ -7,6 +7,9 @@ data class BackupStats(
     val failed: Int,
     val excluded: Int,
     val cloudOnly: Int = 0,
+    val backedUpBytes: Long = 0L,
+    val pendingBytes: Long = 0L,
+    val cloudOnlyBytes: Long = 0L,
 ) {
     val progress: Float get() = if (total == 0) 0f else backedUp.toFloat() / total
 }

@@ -47,11 +47,30 @@
     <string name="backup_stat_pending">%1$d Pending</string>
     <string name="backup_stat_failed">%1$d Failed</string>
     <string name="backup_stat_cloud">%1$d Cloud</string>
+    <string name="backup_stat_excluded_hint">%1$d file(s) can\'t be backed up — they exceed the 2 GB limit</string>
+
+    <!-- Free up space -->
+    <string name="free_space_title">All backed up</string>
+    <string name="free_space_body">Free up local storage by removing copies of files that are already backed up. You can re-download them anytime.</string>
+    <string name="free_space_action">Free up space</string>
+    <string name="free_space_loading">Preparing…</string>
+    <string name="free_space_confirm_title">Remove local copies?</string>
+    <string name="free_space_confirm_body">This will remove %1$s of local files that are already backed up. You can re-download them anytime.</string>
+    <string name="free_space_confirm_action">Remove</string>
+    <string name="cancel">Cancel</string>
 
     <!-- Backup actions -->
     <string name="back_up_now">Back up now</string>
     <string name="sync_now">Sync now</string>
     <string name="retry_failed">Retry failed</string>
+    <string name="pause">Pause</string>
+    <string name="resume">Resume</string>
+    <string name="backup_paused">Backup paused</string>
+
+    <!-- Mobile data warning -->
+    <string name="mobile_data_warning_title">You\'re on mobile data</string>
+    <string name="mobile_data_warning_body">Wi-Fi only backup is turned on. Back up using mobile data anyway?</string>
+    <string name="mobile_data_warning_confirm">Back up</string>
 
     <!-- Permission explanations -->
     <string name="permission_notifications_title">Notifications</string>

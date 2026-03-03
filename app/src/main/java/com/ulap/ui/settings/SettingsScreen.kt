@@ -51,7 +51,10 @@ fun SettingsScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val themePreference by viewModel.themePreference.collectAsState()
-    val stripExif by viewModel.stripExif.collectAsState()
+    val stripExif by viewModel.stripExif.collectAsState(initial = false)
+    val wifiOnly by viewModel.wifiOnly.collectAsState()
+    val pauseOnLowBattery by viewModel.pauseOnLowBattery.collectAsState()
+    val backupStats by viewModel.backupStats.collectAsState()
 
     Column(
         modifier = Modifier
@@ -153,9 +156,72 @@ fun SettingsScreen(
                         onCheckedChange = { viewModel.setStripExif(it) },
                     )
                 }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Wi-Fi only", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Only sync in the background when connected to Wi-Fi",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = wifiOnly,
+                        onCheckedChange = { viewModel.setWifiOnly(it) },
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Pause on low battery", style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            "Skip background sync when battery is low",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = pauseOnLowBattery,
+                        onCheckedChange = { viewModel.setPauseOnLowBattery(it) },
+                    )
+                }
             }
         }
-
+        Spacer(Modifier.height(16.dp))
+        SectionTitle("Storage")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                if (backupStats != null) {
+                    val stats = backupStats!!
+                    SettingRow("Backed up", formatBytes(stats.backedUpBytes + stats.cloudOnlyBytes))
+                    if (stats.pendingBytes > 0) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        SettingRow("Pending upload", formatBytes(stats.pendingBytes))
+                    }
+                    if (stats.excluded > 0) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        Text(
+                            "${stats.excluded} file${if (stats.excluded == 1) "" else "s"} can't be backed up (exceeds 2 GB limit)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    Text("Loading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         Spacer(Modifier.height(16.dp))
         SectionTitle("Other devices")
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -207,6 +273,13 @@ fun SettingsScreen(
         )
     }
 
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1_000_000_000L -> "%.1f GB".format(bytes / 1_000_000_000.0)
+    bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
+    bytes >= 1_000L -> "%.0f KB".format(bytes / 1_000.0)
+    else -> "$bytes B"
 }
 
 @Composable
