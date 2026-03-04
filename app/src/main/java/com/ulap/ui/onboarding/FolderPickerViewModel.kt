@@ -1,5 +1,6 @@
 package com.ulap.ui.onboarding
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ulap.domain.model.BackupFolder
@@ -7,8 +8,10 @@ import com.ulap.domain.usecase.ObserveFoldersUseCase
 import com.ulap.domain.usecase.RefreshFoldersUseCase
 import com.ulap.domain.usecase.ScanMediaUseCase
 import com.ulap.domain.usecase.ToggleFolderBackupUseCase
+import com.ulap.sync.MediaObserverService
 import com.ulap.sync.SyncEngine
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -32,6 +35,7 @@ class FolderPickerViewModel @Inject constructor(
     private val toggleFolderBackup: ToggleFolderBackupUseCase,
     private val scanMedia: ScanMediaUseCase,
     private val syncEngine: SyncEngine,
+    @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
     val folders: StateFlow<List<BackupFolder>> = observeFolders()
@@ -59,9 +63,12 @@ class FolderPickerViewModel @Inject constructor(
     fun toggle(bucketName: String, enabled: Boolean) {
         viewModelScope.launch {
             toggleFolderBackup(bucketName, enabled)
-            if (enabled && !syncEngine.progress.value.isActive) {
-                try { scanMedia(fullScan = true) } catch (_: Exception) { }
-                _requestStartBackup.emit(Unit)
+            if (enabled) {
+                MediaObserverService.start(context)
+                if (!syncEngine.progress.value.isActive) {
+                    try { scanMedia(fullScan = true) } catch (_: Exception) { }
+                    _requestStartBackup.emit(Unit)
+                }
             }
         }
     }

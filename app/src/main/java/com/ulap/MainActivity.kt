@@ -37,6 +37,7 @@ import androidx.navigation.compose.rememberNavController
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.SaveCredentialsUseCase
 import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.sync.MediaObserverService
 import com.ulap.sync.BackupForegroundService
 import com.ulap.ui.theme.ThemePreference
 import com.ulap.ui.Screen
@@ -79,11 +80,14 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val startDestination = if (getCredentials.hasCredentials()) Screen.Timeline.route
         else Screen.Onboarding.route
-        if (getCredentials.hasCredentials()) SyncWorker.schedule(
-            this,
-            wifiOnly = userPrefs.wifiOnly.value,
-            pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
-        )
+        if (getCredentials.hasCredentials()) {
+            SyncWorker.schedule(
+                this,
+                wifiOnly = userPrefs.wifiOnly.value,
+                pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
+            )
+            MediaObserverService.start(this)
+        }
 
         // Capture once before setContent so the value doesn't change across recompositions.
         val openBackupRetry = intent.getBooleanExtra(EXTRA_OPEN_BACKUP_RETRY, false)

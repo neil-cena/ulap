@@ -4,23 +4,31 @@ import android.content.Context
 import androidx.hilt.work.HiltWorker
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.domain.usecase.GetCredentialsUseCase
+import com.ulap.domain.usecase.ScanMediaUseCase
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import javax.inject.Inject
 
 @HiltWorker
 class BackupWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted workerParams: WorkerParameters,
     private val syncEngine: SyncEngine,
+    private val getCredentials: GetCredentialsUseCase,
+    private val scanMedia: ScanMediaUseCase,
+    private val userPrefs: UserPreferencesRepository,
 ) : CoroutineWorker(context, workerParams) {
 
     override suspend fun doWork(): Result {
+        if (!getCredentials.hasCredentials()) return Result.success()
         return try {
+            scanMedia(fullScan = false)
             syncEngine.startUpload()
             Result.success()
         } catch (e: Exception) {
@@ -29,15 +37,31 @@ class BackupWorker @AssistedInject constructor(
     }
 
     companion object {
-        fun enqueue(context: Context) {
-            val request = OneTimeWorkRequestBuilder<BackupWorker>()
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                )
+        private const val WORK_NAME = "ulap_auto_backup"
+
+        fun enqueue(context: Context, userPrefs: UserPreferencesRepository? = null) {
+            val networkType = if (userPrefs?.wifiOnly?.value == true) {
+                NetworkType.UNMETERED
+            } else {
+                NetworkType.CONNECTED
+            }
+            val requiresBatteryNotLow = userPrefs?.pauseOnLowBattery?.value == true
+
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(networkType)
+                .setRequiresBatteryNotLow(requiresBatteryNotLow)
                 .build()
-            WorkManager.getInstance(context).enqueue(request)
+
+            val request = OneTimeWorkRequestBuilder<BackupWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            // KEEP: if a backup is already queued/running, don't pile up another request.
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                WORK_NAME,
+                ExistingWorkPolicy.KEEP,
+                request,
+            )
         }
     }
 }

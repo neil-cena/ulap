@@ -52,6 +52,20 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!-- Media observer background service — watches MediaStore for new files -->
+        <service
+            android:name=".sync.MediaObserverService"
+            android:exported="false" />
+
+        <!-- Boot receiver — restarts MediaObserverService after reboot -->
+        <receiver
+            android:name=".sync.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
         <!-- WorkManager initializer -->
         <provider
             android:name="androidx.startup.InitializationProvider"
