@@ -56,10 +56,13 @@ class BackupWorker @AssistedInject constructor(
                 .setConstraints(constraints)
                 .build()
 
-            // KEEP: if a backup is already queued/running, don't pile up another request.
+            // REPLACE: always enqueue a fresh job. KEEP would silently skip if a previous
+            // job already completed (SUCCEEDED state), causing subsequent photos to be missed.
+            // REPLACE on a running job cancels and re-enqueues, which is safe because
+            // scanMedia + startUpload will pick up all pending items on the next run.
             WorkManager.getInstance(context).enqueueUniqueWork(
                 WORK_NAME,
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.REPLACE,
                 request,
             )
         }
