@@ -30,6 +30,16 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 
+/** Max total size for completed `ulap_stream_*.mp4` files in cacheDir. */
+internal const val STREAM_CACHE_MAX_BYTES = 200L * 1024 * 1024 // 200 MB
+
+/** Completed stream files older than this are evicted regardless of total size. */
+internal const val STREAM_CACHE_TTL_MS = 24L * 60 * 60 * 1000 // 24 hours
+
+/** Sanitizes [itemId] to a filesystem-safe suffix (strips any path separators). */
+private fun streamFileName(itemId: String) = "ulap_stream_${itemId.replace('/', '_').replace('\\', '_')}.mp4"
+private fun streamMarkerName(itemId: String) = "ulap_stream_${itemId.replace('/', '_').replace('\\', '_')}.done"
+
 sealed class DownloadState {
     data object Idle : DownloadState()
     data object Downloading : DownloadState()
@@ -145,8 +155,8 @@ class MediaViewerViewModel @Inject constructor(
      * [StreamUrlsState.Ready] with a direct file URI instead — no network needed.
      */
     private fun startProgressiveChunkedDownload(token: String, fileId: String, itemId: String) {
-        val tempFile = File(appContext.cacheDir, "ulap_stream_${itemId.hashCode()}.mp4")
-        val markerFile = File(appContext.cacheDir, "ulap_stream_${itemId.hashCode()}.done")
+        val tempFile = File(appContext.cacheDir, streamFileName(itemId))
+        val markerFile = File(appContext.cacheDir, streamMarkerName(itemId))
 
         if (tempFile.exists() && markerFile.exists() && tempFile.length() > 0) {
             _streamUrlsCache.value = _streamUrlsCache.value + (
@@ -165,6 +175,9 @@ class MediaViewerViewModel @Inject constructor(
         val fileUri = tempFile.toURI().toString()
 
         viewModelScope.launch(Dispatchers.IO) {
+            // Evict old stream cache files on IO thread before writing a new one.
+            evictStreamCache(activeItemId = itemId)
+
             try {
                 // Resolve all chunk URLs in parallel (1 round-trip total instead of N serial).
                 val chunkUrls = downloader.resolveStreamUrls(token, fileId)
@@ -221,6 +234,82 @@ class MediaViewerViewModel @Inject constructor(
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.Error(e.message ?: "Download failed")
                 )
+            }
+        }
+    }
+
+    /**
+     * Evicts completed stream cache files to keep total size within [STREAM_CACHE_MAX_BYTES].
+     * Also evicts completed files older than [STREAM_CACHE_TTL_MS].
+     *
+     * Only files with a `.done` marker are considered evictable. Files belonging to
+     * [activeItemId] or any item currently Loading/ReadyProgressive/Ready in [_streamUrlsCache]
+     * are protected from deletion while in use.
+     *
+     * Must be called from a background thread (performs blocking file I/O).
+     */
+    private fun evictStreamCache(activeItemId: String? = null) {
+        val cacheDir = appContext.cacheDir
+        val streamFiles = cacheDir.listFiles { f ->
+            f.name.startsWith("ulap_stream_") && f.name.endsWith(".mp4")
+        } ?: return
+
+        val now = System.currentTimeMillis()
+        val activeCache = _streamUrlsCache.value
+
+        // Build set of protected item IDs (Loading, ReadyProgressive, or Ready = actively playing).
+        val activeIds = buildSet<String> {
+            if (activeItemId != null) add(activeItemId)
+            activeCache.entries.forEach { (id, state) ->
+                if (state is StreamUrlsState.Loading ||
+                    state is StreamUrlsState.ReadyProgressive ||
+                    state is StreamUrlsState.Ready) {
+                    add(id)
+                }
+            }
+        }
+        // Convert to filenames for fast lookup (handles both old hash-based and new id-based names).
+        val activeFileNames = activeIds.flatMap { id ->
+            listOf(streamFileName(id), "ulap_stream_${id.hashCode()}.mp4")
+        }.toSet()
+
+        // TTL eviction: delete completed files older than the TTL, skipping active ones.
+        for (f in streamFiles) {
+            if (f.name in activeFileNames) continue
+            val markerName = f.name.removeSuffix(".mp4") + ".done"
+            val marker = File(cacheDir, markerName)
+            if (marker.exists() && (now - f.lastModified()) > STREAM_CACHE_TTL_MS) {
+                f.delete()
+                marker.delete()
+            }
+        }
+
+        // Size-cap eviction: enumerate remaining completed files and evict oldest first.
+        val remaining = cacheDir.listFiles { f ->
+            f.name.startsWith("ulap_stream_") && f.name.endsWith(".mp4")
+        } ?: return
+
+        // Only count completed (has .done marker) files toward the cap.
+        val completed = remaining.filter { f ->
+            val markerName = f.name.removeSuffix(".mp4") + ".done"
+            File(cacheDir, markerName).exists()
+        }
+
+        var totalBytes = completed.sumOf { it.length() }
+        if (totalBytes <= STREAM_CACHE_MAX_BYTES) return
+
+        val evictable = completed
+            .filter { f -> f.name !in activeFileNames }
+            .sortedBy { it.lastModified() }
+
+        for (f in evictable) {
+            if (totalBytes <= STREAM_CACHE_MAX_BYTES) break
+            val markerName = f.name.removeSuffix(".mp4") + ".done"
+            val marker = File(cacheDir, markerName)
+            val fileSize = f.length()
+            if (f.delete()) {
+                totalBytes -= fileSize
+                marker.delete()
             }
         }
     }

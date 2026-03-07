@@ -240,8 +240,22 @@ class SyncEngine @Inject constructor(
 
             // Sweep orphaned temp files before fetchAndMerge to avoid racing with new temp files.
             appContext.cacheDir.listFiles { f ->
-                f.name.startsWith("ulap_raw_") || f.name.startsWith("ulap_fs_")
+                f.name.startsWith("ulap_raw_") ||
+                    f.name.startsWith("ulap_fs_") ||
+                    f.name.startsWith("ulap_exif_")
             }?.forEach { it.delete() }
+
+            // Sweep incomplete stream files (no .done marker) left by crashed download sessions.
+            // Apply a 5-minute grace period to avoid deleting files being actively written by
+            // MediaViewerViewModel (which may start a background download concurrently).
+            val sweepCutoff = System.currentTimeMillis() - 5L * 60 * 1000
+            appContext.cacheDir.listFiles { f ->
+                f.name.startsWith("ulap_stream_") && f.name.endsWith(".mp4")
+            }?.forEach { mp4 ->
+                val markerName = mp4.name.removeSuffix(".mp4") + ".done"
+                val marker = File(appContext.cacheDir, markerName)
+                if (!marker.exists() && mp4.lastModified() < sweepCutoff) mp4.delete()
+            }
 
             // Any item left in UPLOADING state means the previous run crashed mid-upload.
             // Reset them to PENDING so they are re-attempted in this run.

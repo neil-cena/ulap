@@ -54,6 +54,7 @@ import com.ulap.ui.onboarding.WelcomeScreen
 import com.ulap.ui.restore.RestoreScreen
 import com.ulap.ui.settings.SettingsScreen
 import com.ulap.ui.theme.UlapTheme
+import com.ulap.sync.StorageCleanupWorker
 import com.ulap.sync.SyncWorker
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -86,6 +87,7 @@ class MainActivity : ComponentActivity() {
                 wifiOnly = userPrefs.wifiOnly.value,
                 pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
             )
+            StorageCleanupWorker.schedule(this)
             MediaObserverService.start(this)
         }
 
