@@ -17,4 +17,6 @@ interface MediaRepository {
     suspend fun getBackedUpWithLocal(): List<MediaItem>
     /** Mark the given items as CLOUD_ONLY in the DB (caller has already deleted from MediaStore). */
     suspend fun markAsCloudOnly(ids: List<String>)
+    /** Live stream of items in FAILED status. */
+    fun observeFailedItems(): Flow<List<MediaItem>>
 }

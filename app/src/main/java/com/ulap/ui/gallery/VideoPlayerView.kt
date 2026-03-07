@@ -20,6 +20,10 @@ import androidx.media3.ui.PlayerView
 fun VideoPlayerView(
     uris: List<Uri>,
     dataSourceFactory: DataSource.Factory? = null,
+    /** Called whenever the player's built-in controls become visible (true) or hidden (false). */
+    onControllerVisibilityChanged: (visible: Boolean) -> Unit = {},
+    /** Called when the user taps the fullscreen button inside the player controls. */
+    onFullscreenClick: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val exoPlayer = remember(uris, dataSourceFactory) {
@@ -51,7 +55,13 @@ fun VideoPlayerView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
+                setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
+                    onControllerVisibilityChanged(visibility == android.view.View.VISIBLE)
+                })
+                if (onFullscreenClick != null) {
+                    setFullscreenButtonClickListener { onFullscreenClick() }
+                }
             }
-        }
+        },
     )
 }

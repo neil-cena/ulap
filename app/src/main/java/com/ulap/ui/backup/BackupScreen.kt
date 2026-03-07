@@ -1,9 +1,5 @@
 package com.ulap.ui.backup
 
-import android.app.Activity
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.IntentSenderRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +16,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -29,9 +26,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
@@ -41,6 +35,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.R
+import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.SyncOperation
 import com.ulap.ui.rememberRunWithNotificationPermission
 
@@ -52,31 +47,11 @@ fun BackupScreen(
 ) {
     val stats by viewModel.stats.collectAsState()
     val progress by viewModel.progress.collectAsState()
-    val freeSpace by viewModel.freeSpace.collectAsState()
     val mobileDataWarning by viewModel.mobileDataWarning.collectAsState()
+    val failedItems by viewModel.failedItems.collectAsState()
 
     val startBackup = rememberRunWithNotificationPermission(viewModel::startBackup)
     val retryFailed = rememberRunWithNotificationPermission(viewModel::retryFailed)
-
-    var showFreeSpaceConfirm by remember { mutableStateOf(false) }
-
-    // Launcher for MediaStore.createDeleteRequest (Android 11+)
-    val deleteLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        if (result.resultCode == Activity.RESULT_OK) {
-            viewModel.onDeleteGranted()
-        } else {
-            viewModel.dismissFreeUpSpace()
-        }
-    }
-
-    // When the ViewModel produces a delete sender, launch it immediately.
-    LaunchedEffect(freeSpace.deleteSender) {
-        val sender = freeSpace.deleteSender ?: return@LaunchedEffect
-        viewModel.consumeDeleteSender()
-        deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
-    }
 
     LaunchedEffect(onOpenWithRetry) {
         if (onOpenWithRetry) {
@@ -133,40 +108,10 @@ fun BackupScreen(
             }
         }
 
-        // Free up space card — show when there are locally-stored backed-up items and no active upload
-        val showFreeUp = (stats?.backedUp ?: 0) > 0 && !progress.isActive
-        if (showFreeUp) {
+        // Failed files card
+        if (failedItems.isNotEmpty() && !progress.isActive) {
             Spacer(Modifier.height(12.dp))
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                ),
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        stringResource(R.string.free_space_title),
-                        style = MaterialTheme.typography.titleSmall,
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        stringResource(R.string.free_space_body),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    )
-                    Spacer(Modifier.height(12.dp))
-                    OutlinedButton(
-                        onClick = {
-                            viewModel.prepareFreeUpSpace()
-                            showFreeSpaceConfirm = true
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !freeSpace.isLoading,
-                    ) {
-                        Text(if (freeSpace.isLoading) stringResource(R.string.free_space_loading) else stringResource(R.string.free_space_action))
-                    }
-                }
-            }
+            FailedFilesCard(failedItems)
         }
 
         Spacer(Modifier.height(16.dp))
@@ -290,41 +235,6 @@ fun BackupScreen(
         )
     }
 
-    // Confirmation dialog before triggering the system delete picker
-    if (showFreeSpaceConfirm && !freeSpace.isLoading && freeSpace.items.isNotEmpty()) {
-        AlertDialog(
-            onDismissRequest = {
-                showFreeSpaceConfirm = false
-                viewModel.dismissFreeUpSpace()
-            },
-            title = { Text(stringResource(R.string.free_space_confirm_title)) },
-            text = {
-                Text(
-                    stringResource(
-                        R.string.free_space_confirm_body,
-                        formatBytes(freeSpace.totalBytes),
-                    )
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showFreeSpaceConfirm = false
-                    if (freeSpace.deleteSender != null) {
-                        // deleteSender already set — LaunchedEffect will launch it
-                    } else {
-                        // Pre-API-30: no system dialog; mark immediately
-                        viewModel.onDeleteGranted()
-                    }
-                }) { Text(stringResource(R.string.free_space_confirm_action)) }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showFreeSpaceConfirm = false
-                    viewModel.dismissFreeUpSpace()
-                }) { Text(stringResource(R.string.cancel)) }
-            },
-        )
-    }
 }
 
 private fun formatBytes(bytes: Long): String = when {
@@ -332,6 +242,68 @@ private fun formatBytes(bytes: Long): String = when {
     bytes >= 1_000_000L -> "%.1f MB".format(bytes / 1_000_000.0)
     bytes >= 1_000L -> "%.0f KB".format(bytes / 1_000.0)
     else -> "$bytes B"
+}
+
+@Composable
+private fun FailedFilesCard(items: List<MediaItem>) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                stringResource(R.string.failed_files_title, items.size),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            items.forEachIndexed { index, item ->
+                if (index > 0) {
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.12f),
+                    )
+                } else {
+                    Spacer(Modifier.height(10.dp))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Text(
+                        item.fileName,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f).padding(end = 8.dp),
+                    )
+                    Text(
+                        friendlyErrorReason(item.errorMessage),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.75f),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun friendlyErrorReason(raw: String?): String {
+    val msg = raw?.lowercase() ?: ""
+    return when {
+        msg.isBlank() -> stringResource(R.string.failed_files_reason_default)
+        msg.contains("2 gb") || msg.contains("too large") || msg.contains("size") ->
+            stringResource(R.string.failed_files_reason_too_large)
+        msg.contains("rate") || msg.contains("flood") || msg.contains("busy") || msg.contains("slow") ->
+            stringResource(R.string.failed_files_reason_busy)
+        msg.contains("network") || msg.contains("timeout") || msg.contains("connect") || msg.contains("socket") ->
+            stringResource(R.string.failed_files_reason_connection)
+        else -> stringResource(R.string.failed_files_reason_default)
+    }
 }
 
 @Composable

@@ -3,13 +3,20 @@ package com.ulap.ui.settings
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.content.Context
+import android.content.IntentSender
+import android.net.Uri
+import android.os.Build
+import android.provider.MediaStore
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.BackupStats
+import com.ulap.domain.model.MediaItem
 import com.ulap.domain.usecase.ClearCredentialsUseCase
 import com.ulap.domain.usecase.DeleteAllBackupsUseCase
+import com.ulap.domain.usecase.GetBackedUpWithLocalUseCase
 import com.ulap.domain.usecase.GetBackupStatsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
+import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
 import com.ulap.sync.DeleteAllBackupsResult
@@ -44,6 +51,14 @@ sealed class DeleteBackupsUiResult {
     data class Failure(val message: String) : DeleteBackupsUiResult()
 }
 
+data class FreeSpaceState(
+    val items: List<MediaItem> = emptyList(),
+    val totalBytes: Long = 0L,
+    val isLoading: Boolean = false,
+    val deleteSender: IntentSender? = null,
+    val pendingDeleteIds: List<String> = emptyList(),
+)
+
 @HiltViewModel
 class SettingsViewModel @Inject constructor(
     private val getCredentials: GetCredentialsUseCase,
@@ -53,6 +68,8 @@ class SettingsViewModel @Inject constructor(
     private val userPrefs: UserPreferencesRepository,
     private val deleteAllBackupsUseCase: DeleteAllBackupsUseCase,
     private val getBackupStats: GetBackupStatsUseCase,
+    private val getBackedUpWithLocal: GetBackedUpWithLocalUseCase,
+    private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -152,4 +169,56 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearDebugLog() = debugLog.clear()
+
+    // ── Free Up Space ─────────────────────────────────────────────────────────
+
+    private val _freeSpace = MutableStateFlow(FreeSpaceState())
+    val freeSpace: StateFlow<FreeSpaceState> = _freeSpace.asStateFlow()
+
+    fun prepareFreeUpSpace() {
+        if (_freeSpace.value.isLoading) return
+        _freeSpace.update { it.copy(isLoading = true) }
+        viewModelScope.launch {
+            val items = try { getBackedUpWithLocal() } catch (_: Exception) { emptyList() }
+            val totalBytes = items.sumOf { it.size }
+            if (items.isEmpty()) {
+                _freeSpace.update { FreeSpaceState() }
+                return@launch
+            }
+            val sender: IntentSender? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    val uris = items.mapNotNull { item ->
+                        item.contentUri.takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }
+                    }
+                    MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+                } catch (_: Exception) { null }
+            } else null
+            _freeSpace.update {
+                FreeSpaceState(
+                    items = items,
+                    totalBytes = totalBytes,
+                    isLoading = false,
+                    deleteSender = sender,
+                    pendingDeleteIds = items.map { it.id },
+                )
+            }
+        }
+    }
+
+    fun onFreeSpaceDeleteGranted() {
+        val ids = _freeSpace.value.pendingDeleteIds
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            markAsCloudOnly(ids)
+            _freeSpace.update { FreeSpaceState() }
+        }
+    }
+
+    fun dismissFreeUpSpace() {
+        _freeSpace.update { FreeSpaceState() }
+    }
+
+    fun consumeFreeSpaceDeleteSender() {
+        _freeSpace.update { it.copy(deleteSender = null) }
+    }
 }

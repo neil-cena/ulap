@@ -43,3 +43,9 @@ class MarkAsCloudOnlyUseCase @Inject constructor(
 ) {
     suspend operator fun invoke(ids: List<String>) = mediaRepository.markAsCloudOnly(ids)
 }
+
+class ObserveFailedItemsUseCase @Inject constructor(
+    private val mediaRepository: MediaRepository,
+) {
+    operator fun invoke(): Flow<List<MediaItem>> = mediaRepository.observeFailedItems()
+}

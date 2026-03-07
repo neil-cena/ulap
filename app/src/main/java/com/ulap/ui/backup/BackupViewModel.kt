@@ -1,12 +1,8 @@
 package com.ulap.ui.backup
 
 import android.content.Context
-import android.content.IntentSender
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.net.Uri
-import android.os.Build
-import android.provider.MediaStore
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ulap.data.repository.UserPreferencesRepository
@@ -15,8 +11,7 @@ import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.SyncProgress
 import com.ulap.domain.usecase.FetchIndexFromPinnedMessageUseCase
 import com.ulap.domain.usecase.GetBackupStatsUseCase
-import com.ulap.domain.usecase.GetBackedUpWithLocalUseCase
-import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
+import com.ulap.domain.usecase.ObserveFailedItemsUseCase
 import com.ulap.domain.usecase.ResetFailedToPendingUseCase
 import com.ulap.domain.usecase.ScanMediaUseCase
 import com.ulap.sync.BackupForegroundService
@@ -32,19 +27,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
-data class FreeSpaceState(
-    /** Items eligible for local deletion (BACKED_UP with a valid contentUri). */
-    val items: List<MediaItem> = emptyList(),
-    /** Total bytes that would be freed. */
-    val totalBytes: Long = 0L,
-    /** True while we're computing eligible items. */
-    val isLoading: Boolean = false,
-    /** IntentSender for MediaStore.createDeleteRequest — null until prepared. */
-    val deleteSender: IntentSender? = null,
-    /** Ids that were passed to the delete request so we can mark them after confirmation. */
-    val pendingDeleteIds: List<String> = emptyList(),
-)
-
 @HiltViewModel
 class BackupViewModel @Inject constructor(
     private val getBackupStats: GetBackupStatsUseCase,
@@ -52,8 +34,7 @@ class BackupViewModel @Inject constructor(
     private val scanMedia: ScanMediaUseCase,
     private val fetchIndex: FetchIndexFromPinnedMessageUseCase,
     private val syncEngine: SyncEngine,
-    private val getBackedUpWithLocal: GetBackedUpWithLocalUseCase,
-    private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
+    private val observeFailedItems: ObserveFailedItemsUseCase,
     private val userPrefs: UserPreferencesRepository,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
@@ -64,8 +45,8 @@ class BackupViewModel @Inject constructor(
     val progress: StateFlow<SyncProgress> = syncEngine.progress
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncProgress())
 
-    private val _freeSpace = MutableStateFlow(FreeSpaceState())
-    val freeSpace: StateFlow<FreeSpaceState> = _freeSpace.asStateFlow()
+    val failedItems: StateFlow<List<MediaItem>> = observeFailedItems()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     /** True when Wi-Fi-only is enabled and the user just tried to start a backup on mobile data. */
     private val _mobileDataWarning = MutableStateFlow(false)
@@ -139,56 +120,5 @@ class BackupViewModel @Inject constructor(
                 scanMedia(fullScan = false)
             } catch (_: Exception) { }
         }
-    }
-
-    /** Loads eligible items and builds the system delete request IntentSender. */
-    fun prepareFreeUpSpace() {
-        if (_freeSpace.value.isLoading) return
-        _freeSpace.update { it.copy(isLoading = true) }
-        viewModelScope.launch {
-            val items = try { getBackedUpWithLocal() } catch (_: Exception) { emptyList() }
-            val totalBytes = items.sumOf { it.size }
-            if (items.isEmpty()) {
-                _freeSpace.update { FreeSpaceState(items = emptyList(), totalBytes = 0L) }
-                return@launch
-            }
-
-            val sender: IntentSender? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                try {
-                    val uris = items.mapNotNull { item ->
-                        item.contentUri.takeIf { it.isNotEmpty() }?.let { Uri.parse(it) }
-                    }
-                    MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
-                } catch (_: Exception) { null }
-            } else null
-
-            _freeSpace.update {
-                FreeSpaceState(
-                    items = items,
-                    totalBytes = totalBytes,
-                    isLoading = false,
-                    deleteSender = sender,
-                    pendingDeleteIds = items.map { it.id },
-                )
-            }
-        }
-    }
-
-    /** Called after the system delete dialog is confirmed (or on pre-API-30 devices). */
-    fun onDeleteGranted() {
-        val ids = _freeSpace.value.pendingDeleteIds
-        if (ids.isEmpty()) return
-        viewModelScope.launch {
-            markAsCloudOnly(ids)
-            _freeSpace.update { FreeSpaceState() }
-        }
-    }
-
-    fun dismissFreeUpSpace() {
-        _freeSpace.update { FreeSpaceState() }
-    }
-
-    fun consumeDeleteSender() {
-        _freeSpace.update { it.copy(deleteSender = null) }
     }
 }

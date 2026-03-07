@@ -1,6 +1,9 @@
 package com.ulap.ui.gallery
 
+import android.app.Activity
+import android.content.pm.ActivityInfo
 import android.net.Uri
+import android.view.View
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -24,6 +27,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -31,6 +36,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,8 +52,12 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import coil3.compose.AsyncImage
 import com.ulap.domain.model.MediaType
@@ -65,6 +75,35 @@ fun MediaViewerScreen(
     val downloadState by viewModel.downloadState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     var overlayVisible by remember { mutableStateOf(true) }
+    var isFullscreen by remember { mutableStateOf(false) }
+
+    val activity = LocalContext.current as Activity
+    val window = activity.window
+    val insetsController = remember(window) {
+        WindowCompat.getInsetsController(window, window.decorView)
+    }
+
+    // Enter / exit immersive mode when fullscreen state changes.
+    LaunchedEffect(isFullscreen) {
+        if (isFullscreen) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            insetsController.apply {
+                hide(WindowInsetsCompat.Type.systemBars())
+                systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            }
+        } else {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // Always restore orientation when leaving this screen.
+    DisposableEffect(Unit) {
+        onDispose {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            insetsController.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
 
     LaunchedEffect(downloadState) {
         when (val s = downloadState) {
@@ -83,6 +122,17 @@ fun MediaViewerScreen(
         if (overlayVisible) {
             delay(3_000)
             overlayVisible = false
+        }
+    }
+
+    // Wrap onBack so we always exit fullscreen first.
+    val handleBack = remember(onBack) {
+        {
+            if (isFullscreen) {
+                isFullscreen = false
+            } else {
+                onBack()
+            }
         }
     }
 
@@ -105,6 +155,13 @@ fun MediaViewerScreen(
                 viewModel.setCurrentPage(pagerState.currentPage)
             }
             val onToggleOverlay = remember { { overlayVisible = !overlayVisible } }
+
+            // Callback passed to VideoPlayerView: sync overlay with player controller visibility.
+            val onControllerVisibilityChanged: (Boolean) -> Unit = remember {
+                { visible -> if (visible) overlayVisible = true }
+            }
+            val onFullscreenClick: () -> Unit = remember { { isFullscreen = !isFullscreen } }
+
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
@@ -114,13 +171,11 @@ fun MediaViewerScreen(
                 when {
                     item.contentUri.isNotBlank() -> {
                         if (item.mediaType == MediaType.VIDEO) {
-                            Box(
-                                modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                                    detectTapGestures(onTap = { onToggleOverlay() })
-                                },
-                            ) {
-                                VideoPlayerView(uris = listOf(Uri.parse(item.contentUri)))
-                            }
+                            VideoPlayerView(
+                                uris = listOf(Uri.parse(item.contentUri)),
+                                onControllerVisibilityChanged = onControllerVisibilityChanged,
+                                onFullscreenClick = onFullscreenClick,
+                            )
                         } else {
                             ZoomableImage(
                                 uri = Uri.parse(item.contentUri),
@@ -151,13 +206,11 @@ fun MediaViewerScreen(
                             is StreamUrlsState.Ready -> {
                                 val urls = state.urls
                                 if (item.mediaType == MediaType.VIDEO) {
-                                    Box(
-                                        modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                                            detectTapGestures(onTap = { onToggleOverlay() })
-                                        },
-                                    ) {
-                                        VideoPlayerView(uris = urls.map { Uri.parse(it) })
-                                    }
+                                    VideoPlayerView(
+                                        uris = urls.map { Uri.parse(it) },
+                                        onControllerVisibilityChanged = onControllerVisibilityChanged,
+                                        onFullscreenClick = onFullscreenClick,
+                                    )
                                 } else {
                                     ZoomableImage(
                                         uri = Uri.parse(urls.first()),
@@ -167,16 +220,12 @@ fun MediaViewerScreen(
                                 }
                             }
                             is StreamUrlsState.ReadyProgressive -> {
-                                Box(
-                                    modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                                        detectTapGestures(onTap = { onToggleOverlay() })
-                                    },
-                                ) {
-                                    VideoPlayerView(
-                                        uris = listOf(Uri.parse(state.fileUri)),
-                                        dataSourceFactory = state.dataSourceFactory,
-                                    )
-                                }
+                                VideoPlayerView(
+                                    uris = listOf(Uri.parse(state.fileUri)),
+                                    dataSourceFactory = state.dataSourceFactory,
+                                    onControllerVisibilityChanged = onControllerVisibilityChanged,
+                                    onFullscreenClick = onFullscreenClick,
+                                )
                             }
                             else -> Box(
                                 Modifier.fillMaxSize().pointerInput(Unit) {
@@ -191,6 +240,7 @@ fun MediaViewerScreen(
                 }
             }
             val currentItem = allItems.getOrNull(pagerState.currentPage)
+            val isCurrentVideo = currentItem?.mediaType == MediaType.VIDEO
             val canDownload = currentItem != null &&
                 currentItem.contentUri.isBlank() &&
                 currentItem.telegramFileId != null
@@ -205,7 +255,7 @@ fun MediaViewerScreen(
             ) {
                 Row(modifier = Modifier.fillMaxWidth()) {
                     IconButton(
-                        onClick = onBack,
+                        onClick = handleBack,
                         modifier = Modifier
                             .background(Color(0x66000000), CircleShape)
                             .padding(4.dp),
@@ -218,6 +268,21 @@ fun MediaViewerScreen(
                     }
 
                     Box(modifier = Modifier.weight(1f))
+
+                    if (isCurrentVideo) {
+                        IconButton(
+                            onClick = onFullscreenClick,
+                            modifier = Modifier
+                                .background(Color(0x66000000), CircleShape)
+                                .padding(4.dp),
+                        ) {
+                            Icon(
+                                if (isFullscreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                                contentDescription = if (isFullscreen) "Exit fullscreen" else "Fullscreen",
+                                tint = Color.White,
+                            )
+                        }
+                    }
 
                     if (canDownload) {
                         IconButton(

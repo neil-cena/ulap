@@ -1,5 +1,8 @@
 package com.ulap.ui.settings
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Column
@@ -33,6 +36,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -55,6 +61,25 @@ fun SettingsScreen(
     val wifiOnly by viewModel.wifiOnly.collectAsState()
     val pauseOnLowBattery by viewModel.pauseOnLowBattery.collectAsState()
     val backupStats by viewModel.backupStats.collectAsState()
+    val freeSpace by viewModel.freeSpace.collectAsState()
+
+    var showFreeSpaceWarning by remember { mutableStateOf(false) }
+    var showFreeSpaceConfirm by remember { mutableStateOf(false) }
+
+    val deleteLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            viewModel.onFreeSpaceDeleteGranted()
+        } else {
+            viewModel.dismissFreeUpSpace()
+        }
+    }
+    LaunchedEffect(freeSpace.deleteSender) {
+        val sender = freeSpace.deleteSender ?: return@LaunchedEffect
+        viewModel.consumeFreeSpaceDeleteSender()
+        deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+    }
 
     Column(
         modifier = Modifier
@@ -217,6 +242,24 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    if (stats.backedUp > 0) {
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                        Text(
+                            "Free up local storage",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        OutlinedButton(
+                            onClick = { showFreeSpaceWarning = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                                contentColor = MaterialTheme.colorScheme.error,
+                            ),
+                        ) {
+                            Text("Remove local copies (${formatBytes(stats.backedUpBytes)})")
+                        }
+                    }
                 } else {
                     Text("Loading…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -269,6 +312,92 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = viewModel::dismissClear) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Step 1 — scary warning
+    if (showFreeSpaceWarning) {
+        AlertDialog(
+            onDismissRequest = { showFreeSpaceWarning = false },
+            title = { Text("⚠\uFE0F Read this before continuing") },
+            text = {
+                Column {
+                    Text(
+                        "Removing local copies is permanent. Once deleted from your device, the only copy of these files will be in your Telegram chat.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "If your Telegram account is banned, your bot is deleted, or you lose access to that chat, those files will be gone forever. Ulap cannot recover them.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Only continue if you understand and accept this risk.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showFreeSpaceWarning = false
+                        viewModel.prepareFreeUpSpace()
+                        showFreeSpaceConfirm = true
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("I understand, continue") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showFreeSpaceWarning = false }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // Step 2 — final confirm with size
+    if (showFreeSpaceConfirm && !freeSpace.isLoading && freeSpace.items.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = {
+                showFreeSpaceConfirm = false
+                viewModel.dismissFreeUpSpace()
+            },
+            title = { Text("Remove ${freeSpace.items.size} local file${if (freeSpace.items.size == 1) "" else "s"}?") },
+            text = {
+                Column {
+                    Text("This will permanently remove ${formatBytes(freeSpace.totalBytes)} of photos and videos from this device. They are already backed up to Telegram.")
+                    if (freeSpace.deleteSender != null) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "Android will show a permission prompt next — that's normal and required.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showFreeSpaceConfirm = false
+                        if (freeSpace.deleteSender == null) {
+                            viewModel.onFreeSpaceDeleteGranted()
+                        }
+                        // deleteSender set → LaunchedEffect fires the system picker
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                    ),
+                ) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showFreeSpaceConfirm = false
+                    viewModel.dismissFreeUpSpace()
+                }) { Text("Cancel") }
             },
         )
     }

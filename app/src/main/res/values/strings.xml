@@ -49,14 +49,22 @@
     <string name="backup_stat_cloud">%1$d Cloud</string>
     <string name="backup_stat_excluded_hint">%1$d file(s) can\'t be backed up — they exceed the 2 GB limit</string>
 
+    <!-- Failed files -->
+    <string name="failed_files_title">%1$d file(s) couldn\'t be backed up</string>
+    <string name="failed_files_reason_too_large">File is too large to back up</string>
+    <string name="failed_files_reason_connection">Connection issue — will retry automatically</string>
+    <string name="failed_files_reason_busy">Telegram was busy — will retry automatically</string>
+    <string name="failed_files_reason_default">Something went wrong — tap Retry failed</string>
+
     <!-- Free up space -->
-    <string name="free_space_title">All backed up</string>
-    <string name="free_space_body">Free up local storage by removing copies of files that are already backed up. You can re-download them anytime.</string>
-    <string name="free_space_action">Free up space</string>
+    <string name="free_space_title">Free up %1$s on this device</string>
+    <string name="free_space_body">All your backed-up files are safe in Telegram. Remove the local copies to reclaim storage — you can re-download them anytime.</string>
+    <string name="free_space_action">Remove local copies</string>
     <string name="free_space_loading">Preparing…</string>
     <string name="free_space_confirm_title">Remove local copies?</string>
-    <string name="free_space_confirm_body">This will remove %1$s of local files that are already backed up. You can re-download them anytime.</string>
+    <string name="free_space_confirm_body">This will remove %1$s of photos and videos from your device. They\'re already backed up, so you can re-download them anytime.\n\nAndroid will show a permission prompt — that\'s normal and required.</string>
     <string name="free_space_confirm_action">Remove</string>
+    <string name="free_space_confirm_system_note">Android will show a permission prompt next — that\'s normal and required to delete files.</string>
     <string name="cancel">Cancel</string>
 
     <!-- Backup actions -->

@@ -127,6 +127,9 @@ class MediaRepositoryImpl @Inject constructor(
     override suspend fun markAsCloudOnly(ids: List<String>) =
         mediaItemDao.markAsCloudOnly(ids)
 
+    override fun observeFailedItems(): Flow<List<MediaItem>> =
+        mediaItemDao.observeByStatus(BackupStatus.FAILED).map { list -> list.map { it.toDomain() } }
+
     private fun MediaItemEntity.toDomain() = MediaItem(
         id = id,
         path = path,
