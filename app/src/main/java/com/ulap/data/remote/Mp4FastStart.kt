@@ -14,8 +14,11 @@ import java.nio.ByteBuffer
  */
 object Mp4FastStart {
 
-    private const val MOOV = 0x6D6F6F76
-    private const val MDAT = 0x6D646174
+    internal const val MOOV = 0x6D6F6F76
+    internal const val MDAT = 0x6D646174
+
+    /** Top-level MP4 box descriptor. Internal so StreamingFastStartReader can share the parsing logic. */
+    internal data class Atom(val type: Int, val offset: Long, val size: Long)
 
     fun fastStart(input: File, output: File): Boolean {
         if (!input.exists() || input.length() < 8) return false
@@ -64,9 +67,7 @@ object Mp4FastStart {
         return true
     }
 
-    private data class Atom(val type: Int, val offset: Long, val size: Long)
-
-    private fun parseTopLevelAtoms(raf: RandomAccessFile, fileSize: Long): List<Atom>? {
+    internal fun parseTopLevelAtoms(raf: RandomAccessFile, fileSize: Long): List<Atom>? {
         val atoms = mutableListOf<Atom>()
         var pos = 0L
         val header = ByteArray(8)
@@ -93,7 +94,7 @@ object Mp4FastStart {
         return atoms.ifEmpty { null }
     }
 
-    private fun patchMoovOffsets(moovData: ByteArray, delta: Long) {
+    internal fun patchMoovOffsets(moovData: ByteArray, delta: Long) {
         patchAtomTree(moovData, 0, moovData.size, delta)
     }
 
@@ -148,7 +149,7 @@ object Mp4FastStart {
         }
     }
 
-    private fun isContainer(type: Int): Boolean = type in intArrayOf(
+    internal fun isContainer(type: Int): Boolean = type in intArrayOf(
         0x6D6F6F76, // moov
         0x7472616B, // trak
         0x6D646961, // mdia

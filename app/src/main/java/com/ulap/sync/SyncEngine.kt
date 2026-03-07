@@ -11,18 +11,21 @@ import android.provider.MediaStore
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
+import com.ulap.data.local.entity.ChunkMetadataEntity
+import com.ulap.data.local.dao.ChunkMetadataDao
 import com.google.gson.Gson
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.data.remote.DownloadResult
-import com.ulap.data.remote.Mp4FastStart
+import com.ulap.data.remote.StreamingFastStartReader
 import com.ulap.data.remote.TelegramBotApi
 import com.ulap.data.remote.TelegramDownloader
+import com.ulap.data.remote.ParallelChunkDownloader
 import com.ulap.data.remote.TelegramApiException
 import com.ulap.data.remote.TelegramRateLimitException
 import com.ulap.data.remote.TelegramRateLimiter
 import com.ulap.data.remote.TelegramUploader
 import com.ulap.data.remote.UploadResult
-import com.ulap.data.remote.MAX_FILE_SIZE
+import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
 import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.MediaItem
@@ -63,8 +66,10 @@ private const val CHUNKED_THRESHOLD = 50L * 1024 * 1024 // same as TelegramUploa
 @Singleton
 class SyncEngine @Inject constructor(
     private val mediaItemDao: MediaItemDao,
+    private val chunkMetadataDao: ChunkMetadataDao,
     private val uploader: TelegramUploader,
     private val downloader: TelegramDownloader,
+    private val parallelDownloader: ParallelChunkDownloader,
     private val credentialRepository: CredentialRepository,
     private val contentResolver: ContentResolver,
     private val backupIndexManager: BackupIndexManager,
@@ -80,6 +85,10 @@ class SyncEngine @Inject constructor(
 
     private val _progress = MutableStateFlow(SyncProgress())
     val progress: StateFlow<SyncProgress> = _progress.asStateFlow()
+
+    // Rolling speed tracking: circular buffer of (timestampMs, bytesTransferred) samples.
+    private val speedSamples = ArrayDeque<Pair<Long, Long>>(32)
+    private val speedWindowMs = 30_000L // 30-second rolling window
 
     suspend fun startUpload() {
         activeJob?.cancelAndJoin()
@@ -151,6 +160,17 @@ class SyncEngine @Inject constructor(
                 }.getOrElse { emptyList() }
             }
 
+        // Also collect chunk message IDs from the new chunk_metadata table.
+        val chunkTableIds = try {
+            val allBackedUpItems = mediaItemDao.getAllBackedUp()
+            allBackedUpItems.flatMap { item ->
+                chunkMetadataDao.getAllMessageIdsForMedia(item.id)
+            }
+        } catch (e: Exception) {
+            debugLog.log("SyncEngine", "deleteAllBackups: chunk table query failed — ${e.message}")
+            emptyList()
+        }
+
         // Also include the pinned index message itself.
         val indexMessageId: Long? = try {
             val chatResponse = rateLimiter.withRateLimit { api.getChat(safeToken, chatId) }
@@ -162,7 +182,7 @@ class SyncEngine @Inject constructor(
         }
 
         // Deduplicate all message IDs.
-        val allIds = (indexIds + dbBackupIds + thumbIds + chunkIds + listOfNotNull(indexMessageId))
+        val allIds = (indexIds + dbBackupIds + thumbIds + chunkIds + chunkTableIds + listOfNotNull(indexMessageId))
             .distinct()
             .filter { it > 0L }
         val total = allIds.size
@@ -230,7 +250,31 @@ class SyncEngine @Inject constructor(
         else DeleteAllBackupsResult.PartialSuccess(failedBatches)
     }
 
+    /**
+     * Records a speed sample and returns (speedBps, estimatedRemainingMs).
+     * Uses a 30-second rolling window of (time, totalBytes) samples.
+     * Thread-safety: called from IO coroutines; synchronized via the _progress StateFlow update.
+     */
+    @Synchronized
+    private fun computeSpeedAndEta(totalBytesUploaded: Long, totalBytesExpected: Long): Pair<Long, Long> {
+        val now = System.currentTimeMillis()
+        speedSamples.addLast(Pair(now, totalBytesUploaded))
+        // Evict samples older than the window.
+        while (speedSamples.size > 1 && now - speedSamples.first().first > speedWindowMs) {
+            speedSamples.removeFirst()
+        }
+        if (speedSamples.size < 2) return Pair(0L, 0L)
+        val oldest = speedSamples.first()
+        val deltaBytes = totalBytesUploaded - oldest.second
+        val deltaMs = now - oldest.first
+        val speedBps = if (deltaMs > 0) deltaBytes * 1000L / deltaMs else 0L
+        val remaining = totalBytesExpected - totalBytesUploaded
+        val etaMs = if (speedBps > 0 && remaining > 0) remaining * 1000L / speedBps else 0L
+        return Pair(speedBps, etaMs)
+    }
+
     private suspend fun runUploadPipeline() {
+        speedSamples.clear()
         _progress.update {
             SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = 0)
         }
@@ -423,20 +467,6 @@ class SyncEngine @Inject constructor(
             currentFileBytes = 0L,
         ) }
 
-        if (entity.size > MAX_FILE_SIZE) {
-            mediaItemDao.updateBackupResult(
-                id = entity.id,
-                status = BackupStatus.EXCLUDED,
-                error = "File exceeds 2GB limit",
-                syncedAt = System.currentTimeMillis(),
-                fileId = null,
-                messageId = null,
-                thumbnailFileId = null,
-            )
-            _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
-            return
-        }
-
         val inputStream = try {
             contentResolver.openInputStream(Uri.parse(entity.contentUri))
         } catch (e: Exception) {
@@ -484,8 +514,6 @@ class SyncEngine @Inject constructor(
 
         val isVideo = entity.mimeType.startsWith("video/")
         val willChunk = entity.size > CHUNKED_THRESHOLD
-        var tempRaw: File? = null
-        var tempFastStarted: File? = null
         var tempExif: File? = null
 
         // Strip GPS EXIF from JPEG images when the user has opted in.
@@ -533,68 +561,34 @@ class SyncEngine @Inject constructor(
             }
         }
 
-        // entity.id is the DB primary key in "external_1234" / "internal_1234" format —
-        // no slashes, unique by definition. Use it directly as a temp filename component.
+        // For large videos, use StreamingFastStartReader: reorders moov/mdat in-flight with zero
+        // extra disk usage by seeking the FileChannel rather than copying the full file to temp storage.
+        // Falls back to strippedInputStream if the URI is not seekable or parsing fails.
         val uploadStream = if (isVideo && willChunk) {
-            tempRaw = File(appContext.cacheDir, "ulap_raw_${entity.id}.mp4")
-            tempFastStarted = File(appContext.cacheDir, "ulap_fs_${entity.id}.mp4")
-            try {
-                strippedInputStream.use { src ->
-                    FileOutputStream(tempRaw).use { dst -> src.copyTo(dst) }
-                }
-                val success = Mp4FastStart.fastStart(tempRaw, tempFastStarted)
-                if (success && tempFastStarted.exists()) {
-                    tempRaw.delete()
-                    FileInputStream(tempFastStarted)
-                } else {
-                    tempFastStarted.delete()
-                    FileInputStream(tempRaw)
-                }
-            } catch (e: Exception) {
-                tempFastStarted?.delete()
-                if (tempRaw.exists()) {
-                    FileInputStream(tempRaw)
-                } else {
-                    tempRaw.delete()
-                    contentResolver.openInputStream(Uri.parse(entity.contentUri))
-                        ?: return
-                }
-            }
+            strippedInputStream.close()
+            StreamingFastStartReader.open(contentResolver, contentUri)
+                ?: contentResolver.openInputStream(contentUri) ?: return
         } else {
             // If EXIF stripping produced a temp file, stream from it; otherwise use the original.
             if (tempExif != null) FileInputStream(tempExif) else strippedInputStream
         }
 
         val actualFileSize = when {
-            tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted.length()
-            tempRaw != null && tempRaw.exists() -> tempRaw.length()
             tempExif != null && tempExif.exists() -> tempExif.length()
             else -> entity.size
         }
 
-        val resumeFromChunk = entity.uploadedChunkCount
-        val existingFileIdsJson = entity.uploadedChunks ?: "[]"
+        val resumeFromChunk = chunkMetadataDao.getUploadedCount(entity.id)
+            .takeIf { it > 0 } ?: entity.uploadedChunkCount
 
         // Extract a first-frame thumbnail for all video uploads and upload it separately.
-        // For chunked videos (>50MB) use the temp file already on disk.
-        // For small videos (≤50MB) use the content URI directly — no extra copy needed.
+        // For chunked videos, use the content URI directly (no temp file needed with streaming FS).
         var videoThumbnailFileId: String? = null
         var videoThumbnailMessageId: Long? = null
         if (isVideo) {
             val retriever = MediaMetadataRetriever()
             try {
-                if (willChunk) {
-                    val thumbSourceFile = when {
-                        tempFastStarted != null && tempFastStarted.exists() -> tempFastStarted
-                        tempRaw != null && tempRaw.exists() -> tempRaw
-                        else -> null
-                    }
-                    if (thumbSourceFile != null) {
-                        retriever.setDataSource(thumbSourceFile.absolutePath)
-                    }
-                } else {
-                    retriever.setDataSource(appContext, Uri.parse(entity.contentUri))
-                }
+                retriever.setDataSource(appContext, Uri.parse(entity.contentUri))
                 val bitmap = retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
                 if (bitmap != null) {
                     val out = java.io.ByteArrayOutputStream()
@@ -626,22 +620,33 @@ class SyncEngine @Inject constructor(
                     onProgress = { uploaded, total ->
                         val delta = uploaded - lastReported
                         lastReported = uploaded
+                        val (speedBps, etaMs) = computeSpeedAndEta(uploaded, total.takeIf { it > 0 } ?: uploaded)
                         _progress.update { prog ->
                             prog.copy(
                                 currentFileBytes = uploaded,
                                 currentFileBytesTotal = total,
                                 bytesTransferred = prog.bytesTransferred + delta,
+                                uploadSpeedBps = speedBps,
+                                estimatedRemainingMs = etaMs,
                             )
                         }
                     },
                     resumeFromChunk = resumeFromChunk,
-                    existingFileIdsJson = existingFileIdsJson,
                     onTotalChunksKnown = { total ->
                         _progress.update { it.copy(totalChunks = total, currentChunk = resumeFromChunk) }
                     },
-                    onChunkSaved = { count, json ->
-                        mediaItemDao.saveChunkProgress(entity.id, json, count)
-                        _progress.update { it.copy(currentChunk = count, chunkRetryAttempt = 0) }
+                    onChunkUploaded = { index, fileId, messageId, byteOffset, byteLength ->
+                        chunkMetadataDao.insertChunk(
+                            ChunkMetadataEntity(
+                                mediaItemId = entity.id,
+                                chunkIndex = index,
+                                telegramFileId = fileId,
+                                telegramMessageId = messageId,
+                                byteOffset = byteOffset,
+                                byteLength = byteLength,
+                            )
+                        )
+                        _progress.update { it.copy(currentChunk = index + 1, chunkRetryAttempt = 0) }
                     },
                     onChunkRetry = { attempt ->
                         _progress.update { it.copy(chunkRetryAttempt = attempt) }
@@ -653,8 +658,6 @@ class SyncEngine @Inject constructor(
         } finally {
             // Guaranteed cleanup even if uploadMedia throws (e.g. coroutine cancellation).
             // Do NOT add itemsDone+1 here — rate-limited items are not completed.
-            tempRaw?.delete()
-            tempFastStarted?.delete()
             tempExif?.delete()
         }
         // result is null only when an exception escaped the try block (e.g. TelegramRateLimitException
@@ -664,6 +667,7 @@ class SyncEngine @Inject constructor(
         when (result) {
             is UploadResult.Success -> {
                 mediaItemDao.clearChunkProgress(entity.id)
+                chunkMetadataDao.deleteChunksForMedia(entity.id)
                 _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
                 // Prefer Telegram's returned thumbnail; fall back to our pre-extracted one for videos.
                 val effectiveThumbnailFileId = result.thumbnailFileId ?: videoThumbnailFileId
@@ -688,17 +692,6 @@ class SyncEngine @Inject constructor(
                     status = BackupStatus.FAILED,
                     error = result.cause.message,
                     syncedAt = null,
-                    fileId = null,
-                    messageId = null,
-                    thumbnailFileId = null,
-                )
-            }
-            is UploadResult.FileTooLarge -> {
-                mediaItemDao.updateBackupResult(
-                    id = entity.id,
-                    status = BackupStatus.EXCLUDED,
-                    error = "File exceeds 2GB limit",
-                    syncedAt = System.currentTimeMillis(),
                     fileId = null,
                     messageId = null,
                     thumbnailFileId = null,
@@ -777,17 +770,33 @@ class SyncEngine @Inject constructor(
         } ?: return
 
         val outputStream = contentResolver.openOutputStream(uri) ?: return
+        val isChunkedItem = fileId.startsWith(CHUNKED_FILE_ID_PREFIX) ||
+            chunkMetadataDao.hasChunks(entity.id) > 0
+
         val result = outputStream.use {
-            downloader.download(
-                token = token,
-                fileId = fileId,
-                outputStream = it,
-                onProgress = { downloaded, total ->
-                    _progress.update { prog ->
-                        prog.copy(bytesTransferred = prog.bytesTransferred + downloaded)
-                    }
-                },
-            )
+            if (isChunkedItem) {
+                parallelDownloader.downloadToStream(
+                    token = token,
+                    mediaItemId = entity.id,
+                    outputStream = it,
+                    onProgress = { downloaded, total ->
+                        _progress.update { prog ->
+                            prog.copy(bytesTransferred = prog.bytesTransferred + downloaded)
+                        }
+                    },
+                )
+            } else {
+                downloader.download(
+                    token = token,
+                    fileId = fileId,
+                    outputStream = it,
+                    onProgress = { downloaded, total ->
+                        _progress.update { prog ->
+                            prog.copy(bytesTransferred = prog.bytesTransferred + downloaded)
+                        }
+                    },
+                )
+            }
         }
 
         when (result) {
@@ -824,13 +833,24 @@ class SyncEngine @Inject constructor(
             contentResolver.delete(insertedUri, null, null)
             return@withContext Result.failure(Exception("Could not open output"))
         }
+        val isChunkedItem = fileId.startsWith(CHUNKED_FILE_ID_PREFIX) ||
+            chunkMetadataDao.hasChunks(entity.id) > 0
+
         val result = outputStream.use {
-            downloader.download(
-                token = token,
-                fileId = fileId,
-                outputStream = it,
-                onProgress = { _, _ -> },
-            )
+            if (isChunkedItem) {
+                parallelDownloader.downloadToStream(
+                    token = token,
+                    mediaItemId = entity.id,
+                    outputStream = it,
+                )
+            } else {
+                downloader.download(
+                    token = token,
+                    fileId = fileId,
+                    outputStream = it,
+                    onProgress = { _, _ -> },
+                )
+            }
         }
         when (result) {
             is DownloadResult.Success -> {

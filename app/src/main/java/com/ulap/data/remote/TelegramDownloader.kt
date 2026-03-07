@@ -3,6 +3,7 @@ package com.ulap.data.remote
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -70,6 +71,68 @@ class TelegramDownloader @Inject constructor(
         // If any chunk failed to resolve, return empty to signal an error.
         if (results.any { it == null }) return@withContext emptyList()
         results.filterNotNull()
+    }
+
+    /**
+     * Resolves a list of file IDs to CDN URLs in batches to avoid Telegram 429 errors at scale.
+     * Each batch of [batchSize] is resolved in parallel; a [batchCooldownMs] pause separates batches.
+     * Individual failures within a batch are retried once after all batches complete.
+     * Returns an ordered list of CDN URLs (null for any that failed after retry).
+     */
+    suspend fun resolveStreamUrlsBatched(
+        token: String,
+        fileIds: List<String>,
+        batchSize: Int = 20,
+        batchCooldownMs: Long = 2_000L,
+        onBatchResolved: (resolved: Int, total: Int) -> Unit = { _, _ -> },
+    ): List<String?> = withContext(Dispatchers.IO) {
+        if (fileIds.isEmpty()) return@withContext emptyList()
+        val safeToken = sanitizeTokenForPath(token)
+        val results = arrayOfNulls<String>(fileIds.size)
+        val failedIndices = mutableListOf<Int>()
+
+        fileIds.chunked(batchSize).forEachIndexed { batchIdx, batch ->
+            if (batchIdx > 0) delay(batchCooldownMs)
+            val offset = batchIdx * batchSize
+            val batchResults = supervisorScope {
+                batch.mapIndexed { i, id ->
+                    async {
+                        try {
+                            val fileResponse = api.getFile(safeToken, id)
+                            if (fileResponse.ok && fileResponse.result?.filePath != null) {
+                                "${TELEGRAM_FILE_BASE}bot$safeToken/${fileResponse.result.filePath}"
+                            } else null
+                        } catch (_: Exception) {
+                            null
+                        }
+                    }
+                }.awaitAll()
+            }
+            batchResults.forEachIndexed { i, url ->
+                val globalIdx = offset + i
+                if (url != null) {
+                    results[globalIdx] = url
+                } else {
+                    failedIndices.add(globalIdx)
+                }
+            }
+            onBatchResolved(minOf((batchIdx + 1) * batchSize, fileIds.size), fileIds.size)
+        }
+
+        // Single retry pass for failures (transient errors, brief 429s).
+        if (failedIndices.isNotEmpty()) {
+            delay(batchCooldownMs)
+            for (idx in failedIndices) {
+                try {
+                    val fileResponse = api.getFile(safeToken, fileIds[idx])
+                    if (fileResponse.ok && fileResponse.result?.filePath != null) {
+                        results[idx] = "${TELEGRAM_FILE_BASE}bot$safeToken/${fileResponse.result.filePath}"
+                    }
+                } catch (_: Exception) { }
+            }
+        }
+
+        results.toList()
     }
 
     /**

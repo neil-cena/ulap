@@ -2,11 +2,13 @@ package com.ulap.data.remote
 
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
+import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.MediaType
 import com.ulap.debug.DebugLogBuffer
+import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -17,7 +19,7 @@ import javax.inject.Singleton
 
 private const val INDEX_CAPTION = "[ulap-backup-index]"
 private const val INDEX_FILENAME = "ulap_index_latest.json"
-private const val SCHEMA_VERSION = 1
+private const val SCHEMA_VERSION = 2
 private const val MAX_EXPORT_RECONCILIATION_ATTEMPTS = 2
 
 data class IndexEntry(
@@ -33,6 +35,9 @@ data class IndexEntry(
     @SerializedName("durationMs") val durationMs: Long?,
     @SerializedName("thumbnailFileId") val thumbnailFileId: String? = null,
     @SerializedName("chunkMessageIds") val chunkMessageIds: List<Long>? = null,
+    // Schema v2: full chunk data for cross-device restoration without needing the uploader's chat history
+    @SerializedName("chunkCount") val chunkCount: Int? = null,
+    @SerializedName("chunkFileIds") val chunkFileIds: List<String>? = null,
 )
 
 data class IndexManifest(
@@ -44,6 +49,7 @@ data class IndexManifest(
 @Singleton
 class BackupIndexManager @Inject constructor(
     private val mediaItemDao: MediaItemDao,
+    private val chunkMetadataDao: ChunkMetadataDao,
     private val api: TelegramBotApi,
     private val rateLimiter: TelegramRateLimiter,
     private val downloader: TelegramDownloader,
@@ -54,7 +60,8 @@ class BackupIndexManager @Inject constructor(
 
     /** Uploads the backup index to the chat. Returns the document file_id on success (for "Sync from other device"). */
     suspend fun exportAndUpload(token: String, chatId: String): Result<String?> = withContext(Dispatchers.IO) {
-        val localItems = mediaItemDao.getAllIndexedItems().map { it.toIndexEntry() }
+        val allEntities = mediaItemDao.getAllIndexedItems()
+        val localItems = buildList { for (e in allEntities) add(e.toIndexEntry()) }
         var seedItems = localItems
         var lastFileId: String? = null
 
@@ -126,6 +133,7 @@ class BackupIndexManager @Inject constructor(
         for (entry in manifest.items) {
             if (mediaItemDao.findByTelegramFileId(entry.telegramFileId) != null) continue
             val local = mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
+            val targetId: String
             if (local != null) {
                 val status = if (local.contentUri.isBlank()) BackupStatus.CLOUD_ONLY else BackupStatus.BACKED_UP
                 mediaItemDao.updateBackupResult(
@@ -137,6 +145,7 @@ class BackupIndexManager @Inject constructor(
                     messageId = entry.telegramMessageId,
                     thumbnailFileId = entry.thumbnailFileId,
                 )
+                targetId = local.id
                 merged++
             } else {
                 val cloudId = "cloud_${entry.id}"
@@ -161,7 +170,34 @@ class BackupIndexManager @Inject constructor(
                     thumbnailFileId = entry.thumbnailFileId,
                 )
                 mediaItemDao.upsert(entity)
+                targetId = cloudId
                 merged++
+            }
+            // Populate chunk_metadata table from schema v2 index entries.
+            val chunkFileIds = entry.chunkFileIds
+            if (!chunkFileIds.isNullOrEmpty() && chunkMetadataDao.hasChunks(targetId) == 0) {
+                var byteOffset = 0L
+                val chunkSize = com.ulap.data.remote.CHUNK_UPLOAD_SIZE.toInt()
+                chunkFileIds.forEachIndexed { idx, cFileId ->
+                    val msgId = entry.chunkMessageIds?.getOrNull(idx) ?: 0L
+                    val isLast = idx == chunkFileIds.lastIndex
+                    val byteLen = if (isLast) {
+                        (entry.size - byteOffset).coerceAtMost(chunkSize.toLong()).toInt()
+                    } else {
+                        chunkSize
+                    }
+                    chunkMetadataDao.insertChunk(
+                        com.ulap.data.local.entity.ChunkMetadataEntity(
+                            mediaItemId = targetId,
+                            chunkIndex = idx,
+                            telegramFileId = cFileId,
+                            telegramMessageId = msgId,
+                            byteOffset = byteOffset,
+                            byteLength = byteLen,
+                        )
+                    )
+                    byteOffset += byteLen
+                }
             }
         }
         debugLog.log("IndexManager", "fetchAndMergeFromFileId: merged $merged new items")
@@ -306,22 +342,29 @@ class BackupIndexManager @Inject constructor(
         return expected.all { sourceIds.contains(it.telegramFileId) }
     }
 
-    private fun MediaItemEntity.toIndexEntry() = IndexEntry(
-        id = id,
-        telegramFileId = telegramFileId!!,
-        telegramMessageId = telegramMessageId,
-        fileName = fileName,
-        mimeType = mimeType,
-        size = size,
-        dateTaken = dateTaken,
-        bucketName = bucketName,
-        mediaType = mediaType.name,
-        durationMs = durationMs,
-        thumbnailFileId = thumbnailFileId,
-        chunkMessageIds = chunkMessageIds?.let {
-            runCatching {
-                gson.fromJson(it, Array<Long>::class.java)?.toList()
-            }.getOrNull()
-        },
-    )
+    private suspend fun MediaItemEntity.toIndexEntry(): IndexEntry {
+        val chunks = if (telegramFileId?.startsWith(CHUNKED_FILE_ID_PREFIX) == true) {
+            chunkMetadataDao.getChunksForMedia(id)
+        } else emptyList()
+
+        return IndexEntry(
+            id = id,
+            telegramFileId = telegramFileId!!,
+            telegramMessageId = telegramMessageId,
+            fileName = fileName,
+            mimeType = mimeType,
+            size = size,
+            dateTaken = dateTaken,
+            bucketName = bucketName,
+            mediaType = mediaType.name,
+            durationMs = durationMs,
+            thumbnailFileId = thumbnailFileId,
+            chunkMessageIds = if (chunks.isNotEmpty()) chunks.map { it.telegramMessageId }
+                else chunkMessageIds?.let {
+                    runCatching { gson.fromJson(it, Array<Long>::class.java)?.toList() }.getOrNull()
+                },
+            chunkCount = chunks.size.takeIf { it > 0 },
+            chunkFileIds = chunks.map { it.telegramFileId }.takeIf { it.isNotEmpty() },
+        )
+    }
 }

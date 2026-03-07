@@ -18,6 +18,8 @@ data class SyncProgress(
     val chunkRetryAttempt: Int = 0,   // 0 = not currently retrying
     val isRateLimited: Boolean = false,
     val completionEvent: BackupCompletionEvent? = null,
+    val uploadSpeedBps: Long = 0L,     // rolling average upload speed in bytes/second
+    val estimatedRemainingMs: Long = 0L, // estimated time to complete current file
 ) {
     val progressFraction: Float get() = if (itemsTotal == 0) 0f else itemsDone.toFloat() / itemsTotal
     val currentFileFraction: Float get() = if (currentFileBytesTotal == 0L) 0f

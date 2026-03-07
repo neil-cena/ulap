@@ -14,14 +14,17 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API limit
-private const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
-const val MAX_FILE_SIZE = 2L * 1024 * 1024 * 1024 // 2GB absolute limit
+internal const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
 
 // Top-level so BackupForegroundService can import it for the notification string.
 const val CHUNK_MAX_RETRIES = 5
 
 private const val CHUNK_BACKOFF_BASE_MS = 3_000L
 private const val CHUNK_BACKOFF_MAX_MS = 60_000L
+
+// Sentinel value stored in telegramFileId to indicate the item uses the chunk_metadata table.
+// Format: "chunked:<totalChunks>" for quick chunk count lookup without a DB query.
+const val CHUNKED_FILE_ID_PREFIX = "chunked:"
 
 // 401/403 are definitively permanent (wrong token / bot banned from chat).
 // 400 is NOT included — it can mean transient encoding issues; don't permanently
@@ -47,25 +50,22 @@ class TelegramUploader @Inject constructor(
         caption: String? = null,
         onProgress: (bytesUploaded: Long, total: Long) -> Unit = { _, _ -> },
         resumeFromChunk: Int = 0,
-        existingFileIdsJson: String = "[]",
-        // suspend: calls mediaItemDao.saveChunkProgress (a suspend DAO method).
-        // Called from withContext(Dispatchers.IO) inside uploadChunked;
-        // Room's suspend API is safe to call from any dispatcher.
-        onChunkSaved: suspend (chunkCount: Int, fileIdsJson: String) -> Unit = { _, _ -> },
+        // Called after each successful chunk with full metadata for the chunk_metadata table.
+        // Suspend: calls DAO methods from IO dispatcher — safe.
+        onChunkUploaded: suspend (
+            chunkIndex: Int,
+            telegramFileId: String,
+            telegramMessageId: Long,
+            byteOffset: Long,
+            byteLength: Int,
+        ) -> Unit = { _, _, _, _, _ -> },
         // non-suspend: only calls _progress.update{} which is a non-suspend StateFlow method.
-        // Do NOT make this suspend — the implementation does not require it.
         onChunkRetry: (attempt: Int) -> Unit = {},
         // Called once before the chunk loop with the computed total chunk count.
-        // Kept separate from onChunkSaved to set totalChunks before the first chunk completes,
-        // preventing "Part 1 of 0" in the UI.
         onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
         thumbnailFileId: String? = null,
         thumbnailMessageId: Long? = null,
     ): UploadResult = withContext(Dispatchers.IO) {
-        if (fileSize > MAX_FILE_SIZE) {
-            return@withContext UploadResult.FileTooLarge(fileSize)
-        }
-
         when {
             fileSize <= MAX_SINGLE_UPLOAD_SIZE -> uploadSingle(
                 token = token,
@@ -87,8 +87,7 @@ class TelegramUploader @Inject constructor(
                 caption = caption,
                 onProgress = onProgress,
                 resumeFromChunk = resumeFromChunk,
-                existingFileIdsJson = existingFileIdsJson,
-                onChunkSaved = onChunkSaved,
+                onChunkUploaded = onChunkUploaded,
                 onChunkRetry = onChunkRetry,
                 onTotalChunksKnown = onTotalChunksKnown,
                 thumbnailFileId = thumbnailFileId,
@@ -201,8 +200,13 @@ class TelegramUploader @Inject constructor(
         caption: String?,
         onProgress: (bytesUploaded: Long, total: Long) -> Unit,
         resumeFromChunk: Int = 0,
-        existingFileIdsJson: String = "[]",
-        onChunkSaved: suspend (chunkCount: Int, fileIdsJson: String) -> Unit = { _, _ -> },
+        onChunkUploaded: suspend (
+            chunkIndex: Int,
+            telegramFileId: String,
+            telegramMessageId: Long,
+            byteOffset: Long,
+            byteLength: Int,
+        ) -> Unit = { _, _, _, _, _ -> },
         onChunkRetry: (attempt: Int) -> Unit = {},
         onTotalChunksKnown: (totalChunks: Int) -> Unit = {},
         thumbnailFileId: String? = null,
@@ -215,19 +219,10 @@ class TelegramUploader @Inject constructor(
         val totalChunks = ((fileSize + CHUNK_UPLOAD_SIZE - 1) / CHUNK_UPLOAD_SIZE).toInt()
         onTotalChunksKnown(totalChunks)   // sets SyncProgress.totalChunks before any chunk starts
 
-        // Seed fileIds from saved state for resume.
-        // Serialization format: plain JSON array of strings, e.g. ["id1","id2"].
-        // parseFileIdJson reads the same format via the same Gson instance.
-        // If either side is changed, update both together.
-        val fileIds = parseFileIdJson(existingFileIdsJson).toMutableList()
-        val chunkMsgIds = mutableListOf<Long>()
-        var partIndex = resumeFromChunk
+        // 0-based chunk index, aligned with byteOffset tracking.
+        var chunkIndex = resumeFromChunk
 
-        // Safe skip with short-skip guard:
-        // partIndex == fileIds.size invariant: at every onChunkSaved call, both are equal.
-        // partIndex starts at resumeFromChunk and increments once per chunk.
-        // fileIds starts seeded with resumeFromChunk entries, gains one per successful chunk.
-        // If these diverge, resume would skip the wrong bytes or send mismatched chunk IDs.
+        // Skip already-uploaded bytes (resume support).
         if (resumeFromChunk > 0) {
             var remaining = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
             while (remaining > 0) {
@@ -236,22 +231,20 @@ class TelegramUploader @Inject constructor(
                 remaining -= skipped
             }
             // Guard: stream shorter than expected means the file was modified/truncated since last run.
-            // Continuing would silently upload a corrupt partial chunk. Fail fast instead.
             if (remaining > 0) {
                 return@withContext UploadResult.Error(
                     Exception("Resume failed: stream ended before expected offset (file may have been modified)")
                 )
             }
-            // Seed uploadedSoFar to reflect already-uploaded bytes for progress reporting
             uploadedSoFar = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
         }
 
         val buf = ByteArray(CHUNK_UPLOAD_SIZE.toInt())
         var read: Int
         while (inputStream.read(buf).also { read = it } != -1) {
-            partIndex++
+            val byteOffset = uploadedSoFar
             val chunkData = buf.copyOf(read)
-            val chunkCaption = "[ulap-chunk] $fileName part $partIndex/$totalChunks"
+            val chunkCaption = "[ulap-chunk] $fileName part ${chunkIndex + 1}/$totalChunks"
             val captionBody = chunkCaption.toRequestBody("text/plain".toMediaType())
 
             val (fileId, chunkMsgId) = uploadChunkWithRetry(
@@ -260,31 +253,28 @@ class TelegramUploader @Inject constructor(
                 captionBody = captionBody,
                 chunkData = chunkData,
                 mimeType = mimeType,
-                partFileName = "${fileName}.part$partIndex",
+                partFileName = "${fileName}.part${chunkIndex + 1}",
                 uploadedSoFar = uploadedSoFar,
                 fileSize = fileSize,
                 onProgress = onProgress,
                 onChunkRetry = onChunkRetry,
             )
 
-            fileIds.add(fileId)
-            chunkMsgIds.add(chunkMsgId)
             uploadedSoFar += read
             onProgress(uploadedSoFar, fileSize)
 
-            // Persist chunk progress after each success (invariant: partIndex == fileIds.size)
-            val updatedJson = gson.toJson(fileIds.toTypedArray())
-            onChunkSaved(partIndex, updatedJson)
+            // Persist chunk metadata to the chunk_metadata table after each success.
+            onChunkUploaded(chunkIndex, fileId, chunkMsgId, byteOffset, read)
+            chunkIndex++
         }
 
-        val fileIdJson = gson.toJson(fileIds.toTypedArray())
-        val chunkMsgIdsJson = gson.toJson(chunkMsgIds.toTypedArray())
+        // Store sentinel file ID that tells the download path to use the chunk_metadata table.
         UploadResult.Success(
             messageId = 0L,
-            fileId = fileIdJson,
+            fileId = "$CHUNKED_FILE_ID_PREFIX$totalChunks",
             thumbnailFileId = thumbnailFileId,
             thumbnailMessageId = thumbnailMessageId,
-            chunkMessageIds = chunkMsgIdsJson,
+            chunkMessageIds = null, // chunk_metadata table is the source of truth now
         )
     }
 
@@ -389,11 +379,6 @@ class TelegramUploader @Inject constructor(
         }
     }
 
-    private fun parseFileIdJson(json: String): List<String> {
-        if (json.isBlank() || json == "[]") return emptyList()
-        return gson.fromJson(json, Array<String>::class.java).toList()
-    }
-
 }
 
 sealed class UploadResult {
@@ -402,8 +387,7 @@ sealed class UploadResult {
         val fileId: String,
         val thumbnailFileId: String? = null,
         val thumbnailMessageId: Long? = null,
-        val chunkMessageIds: String? = null,  // JSON array of Long, set for chunked uploads
+        val chunkMessageIds: String? = null,
     ) : UploadResult()
     data class Error(val cause: Throwable) : UploadResult()
-    data class FileTooLarge(val actualSize: Long) : UploadResult()
 }

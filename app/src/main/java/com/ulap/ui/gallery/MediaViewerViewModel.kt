@@ -5,6 +5,10 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.datasource.DataSource
+import com.ulap.data.local.dao.ChunkMetadataDao
+import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
+import com.ulap.data.remote.ParallelChunkDownloader
+import com.ulap.data.remote.ParallelChunkDownloader.Companion.chunkDirFor
 import com.ulap.data.remote.TelegramDownloader
 import com.ulap.domain.model.BackupStatus
 import com.ulap.domain.model.MediaItem
@@ -29,9 +33,8 @@ import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
-
 /** Max total size for completed `ulap_stream_*.mp4` files in cacheDir. */
-internal const val STREAM_CACHE_MAX_BYTES = 200L * 1024 * 1024 // 200 MB
+internal const val STREAM_CACHE_MAX_BYTES = 500L * 1024 * 1024 // 500 MB (increased for larger files)
 
 /** Completed stream files older than this are evicted regardless of total size. */
 internal const val STREAM_CACHE_TTL_MS = 24L * 60 * 60 * 1000 // 24 hours
@@ -64,7 +67,10 @@ class MediaViewerViewModel @Inject constructor(
     getTimeline: GetTimelineUseCase,
     private val getCredentials: GetCredentialsUseCase,
     private val downloader: TelegramDownloader,
+    private val parallelDownloader: ParallelChunkDownloader,
+    private val chunkMetadataDao: ChunkMetadataDao,
     private val downloadCloudItem: DownloadCloudItemUseCase,
+    private val okHttpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -118,30 +124,96 @@ class MediaViewerViewModel @Inject constructor(
                     _streamUrlsCache.value = newCache
                     for (item in toFetch) {
                         val fileId = item.telegramFileId!!
-                        val isChunked = fileId.trim().startsWith("[")
+                        // Legacy chunked: JSON array "[...]"
+                        val isLegacyChunked = fileId.trim().startsWith("[")
+                        // New chunked: sentinel "chunked:N"
+                        val isNewChunked = fileId.startsWith(CHUNKED_FILE_ID_PREFIX)
                         val isVideo = item.mediaType == MediaType.VIDEO
 
-                        if (isChunked && isVideo) {
-                            startProgressiveChunkedDownload(token, fileId, item.id)
-                        } else {
-                            val urls = try {
-                                withContext(Dispatchers.IO) {
-                                    downloader.resolveStreamUrls(token, fileId)
+                        when {
+                            isNewChunked && isVideo -> {
+                                startPrefetchingChunkedDownload(token, item.id)
+                            }
+                            isLegacyChunked && isVideo -> {
+                                startProgressiveChunkedDownload(token, fileId, item.id)
+                            }
+                            else -> {
+                                val urls = try {
+                                    withContext(Dispatchers.IO) {
+                                        downloader.resolveStreamUrls(token, fileId)
+                                    }
+                                } catch (_: Exception) {
+                                    emptyList()
                                 }
-                            } catch (_: Exception) {
-                                emptyList()
+                                val state: StreamUrlsState = if (urls.isEmpty()) {
+                                    StreamUrlsState.Error("Could not resolve stream URL")
+                                } else {
+                                    StreamUrlsState.Ready(urls)
+                                }
+                                _streamUrlsCache.value = _streamUrlsCache.value + (item.id to state)
                             }
-                            val state: StreamUrlsState = if (urls.isEmpty()) {
-                                StreamUrlsState.Error("Could not resolve stream URL")
-                            } else {
-                                StreamUrlsState.Ready(urls)
-                            }
-                            _streamUrlsCache.value = _streamUrlsCache.value + (item.id to state)
                         }
                     }
                 }
             } catch (_: Exception) {
                 // Swallow flow errors to prevent crashing the app
+            }
+        }
+    }
+
+    /**
+     * New-style progressive download for items using the chunk_metadata table.
+     * Resolves chunk URLs in batches, creates [ChunkPrefetchEngine], and emits
+     * [StreamUrlsState.ReadyProgressive] with a [PrefetchingVideoDataSource.Factory].
+     */
+    private fun startPrefetchingChunkedDownload(token: String, itemId: String) {
+        val chunkDir = chunkDirFor(appContext.cacheDir, itemId)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            evictStreamCache(activeItemId = itemId)
+
+            try {
+                val chunks = chunkMetadataDao.getChunksForMedia(itemId)
+                if (chunks.isEmpty()) {
+                    _streamUrlsCache.value = _streamUrlsCache.value + (
+                        itemId to StreamUrlsState.Error("No chunk metadata found")
+                    )
+                    return@launch
+                }
+
+                val fileIds = chunks.map { it.telegramFileId }
+                val urls = downloader.resolveStreamUrlsBatched(token, fileIds)
+
+                if (urls.all { it == null }) {
+                    _streamUrlsCache.value = _streamUrlsCache.value + (
+                        itemId to StreamUrlsState.Error("Could not resolve chunk URLs")
+                    )
+                    return@launch
+                }
+
+                // Inject the OkHttpClient from the existing downloader's transport.
+                // We obtain it via Hilt injection in the constructor.
+                val prefetchEngine = ChunkPrefetchEngine(
+                    chunkDir = chunkDir,
+                    chunkMeta = chunks,
+                    resolvedUrls = urls,
+                    okHttpClient = okHttpClient,
+                )
+
+                val factory = PrefetchingVideoDataSource.Factory(chunkDir, chunks, prefetchEngine)
+                _streamUrlsCache.value = _streamUrlsCache.value + (
+                    itemId to StreamUrlsState.ReadyProgressive(
+                        fileUri = chunkDir.toURI().toString(),
+                        dataSourceFactory = factory,
+                    )
+                )
+                // Start prefetch of first chunks.
+                prefetchEngine.setPrefetchOrigin(0)
+
+            } catch (e: Exception) {
+                _streamUrlsCache.value = _streamUrlsCache.value + (
+                    itemId to StreamUrlsState.Error(e.message ?: "Prefetch setup failed")
+                )
             }
         }
     }

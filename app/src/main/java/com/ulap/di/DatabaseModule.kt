@@ -11,6 +11,8 @@ import androidx.security.crypto.MasterKey
 import com.ulap.data.local.db.MIGRATION_4_5
 import com.ulap.data.local.db.MIGRATION_5_6
 import com.ulap.data.local.db.MIGRATION_6_7
+import com.ulap.data.local.db.MIGRATION_7_8
+import com.ulap.data.local.db.MIGRATION_8_9
 import com.ulap.data.local.db.UlapDatabase
 import dagger.Module
 import dagger.Provides
@@ -46,7 +48,7 @@ object DatabaseModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): UlapDatabase =
         Room.databaseBuilder(context, UlapDatabase::class.java, "ulap.db")
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
             .fallbackToDestructiveMigration()
             .build()
 
@@ -58,6 +60,9 @@ object DatabaseModule {
 
     @Provides
     fun provideSyncStateDao(db: UlapDatabase) = db.syncStateDao()
+
+    @Provides
+    fun provideChunkMetadataDao(db: UlapDatabase) = db.chunkMetadataDao()
 
     @Provides
     @Singleton

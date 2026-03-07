@@ -105,6 +105,18 @@ class BackupForegroundService : Service() {
                         getString(R.string.notification_backup_rate_limited)
                     progress.chunkRetryAttempt > 0 ->
                         getString(R.string.backup_chunk_retry_notification, progress.currentChunk, progress.totalChunks, progress.chunkRetryAttempt, CHUNK_MAX_RETRIES)
+                    progress.totalChunks > 50 && !isRestore -> {
+                        // Large file: show chunk progress, size, and ETA.
+                        val chunkText = getString(R.string.backup_chunk_progress, progress.currentChunk, progress.totalChunks)
+                        val uploadedMb = progress.currentFileBytes / (1024 * 1024)
+                        val totalMb = progress.currentFileBytesTotal / (1024 * 1024)
+                        val sizeText = if (totalMb > 0) " ($uploadedMb MB / $totalMb MB)" else ""
+                        val etaText = if (progress.estimatedRemainingMs > 60_000L) {
+                            val mins = progress.estimatedRemainingMs / 60_000L
+                            " · ~${mins}m"
+                        } else ""
+                        "${progress.itemsDone + 1}/${progress.itemsTotal} · $chunkText$sizeText$etaText"
+                    }
                     progress.totalChunks > 0 && !isRestore ->
                         getString(R.string.backup_chunk_progress, progress.currentChunk, progress.totalChunks).let {
                             "${progress.itemsDone + 1}/${progress.itemsTotal} · $it"
