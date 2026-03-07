@@ -137,10 +137,12 @@ class MediaViewerViewModel @Inject constructor(
     }
 
     /**
-     * Starts downloading chunks to a temp file in the background and immediately
-     * emits a ReadyProgressive state so ExoPlayer can begin playback while the
-     * file is still growing. If the file was already fully downloaded from a
-     * previous session, it emits Ready with a simple file URI instead.
+     * Resolves all chunk CDN URLs in parallel, then immediately emits
+     * [StreamUrlsState.ReadyProgressive] and starts writing bytes — so ExoPlayer receives
+     * its first data within milliseconds of opening the source, with no polling-against-zero gap.
+     *
+     * If the file was already fully downloaded in a previous session, emits
+     * [StreamUrlsState.Ready] with a direct file URI instead — no network needed.
      */
     private fun startProgressiveChunkedDownload(token: String, fileId: String, itemId: String) {
         val tempFile = File(appContext.cacheDir, "ulap_stream_${itemId.hashCode()}.mp4")
@@ -162,32 +164,41 @@ class MediaViewerViewModel @Inject constructor(
         val factory = ChunkedVideoDataSource.Factory(tempFile, written::get, complete::get)
         val fileUri = tempFile.toURI().toString()
 
-        _streamUrlsCache.value = _streamUrlsCache.value + (
-            itemId to StreamUrlsState.ReadyProgressive(fileUri, factory)
-        )
-
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                FileOutputStream(tempFile).buffered().use { out ->
-                    val result = downloader.download(
-                        token = token,
-                        fileId = fileId,
-                        outputStream = object : java.io.OutputStream() {
-                            private val delegate = out
-                            override fun write(b: Int) {
-                                delegate.write(b)
-                                delegate.flush()
-                                written.incrementAndGet()
-                            }
-                            override fun write(b: ByteArray, off: Int, len: Int) {
-                                delegate.write(b, off, len)
-                                delegate.flush()
-                                written.addAndGet(len.toLong())
-                            }
-                            override fun flush() = delegate.flush()
-                            override fun close() = delegate.close()
-                        },
+                // Resolve all chunk URLs in parallel (1 round-trip total instead of N serial).
+                val chunkUrls = downloader.resolveStreamUrls(token, fileId)
+                if (chunkUrls.isEmpty()) {
+                    complete.set(true)
+                    _streamUrlsCache.value = _streamUrlsCache.value + (
+                        itemId to StreamUrlsState.Error("Could not resolve stream URLs")
                     )
+                    return@launch
+                }
+
+                // Open the file and emit ReadyProgressive together: by the time ExoPlayer's
+                // Loader thread calls read(), the download loop below is already writing bytes.
+                // This eliminates the polling-against-zero gap that caused slow start.
+                val fos = FileOutputStream(tempFile)
+                _streamUrlsCache.value = _streamUrlsCache.value + (
+                    itemId to StreamUrlsState.ReadyProgressive(fileUri, factory)
+                )
+
+                fos.use {
+                    val progressStream = object : java.io.OutputStream() {
+                        override fun write(b: Int) {
+                            fos.write(b)
+                            written.incrementAndGet()
+                        }
+                        override fun write(b: ByteArray, off: Int, len: Int) {
+                            fos.write(b, off, len)
+                            written.addAndGet(len.toLong())
+                        }
+                        override fun flush() = fos.flush()
+                        // close() intentionally left to fos.use {} — no double-close
+                        override fun close() = Unit
+                    }
+                    val result = downloader.downloadFromUrls(chunkUrls, progressStream)
                     when (result) {
                         is com.ulap.data.remote.DownloadResult.Success -> {
                             complete.set(true)

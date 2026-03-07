@@ -88,7 +88,7 @@ class ChunkedVideoDataSource(
             val available = written - readPosition
             if (available > 0) return available
             if (downloadComplete()) return 0
-            Thread.sleep(100)
+            Thread.sleep(50)
         }
     }
 
