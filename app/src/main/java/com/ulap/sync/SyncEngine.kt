@@ -13,6 +13,7 @@ import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.local.dao.ChunkMetadataDao
+import com.ulap.domain.model.FileUploadProgress
 import com.google.gson.Gson
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.data.remote.DownloadResult
@@ -276,7 +277,7 @@ class SyncEngine @Inject constructor(
     private suspend fun runUploadPipeline() {
         speedSamples.clear()
         _progress.update {
-            SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = 0)
+            SyncProgress(isActive = true, operation = SyncOperation.UPLOADING, itemsTotal = 0, activeUploads = emptyMap())
         }
         try {
             val token = credentialRepository.getBotToken() ?: return
@@ -406,12 +407,13 @@ class SyncEngine @Inject constructor(
             // to PENDING with its uploadedChunkCount intact so it can resume.
             // Because SyncEngine uses SupervisorJob, only this worker is cancelled —
             // other workers continue with their current items.
-            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0, isRateLimited = true) }
+            // Note: the activeUploads entry is already removed by processUploadInternal's finally block.
+            _progress.update { it.copy(isRateLimited = true) }
             throw e
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
             // unexpected I/O errors) so the worker coroutine stays alive for the next item.
-            _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
+            // Note: the activeUploads entry is already removed by processUploadInternal's finally block.
             mediaItemDao.updateBackupResult(
                 id = entity.id,
                 status = BackupStatus.FAILED,
@@ -460,12 +462,17 @@ class SyncEngine @Inject constructor(
             thumbnailFileId = null,
         )
 
-        // Announce which file is being uploaded so the UI can show per-file progress
-        _progress.update { it.copy(
-            currentFileName = entity.fileName,
-            currentFileBytesTotal = entity.size,
-            currentFileBytes = 0L,
-        ) }
+        // Register this file in the concurrent-uploads map so the UI can display all active
+        // uploads simultaneously. Removed in the finally block below regardless of outcome.
+        val displayFileName = sanitizeDisplayFileName(entity.fileName, entity.mimeType)
+        _progress.update { prev ->
+            prev.copy(
+                activeUploads = prev.activeUploads + (entity.id to FileUploadProgress(
+                    fileName = displayFileName,
+                    bytesTotal = entity.size,
+                ))
+            )
+        }
 
         val inputStream = try {
             contentResolver.openInputStream(Uri.parse(entity.contentUri))
@@ -483,7 +490,12 @@ class SyncEngine @Inject constructor(
                 messageId = null,
                 thumbnailFileId = null,
             )
-            _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+            _progress.update { prev ->
+                prev.copy(
+                    itemsDone = prev.itemsDone + 1,
+                    activeUploads = prev.activeUploads - entity.id,
+                )
+            }
             return
         }
 
@@ -507,7 +519,12 @@ class SyncEngine @Inject constructor(
                     thumbnailFileId = hashMatch.thumbnailFileId,
                     contentHash = contentHash,
                 )
-                _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+                _progress.update { prev ->
+                    prev.copy(
+                        itemsDone = prev.itemsDone + 1,
+                        activeUploads = prev.activeUploads - entity.id,
+                    )
+                }
                 return
             }
         }
@@ -622,18 +639,29 @@ class SyncEngine @Inject constructor(
                         lastReported = uploaded
                         val (speedBps, etaMs) = computeSpeedAndEta(uploaded, total.takeIf { it > 0 } ?: uploaded)
                         _progress.update { prog ->
+                            val entry = prog.activeUploads[entity.id] ?: return@update prog.copy(
+                                bytesTransferred = prog.bytesTransferred + delta
+                            )
                             prog.copy(
-                                currentFileBytes = uploaded,
-                                currentFileBytesTotal = total,
                                 bytesTransferred = prog.bytesTransferred + delta,
-                                uploadSpeedBps = speedBps,
-                                estimatedRemainingMs = etaMs,
+                                activeUploads = prog.activeUploads + (entity.id to entry.copy(
+                                    bytesUploaded = uploaded,
+                                    bytesTotal = total.takeIf { it > 0 } ?: entry.bytesTotal,
+                                    uploadSpeedBps = speedBps,
+                                    estimatedRemainingMs = etaMs,
+                                ))
                             )
                         }
                     },
                     resumeFromChunk = resumeFromChunk,
                     onTotalChunksKnown = { total ->
-                        _progress.update { it.copy(totalChunks = total, currentChunk = resumeFromChunk) }
+                        _progress.update { prog ->
+                            val entry = prog.activeUploads[entity.id] ?: return@update prog
+                            prog.copy(activeUploads = prog.activeUploads + (entity.id to entry.copy(
+                                totalChunks = total,
+                                currentChunk = resumeFromChunk,
+                            )))
+                        }
                     },
                     onChunkUploaded = { index, fileId, messageId, byteOffset, byteLength ->
                         chunkMetadataDao.insertChunk(
@@ -646,10 +674,21 @@ class SyncEngine @Inject constructor(
                                 byteLength = byteLength,
                             )
                         )
-                        _progress.update { it.copy(currentChunk = index + 1, chunkRetryAttempt = 0) }
+                        _progress.update { prog ->
+                            val entry = prog.activeUploads[entity.id] ?: return@update prog
+                            prog.copy(activeUploads = prog.activeUploads + (entity.id to entry.copy(
+                                currentChunk = index + 1,
+                                chunkRetryAttempt = 0,
+                            )))
+                        }
                     },
                     onChunkRetry = { attempt ->
-                        _progress.update { it.copy(chunkRetryAttempt = attempt) }
+                        _progress.update { prog ->
+                            val entry = prog.activeUploads[entity.id] ?: return@update prog
+                            prog.copy(activeUploads = prog.activeUploads + (entity.id to entry.copy(
+                                chunkRetryAttempt = attempt,
+                            )))
+                        }
                     },
                     thumbnailFileId = videoThumbnailFileId,
                     thumbnailMessageId = videoThumbnailMessageId,
@@ -657,8 +696,10 @@ class SyncEngine @Inject constructor(
             }
         } finally {
             // Guaranteed cleanup even if uploadMedia throws (e.g. coroutine cancellation).
+            // Remove the per-file entry so it stops showing in the UI.
             // Do NOT add itemsDone+1 here — rate-limited items are not completed.
             tempExif?.delete()
+            _progress.update { prev -> prev.copy(activeUploads = prev.activeUploads - entity.id) }
         }
         // result is null only when an exception escaped the try block (e.g. TelegramRateLimitException
         // or coroutine cancellation), in which case the exception propagates past this point anyway.
@@ -668,7 +709,6 @@ class SyncEngine @Inject constructor(
             is UploadResult.Success -> {
                 mediaItemDao.clearChunkProgress(entity.id)
                 chunkMetadataDao.deleteChunksForMedia(entity.id)
-                _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
                 // Prefer Telegram's returned thumbnail; fall back to our pre-extracted one for videos.
                 val effectiveThumbnailFileId = result.thumbnailFileId ?: videoThumbnailFileId
                 val effectiveThumbnailMessageId = if (result.thumbnailFileId != null) result.thumbnailMessageId else videoThumbnailMessageId
@@ -686,7 +726,6 @@ class SyncEngine @Inject constructor(
                 )
             }
             is UploadResult.Error -> {
-                _progress.update { it.copy(chunkRetryAttempt = 0, currentChunk = 0, totalChunks = 0) }
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
                     status = BackupStatus.FAILED,
@@ -890,6 +929,45 @@ class SyncEngine @Inject constructor(
             null
         }
     }
+}
+
+/**
+ * Returns a corrected display name for a media file when the filename extension disagrees with
+ * the actual mime type. For example, a video named "Screenshot_20260108.jpg" (video/mp4) will
+ * be shown as "Screenshot_20260108.mp4" so users aren't confused by a 9 GB ".jpg" file.
+ *
+ * Only corrects image-vs-video mismatches (the most common real-world case); other mime types
+ * are returned with the original name.
+ */
+internal fun sanitizeDisplayFileName(fileName: String, mimeType: String): String {
+    val dotIdx = fileName.lastIndexOf('.')
+    val currentExt = if (dotIdx >= 0) fileName.substring(dotIdx + 1).lowercase() else ""
+    val base = if (dotIdx >= 0) fileName.substring(0, dotIdx) else fileName
+
+    val isVideoMime = mimeType.startsWith("video/")
+    val isImageMime = mimeType.startsWith("image/")
+
+    val imageExts = setOf("jpg", "jpeg", "png", "webp", "heic", "heif", "gif", "bmp", "avif")
+    val videoExts = setOf("mp4", "mov", "mkv", "avi", "3gp", "webm", "ts", "m4v", "m2ts", "mts")
+
+    val extensionMismatch = (isVideoMime && currentExt in imageExts) ||
+        (isImageMime && currentExt in videoExts)
+
+    if (!extensionMismatch) return fileName
+
+    // Pick a canonical extension from the mime subtype (e.g. "video/mp4" → "mp4").
+    val mimeSubtype = mimeType.substringAfter('/').lowercase()
+    val canonicalExt = when (mimeSubtype) {
+        "jpeg" -> "jpg"
+        "quicktime" -> "mov"
+        "x-matroska" -> "mkv"
+        "x-msvideo" -> "avi"
+        "3gpp" -> "3gp"
+        "x-m4v" -> "m4v"
+        else -> if (mimeSubtype.length <= 5) mimeSubtype else currentExt // keep original if unknown
+    }
+
+    return if (canonicalExt != currentExt) "$base.$canonicalExt" else fileName
 }
 
 sealed class DeleteAllBackupsResult {

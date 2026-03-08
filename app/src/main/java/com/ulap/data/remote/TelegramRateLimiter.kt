@@ -1,8 +1,6 @@
 package com.ulap.data.remote
 
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
@@ -15,36 +13,46 @@ private const val MAX_BACKOFF_MS = 60_000L
 @Singleton
 class TelegramRateLimiter @Inject constructor() {
 
-    private val mutex = Mutex()
-    private val lastSendTime = AtomicLong(0L)
-
-    // AtomicInteger so concurrent workers can read/write without data races
+    /**
+     * Monotonically-increasing timestamp: the earliest wall-clock time at which the next
+     * Telegram API call may be dispatched. Each caller atomically claims a slot by advancing
+     * this value forward by MIN_SEND_GAP_MS, then sleeps until their reserved slot arrives.
+     *
+     * This replaces the previous Mutex-based enforceGap(), which serialized ALL concurrent
+     * workers through a single lock — making "3 small-file workers" effectively sequential.
+     * With slot reservation, all workers queue up concurrently and sleep in parallel:
+     *   Worker 1 → slot T+0      (fires immediately)
+     *   Worker 2 → slot T+1.1 s  (sleeps 1.1 s independently)
+     *   Worker 3 → slot T+2.2 s  (sleeps 2.2 s independently)
+     *   Worker 4 → slot T+3.3 s  (sleeps 3.3 s independently)
+     * Maximum Telegram throughput is maintained; workers are no longer blocked by each other.
+     */
+    private val nextAllowedSendTime = AtomicLong(0L)
     private val consecutiveFails = AtomicInteger(0)
 
     /**
      * Wraps a Telegram API call with:
-     * 1. Proactive spacing (≥1.1s between calls) to avoid hitting the rate limit.
-     * 2. Reactive retry loop: if a 429 is received, waits the server-prescribed
-     *    [retry_after] seconds then retries, up to [MAX_RETRIES] times.
+     * 1. Proactive spacing (≥1.1 s between calls) via atomic slot reservation.
+     * 2. Reactive retry loop: on 429, waits the server-prescribed retry_after, then retries.
      */
     suspend fun <T> withRateLimit(block: suspend () -> T): T {
-        enforceGap()
+        awaitSlot()
         var attempt = 0
         while (true) {
             attempt++
             try {
                 val result = block()
                 consecutiveFails.set(0)
-                lastSendTime.set(System.currentTimeMillis())
                 return result
             } catch (e: TelegramRateLimitException) {
                 if (attempt >= MAX_RETRIES) throw e
                 val waitMs = e.retryAfterMs.coerceAtMost(MAX_BACKOFF_MS)
+                // Push the shared slot forward so other workers also back off during the flood.
+                nextAllowedSendTime.updateAndGet { maxOf(it, System.currentTimeMillis() + waitMs) }
                 delay(waitMs)
                 consecutiveFails.incrementAndGet()
-                lastSendTime.set(System.currentTimeMillis())
-                // Re-enforce the gap before the retry attempt
-                enforceGap()
+                // Re-claim a slot for the retry.
+                awaitSlot()
             }
         }
     }
@@ -57,13 +65,20 @@ class TelegramRateLimiter @Inject constructor() {
         consecutiveFails.set(0)
     }
 
-    private suspend fun enforceGap() {
-        mutex.withLock {
-            val elapsed = System.currentTimeMillis() - lastSendTime.get()
-            if (elapsed < MIN_SEND_GAP_MS) {
-                delay(MIN_SEND_GAP_MS - elapsed)
-            }
+    /**
+     * Atomically reserves the next available send slot and delays until it arrives.
+     * Multiple coroutines calling this concurrently each get a distinct slot and sleep
+     * in parallel — no coroutine blocks another from reserving its own slot.
+     */
+    private suspend fun awaitSlot() {
+        val now = System.currentTimeMillis()
+        // Claim: advance nextAllowedSendTime by MIN_SEND_GAP_MS, but never schedule in the past.
+        val mySlot = nextAllowedSendTime.getAndUpdate { last ->
+            maxOf(last, now) + MIN_SEND_GAP_MS
         }
+        // mySlot is the time this caller is allowed to send. Wait if it's in the future.
+        val waitMs = mySlot - System.currentTimeMillis()
+        if (waitMs > 0) delay(waitMs)
     }
 }
 

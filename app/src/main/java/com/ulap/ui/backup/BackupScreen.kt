@@ -36,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.R
 import com.ulap.domain.model.MediaItem
+import com.ulap.domain.model.FileUploadProgress
 import com.ulap.domain.model.SyncOperation
 import com.ulap.ui.rememberRunWithNotificationPermission
 
@@ -132,39 +133,25 @@ fun BackupScreen(
                             stringResource(R.string.backup_progress_uploading, progress.itemsDone + 1, progress.itemsTotal),
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        if (progress.currentFileName.isNotEmpty()) {
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                progress.currentFileName,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            LinearProgressIndicator(
-                                progress = { progress.currentFileFraction },
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                            if (progress.currentFileBytesTotal > 0) {
-                                Spacer(Modifier.height(4.dp))
-                                Text(
-                                    "${formatBytes(progress.currentFileBytes)} / ${formatBytes(progress.currentFileBytesTotal)}",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                        val uploads = progress.activeUploads.values
+                        val largeUpload = uploads.firstOrNull { it.isChunked }
+                        // For the small panel, pick whichever non-chunked file has made the most
+                        // progress — a good proxy for "the one currently sending bytes".
+                        val smallUpload = uploads
+                            .filter { !it.isChunked }
+                            .maxByOrNull { it.bytesUploaded }
+                        if (largeUpload != null || smallUpload != null) {
+                            Spacer(Modifier.height(10.dp))
+                            if (largeUpload != null) {
+                                LargeUploadPanel(largeUpload)
                             }
-                            if (progress.totalChunks > 1) {
-                                Spacer(Modifier.height(4.dp))
-                                val chunkLabel = if (progress.chunkRetryAttempt > 0)
-                                    stringResource(R.string.backup_chunk_retry, progress.currentChunk, progress.totalChunks)
-                                else
-                                    stringResource(R.string.backup_chunk_progress, progress.currentChunk, progress.totalChunks)
-                                Text(
-                                    chunkLabel,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
+                            if (largeUpload != null && smallUpload != null) {
+                                Spacer(Modifier.height(10.dp))
+                                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                                Spacer(Modifier.height(10.dp))
+                            }
+                            if (smallUpload != null) {
+                                SmallUploadPanel(smallUpload)
                             }
                         } else {
                             Spacer(Modifier.height(6.dp))
@@ -313,4 +300,71 @@ private fun StatChip(text: String) {
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
+}
+
+/** Large-file panel: filename, "x MB / y GB", full-width progress bar. No chunk counter. */
+@Composable
+private fun LargeUploadPanel(upload: FileUploadProgress) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                upload.fileName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+            )
+            if (upload.bytesTotal > 0) {
+                Text(
+                    "${formatBytes(upload.bytesUploaded)} / ${formatBytes(upload.bytesTotal)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(
+            progress = { upload.fraction },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** Small-file panel: same two-row layout, slightly muted — represents the "current" small worker. */
+@Composable
+private fun SmallUploadPanel(upload: FileUploadProgress) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                upload.fileName,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f).padding(end = 8.dp),
+            )
+            if (upload.bytesTotal > 0) {
+                Text(
+                    "${formatBytes(upload.bytesUploaded)} / ${formatBytes(upload.bytesTotal)}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(
+            progress = { upload.fraction },
+            modifier = Modifier.fillMaxWidth(),
+            trackColor = MaterialTheme.colorScheme.surfaceVariant,
+        )
+    }
 }
