@@ -83,6 +83,9 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
     }
 }
 
+/** Max items per Room IN-clause batch. SQLite's SQLITE_MAX_VARIABLE_NUMBER defaults to 999. */
+const val ROOM_BATCH_SIZE = 500
+
 @Database(
     entities = [MediaItemEntity::class, BackupFolderEntity::class, SyncStateEntity::class, ChunkMetadataEntity::class],
     version = 9,

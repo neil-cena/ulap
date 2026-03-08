@@ -2,8 +2,10 @@ package com.ulap.data.repository
 
 import com.ulap.data.local.MediaStoreScanner
 import com.ulap.data.local.dao.BackupFolderDao
+import com.ulap.data.local.dao.BackupStatsRow
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.dao.SyncStateDao
+import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.SyncStateEntity
@@ -11,7 +13,6 @@ import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.repository.MediaRepository
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -34,32 +35,30 @@ class MediaRepositoryImpl @Inject constructor(
         mediaItemDao.observeByMediaType(com.ulap.data.local.entity.MediaType.valueOf(type.name))
             .map { entities -> entities.map { it.toDomain() } }
 
-    override fun observeBackupStats(): Flow<BackupStats> = combine(
-        mediaItemDao.countByStatus(BackupStatus.BACKED_UP),
-        mediaItemDao.countByStatus(BackupStatus.PENDING),
-        mediaItemDao.countByStatus(BackupStatus.FAILED),
-        mediaItemDao.countByStatus(BackupStatus.EXCLUDED),
-        mediaItemDao.countByStatus(BackupStatus.UPLOADING),
-    ) { backedUp: Int, pending: Int, failed: Int, excluded: Int, uploading: Int ->
-        Triple(backedUp, pending + uploading, Triple(failed, excluded, uploading))
-    }.combine(mediaItemDao.countByStatus(BackupStatus.CLOUD_ONLY)) { t, cloudOnly: Int ->
-        val (backedUp, pending, failExclUp) = t
-        val (failed, excluded, _) = failExclUp
-        BackupStats(
-            total = backedUp + pending + failed + excluded + cloudOnly,
-            backedUp = backedUp,
-            pending = pending,
-            failed = failed,
-            excluded = excluded,
-            cloudOnly = cloudOnly,
-        )
-    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.BACKED_UP)) { stats, backedUpBytes ->
-        stats.copy(backedUpBytes = backedUpBytes)
-    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.PENDING)) { stats, pendingBytes ->
-        stats.copy(pendingBytes = pendingBytes)
-    }.combine(mediaItemDao.sumSizeByStatus(BackupStatus.CLOUD_ONLY)) { stats, cloudOnlyBytes ->
-        stats.copy(cloudOnlyBytes = cloudOnlyBytes)
-    }
+    override fun observeBackupStats(): Flow<BackupStats> =
+        mediaItemDao.observeBackupStatsGrouped().map { rows ->
+            val byStatus = rows.associateBy { it.backupStatus }
+            fun countOf(s: BackupStatus) = byStatus[s]?.count ?: 0
+            fun sizeOf(s: BackupStatus) = byStatus[s]?.totalSize ?: 0L
+
+            val backedUp = countOf(BackupStatus.BACKED_UP)
+            val pending = countOf(BackupStatus.PENDING) + countOf(BackupStatus.UPLOADING)
+            val failed = countOf(BackupStatus.FAILED)
+            val excluded = countOf(BackupStatus.EXCLUDED)
+            val cloudOnly = countOf(BackupStatus.CLOUD_ONLY)
+
+            BackupStats(
+                total = backedUp + pending + failed + excluded + cloudOnly,
+                backedUp = backedUp,
+                pending = pending,
+                failed = failed,
+                excluded = excluded,
+                cloudOnly = cloudOnly,
+                backedUpBytes = sizeOf(BackupStatus.BACKED_UP),
+                pendingBytes = sizeOf(BackupStatus.PENDING) + sizeOf(BackupStatus.UPLOADING),
+                cloudOnlyBytes = sizeOf(BackupStatus.CLOUD_ONLY),
+            )
+        }
 
     override suspend fun scanAndSync(fullScan: Boolean) {
         val syncState = syncStateDao.get() ?: SyncStateEntity()
@@ -83,21 +82,32 @@ class MediaRepositoryImpl @Inject constructor(
         val since = if (effectiveFullScan) 0L else syncState.lastIncrementalScanAt ?: 0L
         val scanned = scanner.scanMedia(enabledBuckets, since)
 
-        scanned.forEach { entity ->
-            val existing = mediaItemDao.findById(entity.id)
-            if (existing == null) {
-                mediaItemDao.upsert(entity)
-            } else if (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.EXCLUDED) {
-                // don't overwrite already-backed-up status; also don't re-enqueue excluded
-                mediaItemDao.upsert(entity.copy(
-                    backupStatus = existing.backupStatus,
-                    telegramFileId = existing.telegramFileId,
-                    telegramMessageId = existing.telegramMessageId,
-                    lastSyncedAt = existing.lastSyncedAt,
-                    thumbnailFileId = existing.thumbnailFileId,
-                ))
-            } else {
-                mediaItemDao.upsert(entity)
+        if (scanned.isNotEmpty()) {
+            val existingMap: Map<String, MediaItemEntity> = scanned
+                .map { it.id }
+                .chunked(ROOM_BATCH_SIZE)
+                .flatMap { mediaItemDao.findByIds(it) }
+                .associateBy { it.id }
+
+            val toUpsert = scanned.map { entity ->
+                val existing = existingMap[entity.id]
+                if (existing != null &&
+                    (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.EXCLUDED)
+                ) {
+                    entity.copy(
+                        backupStatus = existing.backupStatus,
+                        telegramFileId = existing.telegramFileId,
+                        telegramMessageId = existing.telegramMessageId,
+                        lastSyncedAt = existing.lastSyncedAt,
+                        thumbnailFileId = existing.thumbnailFileId,
+                    )
+                } else {
+                    entity
+                }
+            }
+
+            toUpsert.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+                mediaItemDao.upsertAll(batch)
             }
         }
 

@@ -154,10 +154,9 @@ class ParallelChunkDownloader @Inject constructor(
                             }
                             try {
                                 val targetFile = chunkFile(chunkDir, pending[i].chunkIndex)
-                                val bytes = downloadUrlToBytes(url)
-                                targetFile.writeBytes(bytes)
+                                val bytesCopied = downloadUrlToFile(url, targetFile)
                                 synchronized(this@ParallelChunkDownloader) {
-                                    downloaded += bytes.size
+                                    downloaded += bytesCopied
                                     onProgress(downloaded, totalBytes)
                                 }
                             } catch (e: Exception) {
@@ -182,6 +181,25 @@ class ParallelChunkDownloader @Inject constructor(
             if (!response.isSuccessful) throw Exception("HTTP ${response.code} for $url")
             val body = response.body ?: throw Exception("Empty response body")
             return body.byteStream().readBytes()
+        }
+    }
+
+    private fun downloadUrlToFile(url: String, targetFile: File): Long {
+        val request = Request.Builder().url(url).build()
+        val tmpFile = File(targetFile.parent, targetFile.name + ".tmp")
+        okHttpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) throw Exception("HTTP ${response.code} for $url")
+            val body = response.body ?: throw Exception("Empty response body")
+            val bytesCopied = body.byteStream().use { input ->
+                tmpFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            if (!tmpFile.renameTo(targetFile)) {
+                tmpFile.delete()
+                throw Exception("Failed to rename tmp file for $url")
+            }
+            return bytesCopied
         }
     }
 

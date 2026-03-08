@@ -10,6 +10,12 @@ import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.MediaType
 import kotlinx.coroutines.flow.Flow
 
+data class BackupStatsRow(
+    val backupStatus: BackupStatus,
+    val count: Int,
+    val totalSize: Long,
+)
+
 @Dao
 interface MediaItemDao {
 
@@ -138,6 +144,13 @@ interface MediaItemDao {
     @Query("SELECT COALESCE(SUM(size), 0) FROM media_items WHERE backupStatus = :status")
     fun sumSizeByStatus(status: BackupStatus): Flow<Long>
 
+    @Query("""
+        SELECT backupStatus, COUNT(*) as count, COALESCE(SUM(size), 0) as totalSize
+        FROM media_items
+        GROUP BY backupStatus
+    """)
+    fun observeBackupStatsGrouped(): Flow<List<BackupStatsRow>>
+
     @Query(
         """
         SELECT * FROM media_items
@@ -208,6 +221,15 @@ interface MediaItemDao {
 
     @Query("SELECT * FROM media_items WHERE telegramFileId = :fileId LIMIT 1")
     suspend fun findByTelegramFileId(fileId: String): MediaItemEntity?
+
+    @Query("SELECT * FROM media_items WHERE id IN (:ids)")
+    suspend fun findByIds(ids: List<String>): List<MediaItemEntity>
+
+    @Query("SELECT telegramFileId FROM media_items WHERE telegramFileId IN (:fileIds)")
+    suspend fun findExistingTelegramFileIds(fileIds: List<String>): List<String>
+
+    @Query("SELECT id FROM media_items WHERE id IN (:ids)")
+    suspend fun findExistingIds(ids: List<String>): List<String>
 
     @Query("UPDATE media_items SET uploadedChunks = :chunks, uploadedChunkCount = :count WHERE id = :id")
     suspend fun saveChunkProgress(id: String, chunks: String, count: Int)

@@ -4,6 +4,7 @@ import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
+import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.MediaType
@@ -129,9 +130,25 @@ class BackupIndexManager @Inject constructor(
         }
         val manifest = manifestResult.getOrThrow()
         debugLog.log("IndexManager", "fetchAndMergeFromFileId: index has ${manifest.items.size} entries, exportedAt=${manifest.exportedAt}")
+        if (manifest.items.isEmpty()) return@withContext Result.success(0)
+
+        val manifestFileIds = manifest.items.map { it.telegramFileId }
+        val knownFileIds = manifestFileIds
+            .chunked(ROOM_BATCH_SIZE)
+            .flatMap { mediaItemDao.findExistingTelegramFileIds(it) }
+            .toHashSet()
+
+        val potentialCloudIds = manifest.items.map { "cloud_${it.id}" }
+        val knownCloudIds = potentialCloudIds
+            .chunked(ROOM_BATCH_SIZE)
+            .flatMap { mediaItemDao.findExistingIds(it) }
+            .toHashSet()
+
         var merged = 0
+        val newEntities = mutableListOf<MediaItemEntity>()
+
         for (entry in manifest.items) {
-            if (mediaItemDao.findByTelegramFileId(entry.telegramFileId) != null) continue
+            if (entry.telegramFileId in knownFileIds) continue
             val local = mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
             val targetId: String
             if (local != null) {
@@ -149,7 +166,7 @@ class BackupIndexManager @Inject constructor(
                 merged++
             } else {
                 val cloudId = "cloud_${entry.id}"
-                if (mediaItemDao.findById(cloudId) != null) continue
+                if (cloudId in knownCloudIds) continue
                 val entity = MediaItemEntity(
                     id = cloudId,
                     path = "",
@@ -169,7 +186,7 @@ class BackupIndexManager @Inject constructor(
                     errorMessage = null,
                     thumbnailFileId = entry.thumbnailFileId,
                 )
-                mediaItemDao.upsert(entity)
+                newEntities.add(entity)
                 targetId = cloudId
                 merged++
             }
@@ -198,6 +215,11 @@ class BackupIndexManager @Inject constructor(
                     )
                     byteOffset += byteLen
                 }
+            }
+        }
+        if (newEntities.isNotEmpty()) {
+            newEntities.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+                mediaItemDao.upsertAll(batch)
             }
         }
         debugLog.log("IndexManager", "fetchAndMergeFromFileId: merged $merged new items")

@@ -17,6 +17,9 @@ import com.ulap.domain.usecase.RefreshFoldersUseCase
 import com.ulap.domain.usecase.ScanMediaUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CancellationException
@@ -33,7 +36,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.YearMonth
 import java.time.ZoneId
@@ -118,21 +120,24 @@ class TimelineViewModel @Inject constructor(
                         .filter { it.backupStatus == BackupStatus.CLOUD_ONLY && (it.thumbnailFileId != null || it.telegramFileId != null) && cache[it.id] == null }
                         .distinctBy { it.id }
                     for (batch in uncached.chunked(5)) {
-                        batch.forEach { item ->
-                            val fileId = item.thumbnailFileId ?: item.telegramFileId ?: return@forEach
-                            val url = try {
-                                withContext(Dispatchers.IO) {
-                                    downloader.resolveStreamUrls(token, fileId).firstOrNull()
+                        val results = coroutineScope {
+                            batch.map { item ->
+                                async(Dispatchers.IO) {
+                                    val fileId = item.thumbnailFileId ?: item.telegramFileId ?: return@async null
+                                    val url = try {
+                                        downloader.resolveStreamUrls(token, fileId).firstOrNull()
+                                    } catch (_: Exception) { null }
+                                    if (url != null) item.id to url else null
                                 }
-                            } catch (_: Exception) {
-                                null
-                            }
-                            if (url != null) {
-                                cache = cache + (item.id to url)
-                                thumbnailUrlCache.put(item.id, url)
-                            }
+                            }.awaitAll().filterNotNull()
                         }
-                        streamUrlCache.value = cache
+                        if (results.isNotEmpty()) {
+                            for ((id, url) in results) {
+                                thumbnailUrlCache.put(id, url)
+                                cache = cache + (id to url)
+                            }
+                            streamUrlCache.value = cache
+                        }
                         delay(300)
                     }
                 }.collect {}

@@ -105,7 +105,16 @@ class ChunkPrefetchEngine(
                 okHttpClient.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) return@launch
                     val body = response.body ?: return@launch
-                    targetFile.writeBytes(body.bytes())
+                    val tmpFile = File(targetFile.parent, targetFile.name + ".tmp")
+                    body.byteStream().use { input ->
+                        tmpFile.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    if (!tmpFile.renameTo(targetFile)) {
+                        tmpFile.delete()
+                        return@launch
+                    }
                     completed[chunkIndex] = true
                 }
                 // After completing, advance the window.
