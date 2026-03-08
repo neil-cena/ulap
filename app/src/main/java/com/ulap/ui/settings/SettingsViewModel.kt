@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.data.repository.UploadSpeedMode
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
@@ -91,6 +92,9 @@ class SettingsViewModel @Inject constructor(
     val pauseOnLowBattery: StateFlow<Boolean> = userPrefs.pauseOnLowBattery
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
 
+    val uploadSpeedMode: StateFlow<UploadSpeedMode> = userPrefs.uploadSpeedMode
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UploadSpeedMode.BALANCED)
+
     val backupStats: StateFlow<BackupStats?> = getBackupStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -138,6 +142,8 @@ class SettingsViewModel @Inject constructor(
         userPrefs.setPauseOnLowBattery(enabled)
         SyncWorker.schedule(context, wifiOnly = userPrefs.wifiOnly.value, pauseOnLowBattery = enabled)
     }
+
+    fun setUploadSpeedMode(mode: UploadSpeedMode) = userPrefs.setUploadSpeedMode(mode)
 
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }

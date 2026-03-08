@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import com.ulap.MainActivity
 import com.ulap.R
 import com.ulap.data.remote.CHUNK_MAX_RETRIES
+import com.ulap.data.remote.ThrottleReason
 import com.ulap.domain.model.SyncOperation
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
@@ -101,8 +102,30 @@ class BackupForegroundService : Service() {
                 }
                 val isRestore = progress.operation == SyncOperation.DOWNLOADING
                 val text = when {
-                    progress.isRateLimited ->
-                        getString(R.string.notification_backup_rate_limited)
+                    progress.isRateLimited -> when (progress.throttleReason) {
+                        ThrottleReason.CIRCUIT_OPEN -> {
+                            val remainingMs = (progress.throttleResumeAtMs - System.currentTimeMillis()).coerceAtLeast(0L)
+                            if (remainingMs > 0) {
+                                val mins = remainingMs / 60_000L
+                                val secs = (remainingMs % 60_000L) / 1_000L
+                                val eta = if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
+                                getString(R.string.notification_throttle_circuit_open, eta)
+                            } else getString(R.string.notification_backup_rate_limited)
+                        }
+                        ThrottleReason.BUDGET_LIMIT -> {
+                            val remainingMs = (progress.throttleResumeAtMs - System.currentTimeMillis()).coerceAtLeast(0L)
+                            if (remainingMs > 0) {
+                                val mins = remainingMs / 60_000L
+                                val secs = (remainingMs % 60_000L) / 1_000L
+                                val eta = if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
+                                getString(R.string.notification_throttle_budget, eta)
+                            } else getString(R.string.notification_backup_rate_limited)
+                        }
+                        ThrottleReason.ADAPTIVE_SLOWDOWN ->
+                            getString(R.string.notification_throttle_adaptive)
+                        else ->
+                            getString(R.string.notification_backup_rate_limited)
+                    }
                     progress.chunkRetryAttempt > 0 ->
                         getString(R.string.backup_chunk_retry_notification, progress.currentChunk, progress.totalChunks, progress.chunkRetryAttempt, CHUNK_MAX_RETRIES)
                     progress.totalChunks > 50 && !isRestore -> {

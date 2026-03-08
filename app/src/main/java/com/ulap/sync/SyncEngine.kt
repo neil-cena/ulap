@@ -24,8 +24,10 @@ import com.ulap.data.remote.ParallelChunkDownloader
 import com.ulap.data.remote.TelegramApiException
 import com.ulap.data.remote.TelegramRateLimitException
 import com.ulap.data.remote.TelegramRateLimiter
+import com.ulap.data.remote.ThrottleReason
 import com.ulap.data.remote.TelegramUploader
 import com.ulap.data.remote.UploadResult
+import com.ulap.data.remote.toUploadErrorDetail
 import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
 import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.debug.DebugLogBuffer
@@ -35,6 +37,7 @@ import com.ulap.domain.model.SyncProgress
 import com.ulap.domain.model.BackupCompletionEvent
 import com.ulap.domain.repository.CredentialRepository
 import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.data.repository.UploadSpeedMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -82,6 +85,8 @@ class SyncEngine @Inject constructor(
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
+    /** Mirrors rateLimiter.throttleState into _progress while an upload is active. */
+    private var throttleSyncJob: Job? = null
     private var uploadCancelled = false  // must be reset by startUpload() before each run
 
     private val _progress = MutableStateFlow(SyncProgress())
@@ -95,6 +100,19 @@ class SyncEngine @Inject constructor(
         activeJob?.cancelAndJoin()
         uploadCancelled = false
         _progress.update { it.copy(isPaused = false) }
+        // Mirror throttle state into progress for the duration of the upload.
+        throttleSyncJob?.cancel()
+        throttleSyncJob = engineScope.launch {
+            rateLimiter.throttleState.collect { ts ->
+                _progress.update {
+                    it.copy(
+                        isRateLimited = ts.isThrottled,
+                        throttleReason = ts.reason,
+                        throttleResumeAtMs = ts.resumeAtMs,
+                    )
+                }
+            }
+        }
         activeJob = engineScope.launch { runUploadPipeline() }
     }
 
@@ -115,6 +133,8 @@ class SyncEngine @Inject constructor(
     fun cancel() {
         uploadCancelled = true
         activeJob?.cancel()
+        throttleSyncJob?.cancel()
+        throttleSyncJob = null
         _progress.update { SyncProgress() }
     }
 
@@ -337,12 +357,16 @@ class SyncEngine @Inject constructor(
             for (item in smallItems) smallQueue.send(item)
             smallQueue.close()
 
+            // In Conservative mode, use 1 small-file worker to lower API call rate.
+            val smallFileConcurrency = if (userPrefs.uploadSpeedMode.value == UploadSpeedMode.CONSERVATIVE) 1
+            else SMALL_FILE_CONCURRENCY
+
             try {
                 supervisorScope {
                     val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
                         launch { for (e in largeQueue) processUpload(e, token, chatId) }
                     }
-                    val smallWorkers = (1..SMALL_FILE_CONCURRENCY).map {
+                    val smallWorkers = (1..smallFileConcurrency).map {
                         launch { for (e in smallQueue) processUpload(e, token, chatId) }
                     }
                     // supervisorScope awaits all children before returning; joinAll() is not needed.
@@ -353,7 +377,7 @@ class SyncEngine @Inject constructor(
                 debugLog.log("SyncEngine", "upload pipeline: cancelled")
                 throw e
             } catch (e: Exception) {
-                // One or more workers failed (e.g. TelegramRateLimitException).
+                // One or more workers threw an unexpected exception.
                 // Fall through to finally so exportAndUpload still runs for successful files.
                 debugLog.log("SyncEngine", "upload pipeline: worker exception — ${e.message}")
             } finally {
@@ -375,6 +399,8 @@ class SyncEngine @Inject constructor(
                 }
             }
         } finally {
+            throttleSyncJob?.cancel()
+            throttleSyncJob = null
             val snapshot = _progress.value
             val completionEvent = if (!uploadCancelled && snapshot.itemsTotal > 0) {
                 BackupCompletionEvent(
@@ -387,6 +413,8 @@ class SyncEngine @Inject constructor(
                     isActive = false,
                     operation = SyncOperation.IDLE,
                     isRateLimited = false,
+                    throttleReason = ThrottleReason.NONE,
+                    throttleResumeAtMs = 0L,
                     completionEvent = completionEvent,
                 )
             }
@@ -401,15 +429,13 @@ class SyncEngine @Inject constructor(
         try {
             processUploadInternal(entity, token, chatId)
         } catch (e: TelegramRateLimitException) {
-            // Global rate limit exhausted inside rateLimiter — this is NOT this item's fault.
-            // Re-throw so the worker coroutine is cancelled rather than marking the item FAILED.
-            // The item stays UPLOADING; resetStaleUploadingToPending on the next run resets it
-            // to PENDING with its uploadedChunkCount intact so it can resume.
-            // Because SyncEngine uses SupervisorJob, only this worker is cancelled —
-            // other workers continue with their current items.
-            // Note: the activeUploads entry is already removed by processUploadInternal's finally block.
-            _progress.update { it.copy(isRateLimited = true) }
-            throw e
+            // Rate limit exhausted inside the rate limiter (all MAX_RETRIES 429s used).
+            // The circuit breaker is now OPEN, so the next item's withRateLimit call will
+            // naturally suspend until the cooldown expires — no explicit delay needed here.
+            // The worker stays alive to process remaining queue items.
+            // This item remains UPLOADING; resetStaleUploadingToPending resets it at the
+            // start of the next backup run with chunk progress intact for resume.
+            debugLog.log("SyncEngine", "Rate limit exhausted for ${entity.fileName} — worker continues, item will retry next run")
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
             // unexpected I/O errors) so the worker coroutine stays alive for the next item.
@@ -417,7 +443,7 @@ class SyncEngine @Inject constructor(
             mediaItemDao.updateBackupResult(
                 id = entity.id,
                 status = BackupStatus.FAILED,
-                error = e.message ?: "Unexpected error",
+                error = e.toUploadErrorDetail(),
                 syncedAt = null,
                 fileId = null,
                 messageId = null,
@@ -432,8 +458,6 @@ class SyncEngine @Inject constructor(
         token: String,
         chatId: String,
     ) {
-        // Clear rate-limited flag when we successfully start processing the next item
-        _progress.update { it.copy(isRateLimited = false) }
         val existing = mediaItemDao.findByFileNameSizeDate(entity.fileName, entity.size, entity.dateTaken)
         if (existing != null && existing.id != entity.id && existing.telegramFileId != null &&
             (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.CLOUD_ONLY)
@@ -729,7 +753,7 @@ class SyncEngine @Inject constructor(
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
                     status = BackupStatus.FAILED,
-                    error = result.cause.message,
+                    error = result.cause.toUploadErrorDetail(),
                     syncedAt = null,
                     fileId = null,
                     messageId = null,

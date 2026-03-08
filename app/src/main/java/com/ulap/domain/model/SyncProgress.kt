@@ -1,5 +1,7 @@
 package com.ulap.domain.model
 
+import com.ulap.data.remote.ThrottleReason
+
 /**
  * Progress snapshot for a single file being uploaded concurrently.
  * Keyed by entity.id in SyncProgress.activeUploads.
@@ -30,6 +32,9 @@ data class SyncProgress(
     val currentSpeedBps: Long = 0L,
     val failedItems: List<MediaItem> = emptyList(),
     val isRateLimited: Boolean = false,
+    val throttleReason: ThrottleReason = ThrottleReason.NONE,
+    /** Wall-clock ms when normal speed is expected to resume; 0 if unknown or not throttled. */
+    val throttleResumeAtMs: Long = 0L,
     val completionEvent: BackupCompletionEvent? = null,
     /** All currently active concurrent uploads, keyed by entity.id. */
     val activeUploads: Map<String, FileUploadProgress> = emptyMap(),

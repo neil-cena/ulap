@@ -10,9 +10,23 @@
     <string name="notification_restore_done">Restore complete</string>
     <string name="notification_restore_done_with_failures_body">%1$d restored, %2$d failed.</string>
     <string name="notification_backup_rate_limited">Slowed by Telegram — resuming shortly…</string>
+    <string name="notification_throttle_adaptive">Uploading slowly to protect your account…</string>
+    <string name="notification_throttle_circuit_open">Paused briefly — resuming in ~%1$s</string>
+    <string name="notification_throttle_budget">Taking a break — resuming in ~%1$s</string>
 
     <!-- In-app UI strings -->
     <string name="backup_rate_limited_ui">Slowed by Telegram — resuming shortly</string>
+    <string name="throttle_adaptive">Uploading at a slower pace to keep your Telegram account safe</string>
+    <string name="throttle_circuit_open">Paused for a couple of minutes — Telegram needs a breather</string>
+    <string name="throttle_budget_limit">Taking it easy — you\'ve sent a lot today. Resuming soon</string>
+    <string name="throttle_reassurance">Your backup will continue automatically. Nothing is lost.</string>
+    <string name="throttle_resuming_in">Resuming in ~%1$s</string>
+    <string name="throttle_reduced_speed">Uploading at reduced speed to protect your account</string>
+    <string name="upload_speed_mode_balanced">Balanced</string>
+    <string name="upload_speed_mode_conservative">Conservative</string>
+    <string name="upload_speed_label">Upload speed</string>
+    <string name="upload_speed_balanced_desc">Faster backups with standard Telegram rate limiting</string>
+    <string name="upload_speed_conservative_desc">Slower uploads with extra protection against account limits</string>
     <string name="restore_button">Restore All Backed-Up Files</string>
     <string name="restore_complete_body">Restored %1$d files to Pictures / Ulap Restore</string>
     <string name="restore_complete_with_failures_body">%1$d restored, %2$d failed</string>

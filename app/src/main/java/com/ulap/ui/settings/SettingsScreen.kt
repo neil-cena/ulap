@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.ulap.data.repository.UploadSpeedMode
 import com.ulap.ui.theme.ThemePreference
 
 @Composable
@@ -60,6 +61,7 @@ fun SettingsScreen(
     val stripExif by viewModel.stripExif.collectAsState(initial = false)
     val wifiOnly by viewModel.wifiOnly.collectAsState()
     val pauseOnLowBattery by viewModel.pauseOnLowBattery.collectAsState()
+    val uploadSpeedMode by viewModel.uploadSpeedMode.collectAsState()
     val backupStats by viewModel.backupStats.collectAsState()
     val freeSpace by viewModel.freeSpace.collectAsState()
 
@@ -220,6 +222,39 @@ fun SettingsScreen(
                         checked = pauseOnLowBattery,
                         onCheckedChange = { viewModel.setPauseOnLowBattery(it) },
                     )
+                }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Upload speed",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    when (uploadSpeedMode) {
+                        UploadSpeedMode.BALANCED -> "Faster backups with standard Telegram rate limiting"
+                        UploadSpeedMode.CONSERVATIVE -> "Slower uploads with extra protection against account limits"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    UploadSpeedMode.entries.forEachIndexed { index, mode ->
+                        SegmentedButton(
+                            selected = uploadSpeedMode == mode,
+                            onClick = { viewModel.setUploadSpeedMode(mode) },
+                            shape = SegmentedButtonDefaults.itemShape(index, UploadSpeedMode.entries.size),
+                            label = {
+                                Text(
+                                    when (mode) {
+                                        UploadSpeedMode.BALANCED -> "Balanced"
+                                        UploadSpeedMode.CONSERVATIVE -> "Conservative"
+                                    }
+                                )
+                            },
+                        )
+                    }
                 }
             }
         }

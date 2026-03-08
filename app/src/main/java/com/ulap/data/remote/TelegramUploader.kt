@@ -14,6 +14,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API limit
+/** [sendPhoto] only accepts up to 10 MiB; larger JPEG/PNG must use [sendDocument]. */
+private const val MAX_TELEGRAM_PHOTO_BYTES = 10L * 1024 * 1024
 internal const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
 
 // Top-level so BackupForegroundService can import it for the notification string.
@@ -110,9 +112,10 @@ class TelegramUploader @Inject constructor(
         val captionBody = caption?.toRequestBody("text/plain".toMediaType())
         val safeToken = sanitizeTokenForPath(token)
 
-        // Only JPEG and PNG are accepted by sendPhoto. For all other image types
-        // (WebP, HEIC, GIF, BMP, etc.) go straight to sendDocument.
-        val isPhotoCandidate = mimeType == "image/jpeg" || mimeType == "image/png"
+        // JPEG/PNG can use sendPhoto only up to Telegram's 10 MiB limit; larger ones (still ≤50MB
+        // single-upload) are sent as documents. Other image types go straight to sendDocument.
+        val isPhotoMime = mimeType == "image/jpeg" || mimeType == "image/png"
+        val isPhotoCandidate = isPhotoMime && fileSize <= MAX_TELEGRAM_PHOTO_BYTES
         val isVideo = mimeType.startsWith("video/")
 
         // For photo candidates we read bytes into memory first (files are ≤50MB here)
@@ -157,7 +160,8 @@ class TelegramUploader @Inject constructor(
             }
             // sendPhoto rejected (panorama aspect ratio, edge-case file, etc.)
             // Fall back to sendDocument so the file is still preserved.
-            if (response.errorCode == 400 && isPhotoCandidate && bytes != null) {
+            // Oversized-for-photo JPEG/PNG should not reach here; keep fallback for API changes / edge cases.
+            if (response.errorCode == 400 && isPhotoMime && bytes != null) {
                 val fallbackResponse = rateLimiter.withRateLimit {
                     api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
                 }

@@ -10,11 +10,19 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+enum class UploadSpeedMode {
+    /** 1.5 s base gap, 3 small-file workers. Good balance of speed and safety. */
+    BALANCED,
+    /** 3 s base gap, 1 small-file worker. For users who want maximum account safety. */
+    CONSERVATIVE,
+}
+
 private const val KEY_THEME = "theme_preference"
 private const val KEY_TIMELINE_VIEW_MODE = "timeline_view_mode"
 private const val KEY_STRIP_EXIF = "strip_exif"
 private const val KEY_WIFI_ONLY = "wifi_only_backup"
 private const val KEY_PAUSE_ON_LOW_BATTERY = "pause_on_low_battery"
+private const val KEY_UPLOAD_SPEED_MODE = "upload_speed_mode"
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
@@ -34,6 +42,9 @@ class UserPreferencesRepository @Inject constructor(
 
     private val _pauseOnLowBattery = MutableStateFlow(prefs.getBoolean(KEY_PAUSE_ON_LOW_BATTERY, false))
     val pauseOnLowBattery: StateFlow<Boolean> = _pauseOnLowBattery.asStateFlow()
+
+    private val _uploadSpeedMode = MutableStateFlow(loadUploadSpeedMode())
+    val uploadSpeedMode: StateFlow<UploadSpeedMode> = _uploadSpeedMode.asStateFlow()
 
     fun setTheme(preference: ThemePreference) {
         prefs.edit().putString(KEY_THEME, preference.name).apply()
@@ -60,6 +71,11 @@ class UserPreferencesRepository @Inject constructor(
         _pauseOnLowBattery.value = enabled
     }
 
+    fun setUploadSpeedMode(mode: UploadSpeedMode) {
+        prefs.edit().putString(KEY_UPLOAD_SPEED_MODE, mode.name).apply()
+        _uploadSpeedMode.value = mode
+    }
+
     private fun loadTheme(): ThemePreference {
         val name = prefs.getString(KEY_THEME, null) ?: return ThemePreference.SYSTEM
         return runCatching { ThemePreference.valueOf(name) }.getOrDefault(ThemePreference.SYSTEM)
@@ -71,4 +87,9 @@ class UserPreferencesRepository @Inject constructor(
     }
 
     private fun loadStripExif(): Boolean = prefs.getBoolean(KEY_STRIP_EXIF, false)
+
+    private fun loadUploadSpeedMode(): UploadSpeedMode {
+        val name = prefs.getString(KEY_UPLOAD_SPEED_MODE, null) ?: return UploadSpeedMode.BALANCED
+        return runCatching { UploadSpeedMode.valueOf(name) }.getOrDefault(UploadSpeedMode.BALANCED)
+    }
 }

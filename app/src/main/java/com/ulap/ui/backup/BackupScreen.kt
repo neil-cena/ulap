@@ -26,6 +26,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.ui.Alignment
@@ -35,6 +39,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.R
+import com.ulap.data.remote.ThrottleReason
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.FileUploadProgress
 import com.ulap.domain.model.SyncOperation
@@ -121,13 +126,10 @@ fun BackupScreen(
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(modifier = Modifier.padding(16.dp)) {
                     if (progress.isRateLimited) {
-                        Text(
-                            stringResource(R.string.backup_rate_limited_ui),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ThrottleBanner(
+                            reason = progress.throttleReason,
+                            resumeAtMs = progress.throttleResumeAtMs,
                         )
-                        Spacer(Modifier.height(6.dp))
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                     } else {
                         Text(
                             stringResource(R.string.backup_progress_uploading, progress.itemsDone + 1, progress.itemsTotal),
@@ -158,6 +160,15 @@ fun BackupScreen(
                             LinearProgressIndicator(
                                 progress = { progress.progressFraction },
                                 modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                        // Subtle indicator when uploads are active but running at reduced speed.
+                        if (progress.throttleReason == ThrottleReason.ADAPTIVE_SLOWDOWN) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                stringResource(R.string.throttle_reduced_speed),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -231,6 +242,62 @@ private fun formatBytes(bytes: Long): String = when {
     else -> "$bytes B"
 }
 
+/**
+ * Rich throttle banner that clearly communicates *why* uploads are slow and reassures the user.
+ * Shows a live countdown when the system knows when normal speed will resume.
+ */
+@Composable
+private fun ThrottleBanner(reason: ThrottleReason, resumeAtMs: Long) {
+    val primaryText = stringResource(
+        when (reason) {
+            ThrottleReason.CIRCUIT_OPEN -> R.string.throttle_circuit_open
+            ThrottleReason.BUDGET_LIMIT -> R.string.throttle_budget_limit
+            else -> R.string.throttle_adaptive
+        }
+    )
+
+    // Live countdown: tick every second when we know the resume time.
+    var remainingMs by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(resumeAtMs) {
+        if (resumeAtMs > 0) {
+            while (true) {
+                remainingMs = (resumeAtMs - System.currentTimeMillis()).coerceAtLeast(0L)
+                if (remainingMs == 0L) break
+                delay(1_000)
+            }
+        } else {
+            remainingMs = 0L
+        }
+    }
+
+    Column {
+        Text(
+            primaryText,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        if (remainingMs > 0) {
+            Spacer(Modifier.height(2.dp))
+            val mins = remainingMs / 60_000L
+            val secs = (remainingMs % 60_000L) / 1_000L
+            val countdownText = if (mins > 0) "${mins}m ${secs}s" else "${secs}s"
+            Text(
+                stringResource(R.string.throttle_resuming_in, countdownText),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            stringResource(R.string.throttle_reassurance),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(6.dp))
+        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+    }
+}
+
 @Composable
 private fun FailedFilesCard(items: List<MediaItem>) {
     Card(
@@ -268,28 +335,14 @@ private fun FailedFilesCard(items: List<MediaItem>) {
                         modifier = Modifier.weight(1f).padding(end = 8.dp),
                     )
                     Text(
-                        friendlyErrorReason(item.errorMessage),
+                        item.errorMessage?.takeIf { it.isNotBlank() }
+                            ?: stringResource(R.string.failed_files_reason_default),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.75f),
                     )
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun friendlyErrorReason(raw: String?): String {
-    val msg = raw?.lowercase() ?: ""
-    return when {
-        msg.isBlank() -> stringResource(R.string.failed_files_reason_default)
-        msg.contains("2 gb") || msg.contains("too large") || msg.contains("size") ->
-            stringResource(R.string.failed_files_reason_too_large)
-        msg.contains("rate") || msg.contains("flood") || msg.contains("busy") || msg.contains("slow") ->
-            stringResource(R.string.failed_files_reason_busy)
-        msg.contains("network") || msg.contains("timeout") || msg.contains("connect") || msg.contains("socket") ->
-            stringResource(R.string.failed_files_reason_connection)
-        else -> stringResource(R.string.failed_files_reason_default)
     }
 }
 
