@@ -6,34 +6,19 @@ import org.junit.Test
 /**
  * Black-box Bug Reproduction Tests for Telegram backup failure classes (Phase 2 / auto-debug).
  *
- * **Blind to production source:** all types live in this file. Replace
- * [telegramBackupSimulatorUnderTest] with an adapter to the real backup/Telegram pipeline when
- * symbols are known; until then [DefectiveTelegramBackupSimulator] models hypothesized bugs so CI
- * stays red and the contract stays explicit.
+ * [telegramBackupSimulatorUnderTest] delegates to [TelegramBackupPolicy] via
+ * [PolicyBackedTelegramBackupSimulator] so unit tests exercise production rules.
  *
- * **Expected failure on current runs:** [telegramBackupSimulatorUnderTest] returns the defective
- * simulator. Each `@Test` compares SUT vs [ReferenceTelegramBackupSimulator]; the first failing
- * assertion is typically `assertEquals(..., expected, actual)` on [SingleFileBackupResult] or on the
- * aggregated summary string — i.e. the app-under-test does not yet match the reference contract.
- *
- * Defect spec mapping:
- * - Class A — PHOTO_INVALID_DIMENSIONS after wrong upload shape
- * - Class B — Could not open file (unopenable URI / missing file)
- * - Class C — Empty file (zero-byte, including duplicate-suffixed names)
+ * [DefectiveTelegramBackupSimulator] remains as a documented contrast model for the
+ * original defect hypotheses; it is not the default SUT.
  *
  * Deterministic: no network, no Telegram, no clock, no randomness, no shared global state.
  */
 
-// region User-visible strings (from defect specification; not implementation detail)
+// region User-visible strings (defect specification; Defective simulator only for Class A text)
 
 const val MSG_TELEGRAM_PHOTO_INVALID_DIMENSIONS =
     "Telegram API error 400: Bad Request: PHOTO_INVALID_DIMENSIONS"
-
-const val MSG_COULD_NOT_OPEN_FILE = "Could not open file"
-
-const val MSG_EMPTY_FILE = "Empty file"
-
-const val SUMMARY_COULD_NOT_BACK_UP = "couldn't be backed up"
 
 // endregion
 
@@ -68,18 +53,6 @@ data class SingleFileBackupResult(
 
 // endregion
 
-// region Photo dimension threshold (contract constant for “photo vs document” preflight)
-
-private const val TELEGRAM_PHOTO_MAX_EDGE_PX = 10_000
-
-private fun dimensionsOkForPhoto(width: Int?, height: Int?): Boolean {
-    if (width == null || height == null) return true
-    if (width <= 0 || height <= 0) return false
-    return width <= TELEGRAM_PHOTO_MAX_EDGE_PX && height <= TELEGRAM_PHOTO_MAX_EDGE_PX
-}
-
-// endregion
-
 /** Simulates one-file backup outcome and batch summary text (no real I/O). */
 interface TelegramBackupSimulator {
     fun backupOne(item: BackupMediaItem): SingleFileBackupResult
@@ -88,42 +61,60 @@ interface TelegramBackupSimulator {
     fun summaryForUi(results: List<SingleFileBackupResult>): String
 }
 
-// region Reference (correct) behavior
+// region Production policy adapter (same rules as reference contract)
 
-object ReferenceTelegramBackupSimulator : TelegramBackupSimulator {
-    override fun backupOne(item: BackupMediaItem): SingleFileBackupResult = when {
-        !item.uriOpenable ->
-            SingleFileBackupResult(
-                ok = false,
-                failure = UserVisibleFailure.FileOpenError(MSG_COULD_NOT_OPEN_FILE, item.displayName),
+private object PolicyBackedTelegramBackupSimulator : TelegramBackupSimulator {
+    override fun backupOne(item: BackupMediaItem): SingleFileBackupResult =
+        when (
+            val e = TelegramBackupPolicy.classifyBackupFailure(
+                item.displayName,
+                item.uriOpenable,
+                item.sizeBytes,
+                item.widthPx,
+                item.heightPx,
             )
-        item.sizeBytes == 0L ->
-            SingleFileBackupResult(
-                ok = false,
-                failure = UserVisibleFailure.EmptyFileError(MSG_EMPTY_FILE, item.displayName),
-            )
-        !dimensionsOkForPhoto(item.widthPx, item.heightPx) ->
-            // Preflight: use document path — success without hitting sendPhoto constraints.
-            SingleFileBackupResult(ok = true, failure = null)
-        else ->
-            SingleFileBackupResult(ok = true, failure = null)
-    }
+        ) {
+            is TelegramBackupPolicy.PreBackupEvaluation.FileOpenFailed ->
+                SingleFileBackupResult(
+                    ok = false,
+                    failure = UserVisibleFailure.FileOpenError(
+                        TelegramBackupPolicy.MSG_COULD_NOT_OPEN_FILE,
+                        e.displayName,
+                    ),
+                )
+            is TelegramBackupPolicy.PreBackupEvaluation.EmptyFile ->
+                SingleFileBackupResult(
+                    ok = false,
+                    failure = UserVisibleFailure.EmptyFileError(
+                        TelegramBackupPolicy.MSG_EMPTY_FILE,
+                        e.displayName,
+                    ),
+                )
+            is TelegramBackupPolicy.PreBackupEvaluation.Success ->
+                SingleFileBackupResult(ok = true, failure = null)
+        }
 
     override fun summaryForUi(results: List<SingleFileBackupResult>): String {
-        val failed = results.filter { !it.ok }
-        val n = failed.size
-        val head = "$n file(s) $SUMMARY_COULD_NOT_BACK_UP"
-        if (n == 0) return head
-        val lines = failed.mapNotNull { it.failure }.map { f ->
-            when (f) {
-                is UserVisibleFailure.TelegramApiError -> f.headline
-                is UserVisibleFailure.FileOpenError -> "${f.headline}: ${f.fileLabel}"
-                is UserVisibleFailure.EmptyFileError -> "${f.headline}: ${f.fileLabel}"
+        val lines = results.filter { !it.ok }.mapNotNull { r ->
+            when (val f = r.failure) {
+                null -> null
+                is UserVisibleFailure.TelegramApiError ->
+                    TelegramBackupPolicy.FailureSummaryLine.ApiError(f.headline)
+                is UserVisibleFailure.FileOpenError ->
+                    TelegramBackupPolicy.FailureSummaryLine.Labeled(f.headline, f.fileLabel)
+                is UserVisibleFailure.EmptyFileError ->
+                    TelegramBackupPolicy.FailureSummaryLine.Labeled(f.headline, f.fileLabel)
             }
         }
-        return (listOf(head) + lines).joinToString("\n")
+        return TelegramBackupPolicy.buildFailureSummary(lines)
     }
 }
+
+// endregion
+
+// region Reference (canonical expected behavior — delegates to shared policy)
+
+object ReferenceTelegramBackupSimulator : TelegramBackupSimulator by PolicyBackedTelegramBackupSimulator
 
 // endregion
 
@@ -137,13 +128,18 @@ object ReferenceTelegramBackupSimulator : TelegramBackupSimulator {
 object DefectiveTelegramBackupSimulator : TelegramBackupSimulator {
     override fun backupOne(item: BackupMediaItem): SingleFileBackupResult {
         // Bug B: missing open check — treat as success if size & dimensions "look" fine
-        if (!item.uriOpenable && item.sizeBytes > 0 && dimensionsOkForPhoto(item.widthPx, item.heightPx)) {
+        if (!item.uriOpenable && item.sizeBytes > 0 &&
+            TelegramBackupPolicy.dimensionsOkForPhoto(item.widthPx, item.heightPx)
+        ) {
             return SingleFileBackupResult(ok = true, failure = null)
         }
         if (!item.uriOpenable) {
             return SingleFileBackupResult(
                 ok = false,
-                failure = UserVisibleFailure.FileOpenError(MSG_COULD_NOT_OPEN_FILE, item.displayName),
+                failure = UserVisibleFailure.FileOpenError(
+                    TelegramBackupPolicy.MSG_COULD_NOT_OPEN_FILE,
+                    item.displayName,
+                ),
             )
         }
         // Bug C: zero-byte not aborted with Empty file before upload
@@ -154,7 +150,7 @@ object DefectiveTelegramBackupSimulator : TelegramBackupSimulator {
             )
         }
         // Bug A: oversize dimensions still go through photo path → Telegram rejects
-        if (!dimensionsOkForPhoto(item.widthPx, item.heightPx)) {
+        if (!TelegramBackupPolicy.dimensionsOkForPhoto(item.widthPx, item.heightPx)) {
             return SingleFileBackupResult(
                 ok = false,
                 failure = UserVisibleFailure.TelegramApiError(MSG_TELEGRAM_PHOTO_INVALID_DIMENSIONS),
@@ -167,7 +163,7 @@ object DefectiveTelegramBackupSimulator : TelegramBackupSimulator {
         // Bug: under-counts or drops detail (simulates misleading "28 files" style summary)
         val failed = results.filter { !it.ok }
         val wrongCount = (failed.size - 1).coerceAtLeast(0)
-        val head = "$wrongCount file(s) $SUMMARY_COULD_NOT_BACK_UP"
+        val head = "$wrongCount file(s) ${TelegramBackupPolicy.SUMMARY_COULD_NOT_BACK_UP}"
         if (failed.isEmpty()) return head
         return head
     }
@@ -175,9 +171,9 @@ object DefectiveTelegramBackupSimulator : TelegramBackupSimulator {
 
 // endregion
 
-// region Wiring — swap for production adapter when mapping is known
+// region Wiring
 
-fun telegramBackupSimulatorUnderTest(): TelegramBackupSimulator = DefectiveTelegramBackupSimulator
+fun telegramBackupSimulatorUnderTest(): TelegramBackupSimulator = PolicyBackedTelegramBackupSimulator
 
 // endregion
 
@@ -190,7 +186,7 @@ class TelegramBackupFailuresBrt {
             displayName = "large.jpg",
             sizeBytes = 5000,
             uriOpenable = true,
-            widthPx = TELEGRAM_PHOTO_MAX_EDGE_PX + 1,
+            widthPx = TelegramBackupPolicy.TELEGRAM_PHOTO_MAX_EDGE_PX + 1,
             heightPx = 100,
         )
         val expected = ReferenceTelegramBackupSimulator.backupOne(item)
@@ -255,7 +251,7 @@ class TelegramBackupFailuresBrt {
     fun brt_aggregate_summary_must_count_all_failures_and_include_reason_lines() {
         val sut = telegramBackupSimulatorUnderTest()
         val batch = listOf(
-            BackupMediaItem("a.jpg", 100, true, TELEGRAM_PHOTO_MAX_EDGE_PX + 1, 100),
+            BackupMediaItem("a.jpg", 100, true, TelegramBackupPolicy.TELEGRAM_PHOTO_MAX_EDGE_PX + 1, 100),
             BackupMediaItem("IMG_20260313_150518.jpg", 200, false, 10, 10),
             BackupMediaItem("VID_20260308_dup.mp4 (1)", 0L, true, 1, 1),
         )

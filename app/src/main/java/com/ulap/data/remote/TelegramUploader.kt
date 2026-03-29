@@ -1,6 +1,8 @@
 package com.ulap.data.remote
 
+import android.graphics.BitmapFactory
 import com.google.gson.Gson
+import com.ulap.TelegramBackupPolicy
 import com.ulap.di.UploadClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -123,6 +125,18 @@ class TelegramUploader @Inject constructor(
         // the same bytes as a document without needing to re-open the stream.
         val bytes: ByteArray? = if (isPhotoCandidate) inputStream.readBytes() else null
 
+        val skipSendPhotoForDimensions = if (bytes != null && isPhotoMime) {
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (opts.outWidth > 0 && opts.outHeight > 0) {
+                TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(opts.outWidth, opts.outHeight)
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+
         fun makeBody(name: String): MultipartBody.Part {
             val requestBody = if (bytes != null) {
                 var reported = 0L
@@ -147,7 +161,8 @@ class TelegramUploader @Inject constructor(
 
         val response = rateLimiter.withRateLimit {
             when {
-                isPhotoCandidate -> api.sendPhoto(safeToken, chatIdBody, makeBody("photo"), captionBody)
+                isPhotoCandidate && !skipSendPhotoForDimensions ->
+                    api.sendPhoto(safeToken, chatIdBody, makeBody("photo"), captionBody)
                 isVideo -> api.sendVideo(safeToken, chatIdBody, makeBody("video"), captionBody)
                 else -> api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
             }
@@ -173,6 +188,12 @@ class TelegramUploader @Inject constructor(
                     val thumbId = msg.document?.thumbnail?.fileId
                     return UploadResult.Success(messageId = msg.messageId, fileId = fileId, thumbnailFileId = thumbId)
                 }
+                rateLimiter.recordFailure()
+                val desc = fallbackResponse.description?.takeIf { it.isNotBlank() }
+                    ?: TelegramBackupPolicy.GENERIC_UPLOAD_FAILED_MESSAGE
+                return UploadResult.Error(
+                    TelegramApiException(fallbackResponse.errorCode, desc),
+                )
             }
             rateLimiter.recordFailure()
             return UploadResult.Error(

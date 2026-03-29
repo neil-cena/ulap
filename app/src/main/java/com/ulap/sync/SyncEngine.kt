@@ -637,8 +637,27 @@ class SyncEngine @Inject constructor(
         // Falls back to strippedInputStream if the URI is not seekable or parsing fails.
         val uploadStream = if (isVideo && willChunk) {
             strippedInputStream.close()
-            StreamingFastStartReader.open(contentResolver, contentUri)
-                ?: contentResolver.openInputStream(contentUri) ?: return
+            val reopened = StreamingFastStartReader.open(contentResolver, contentUri)
+                ?: contentResolver.openInputStream(contentUri)
+            if (reopened == null) {
+                mediaItemDao.updateBackupResult(
+                    id = entity.id,
+                    status = BackupStatus.FAILED,
+                    error = "Could not open file",
+                    syncedAt = null,
+                    fileId = null,
+                    messageId = null,
+                    thumbnailFileId = null,
+                )
+                _progress.update { prev ->
+                    prev.copy(
+                        itemsDone = prev.itemsDone + 1,
+                        activeUploads = prev.activeUploads - entity.id,
+                    )
+                }
+                return
+            }
+            reopened
         } else {
             // If EXIF stripping produced a temp file, stream from it; otherwise use the original.
             if (tempExif != null) FileInputStream(tempExif) else strippedInputStream
