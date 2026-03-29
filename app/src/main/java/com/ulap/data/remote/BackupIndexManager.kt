@@ -40,6 +40,7 @@ data class IndexEntry(
     // Schema v2: full chunk data for cross-device restoration without needing the uploader's chat history
     @SerializedName("chunkCount") val chunkCount: Int? = null,
     @SerializedName("chunkFileIds") val chunkFileIds: List<String>? = null,
+    @SerializedName("uploadBotIndex") val uploadBotIndex: Int? = null,
 )
 
 data class IndexManifest(
@@ -163,6 +164,7 @@ class BackupIndexManager @Inject constructor(
                     fileId = entry.telegramFileId,
                     messageId = entry.telegramMessageId,
                     thumbnailFileId = entry.thumbnailFileId,
+                    uploadBotIndex = entry.uploadBotIndex ?: 0,
                 )
                 targetId = local.id
                 merged++
@@ -193,6 +195,7 @@ class BackupIndexManager @Inject constructor(
                     lastSyncedAt = null,
                     errorMessage = null,
                     thumbnailFileId = entry.thumbnailFileId,
+                    uploadBotIndex = entry.uploadBotIndex ?: 0,
                 )
                 newEntities.add(entity)
                 targetId = cloudId
@@ -554,6 +557,7 @@ class BackupIndexManager @Inject constructor(
                 },
             chunkCount = chunks.size.takeIf { it > 0 },
             chunkFileIds = chunks.map { it.telegramFileId }.takeIf { it.isNotEmpty() },
+            uploadBotIndex = uploadBotIndex.takeIf { it != 0 },
         )
     }
 }

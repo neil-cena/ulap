@@ -161,5 +161,6 @@ class MediaRepositoryImpl @Inject constructor(
         lastSyncedAt = lastSyncedAt,
         errorMessage = errorMessage,
         thumbnailFileId = thumbnailFileId,
+        uploadBotIndex = uploadBotIndex,
     )
 }

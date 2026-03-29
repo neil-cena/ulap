@@ -130,17 +130,25 @@ class MediaViewerViewModel @Inject constructor(
                         val isNewChunked = fileId.startsWith(CHUNKED_FILE_ID_PREFIX)
                         val isVideo = item.mediaType == MediaType.VIDEO
 
+                        val itemToken = getCredentials.getTokenForBot(item.uploadBotIndex)
+                        if (itemToken == null) {
+                            _streamUrlsCache.value = _streamUrlsCache.value + (
+                                item.id to StreamUrlsState.Error("Bot at index ${item.uploadBotIndex} not configured")
+                            )
+                            continue
+                        }
+
                         when {
                             isNewChunked && isVideo -> {
-                                startPrefetchingChunkedDownload(token, item.id)
+                                startPrefetchingChunkedDownload(itemToken, item.id)
                             }
                             isLegacyChunked && isVideo -> {
-                                startProgressiveChunkedDownload(token, fileId, item.id)
+                                startProgressiveChunkedDownload(itemToken, fileId, item.id)
                             }
                             else -> {
                                 val urls = try {
                                     withContext(Dispatchers.IO) {
-                                        downloader.resolveStreamUrls(token, fileId)
+                                        downloader.resolveStreamUrls(itemToken, fileId)
                                     }
                                 } catch (_: Exception) {
                                     emptyList()

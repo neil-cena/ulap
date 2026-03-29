@@ -43,6 +43,12 @@ class GetCredentialsUseCase @Inject constructor(
     fun getToken() = credentialRepository.getBotToken()
     fun getChatId() = credentialRepository.getChatId()
     fun getLastIndexFileId() = credentialRepository.getLastIndexFileId()
+    fun getTokenForBot(index: Int): String? {
+        if (index < 0) return null
+        if (index == 0) return credentialRepository.getBotToken()
+        val additionalBots = credentialRepository.getAdditionalBotTokens()
+        return additionalBots.find { it.index == index }?.token
+    }
 }
 
 class ClearCredentialsUseCase @Inject constructor(

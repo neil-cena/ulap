@@ -19,6 +19,7 @@ data class MediaItem(
     val errorMessage: String? = null,
     /** Telegram file_id for a small thumbnail (used for grid). */
     val thumbnailFileId: String? = null,
+    val uploadBotIndex: Int = 0,
     /** Resolved CDN URL for streaming (populated at runtime for CLOUD_ONLY items). */
     val streamUrl: String? = null,
 )
