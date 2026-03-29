@@ -115,6 +115,9 @@ class MainActivity : ComponentActivity() {
                     startDestination = startDestination,
                     getCredentials = getCredentials,
                     saveCredentials = saveCredentials,
+                    getBotPool = getBotPool,
+                    credentialRepository = credentialRepository,
+                    botPool = botPool,
                     userPrefs = userPrefs,
                     openBackupRetryFromIntent = openBackupRetry,
                 )
@@ -128,6 +131,9 @@ private fun UlapNavHost(
     startDestination: String,
     getCredentials: GetCredentialsUseCase,
     saveCredentials: SaveCredentialsUseCase,
+    getBotPool: GetBotPoolUseCase,
+    credentialRepository: CredentialRepository,
+    botPool: BotPool,
     userPrefs: UserPreferencesRepository,
     openBackupRetryFromIntent: Boolean = false,
 ) {
