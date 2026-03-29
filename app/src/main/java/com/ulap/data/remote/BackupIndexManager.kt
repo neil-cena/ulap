@@ -208,53 +208,96 @@ class BackupIndexManager @Inject constructor(
 
     /**
      * For items that already have `chunked:` in DB but lost `chunk_metadata` (legacy bug), the normal
-     * merge skips them because `telegramFileId` is already "known". This pass reads the pinned index
-     * and inserts chunk rows when the manifest still lists [IndexEntry.chunkFileIds].
+     * merge skips them because `telegramFileId` is already "known". Recovery order:
+     * 1. Pinned index [IndexEntry.chunkFileIds] (unchanged).
+     * 2. Pinned index [IndexEntry.chunkMessageIds] only — resolve current `file_id` via forward+delete (Bot API has no getMessage).
+     * 3. Legacy JSON [MediaItemEntity.uploadedChunks] (file_id list) if count matches sentinel.
+     * 4. [MediaItemEntity.chunkMessageIds] JSON — same forward path as (2).
+     *
+     * Pinned index load failure does not abort repair; other sources may still work.
      */
     suspend fun repairCorruptChunkMetadataFromPinnedIndex(token: String, chatId: String): Result<Int> =
         withContext(Dispatchers.IO) {
-            val entriesResult = loadPinnedIndexEntries(token, chatId)
-            if (entriesResult.isFailure) {
-                return@withContext Result.failure(
-                    entriesResult.exceptionOrNull() ?: Exception("Could not load pinned index"),
-                )
-            }
-            val entries = entriesResult.getOrThrow()
-            if (entries.isEmpty()) {
-                debugLog.log("IndexManager", "repairCorruptChunkMetadata: no pinned index")
+            val corrupt = mediaItemDao.getCorruptChunkedBackedUpItems()
+            if (corrupt.isEmpty()) {
+                debugLog.log("IndexManager", "repairCorruptChunkMetadata: no corrupt chunked rows")
                 return@withContext Result.success(0)
             }
+            val entries = loadPinnedIndexEntries(token, chatId).getOrElse {
+                debugLog.log("IndexManager", "repairCorruptChunkMetadata: pinned index unavailable — ${it.message}")
+                emptyList()
+            }
             var repaired = 0
-            for (entry in entries) {
-                val chunkFileIds = entry.chunkFileIds
-                if (chunkFileIds.isNullOrEmpty()) continue
-                val local = mediaItemDao.findByTelegramFileId(entry.telegramFileId)
-                    ?: mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
-                if (local == null) continue
-                if (local.telegramFileId != entry.telegramFileId) continue
-                if (!local.telegramFileId.startsWith(CHUNKED_FILE_ID_PREFIX)) continue
+            for (local in corrupt) {
                 if (chunkMetadataDao.hasChunks(local.id) != 0) continue
-                insertChunkRowsFromIndexEntry(local.id, entry)
-                repaired++
+
+                val entry = findIndexEntryForLocal(local, entries)
+                if (entry != null && !entry.chunkFileIds.isNullOrEmpty()) {
+                    insertChunkRowsFromIndexEntry(local.id, entry)
+                }
+                if (chunkMetadataDao.hasChunks(local.id) != 0) {
+                    repaired++
+                    continue
+                }
+
+                if (entry != null && !entry.chunkMessageIds.isNullOrEmpty() && entry.chunkFileIds.isNullOrEmpty()) {
+                    tryRecoverFromMessageIds(token, chatId, local, entry.chunkMessageIds!!)
+                }
+                if (chunkMetadataDao.hasChunks(local.id) != 0) {
+                    repaired++
+                    continue
+                }
+
+                if (tryRecoverFromUploadedChunksJson(local)) {
+                    repaired++
+                    continue
+                }
+
+                val localMsgIds = parseLongJsonArray(local.chunkMessageIds)
+                if (!localMsgIds.isNullOrEmpty()) {
+                    tryRecoverFromMessageIds(token, chatId, local, localMsgIds)
+                }
+                if (chunkMetadataDao.hasChunks(local.id) != 0) {
+                    repaired++
+                }
             }
             debugLog.log("IndexManager", "repairCorruptChunkMetadata: repaired $repaired item(s)")
             Result.success(repaired)
         }
 
+    /** Only index rows that share the same [MediaItemEntity.telegramFileId] as the local row (avoids wrong merge). */
+    private fun findIndexEntryForLocal(local: MediaItemEntity, entries: List<IndexEntry>): IndexEntry? {
+        val sentinel = local.telegramFileId ?: return null
+        val same = entries.filter { it.telegramFileId == sentinel }
+        if (same.isEmpty()) return null
+        return same.firstOrNull { !it.chunkFileIds.isNullOrEmpty() }
+            ?: same.firstOrNull { !it.chunkMessageIds.isNullOrEmpty() }
+            ?: same.firstOrNull()
+    }
+
     private suspend fun insertChunkRowsFromIndexEntry(targetId: String, entry: IndexEntry) {
         val chunkFileIds = entry.chunkFileIds ?: return
         if (chunkFileIds.isEmpty()) return
-        if (chunkMetadataDao.hasChunks(targetId) != 0) return
+        insertChunkRowsFromParts(
+            targetId = targetId,
+            chunkFileIds = chunkFileIds,
+            chunkMessageIds = entry.chunkMessageIds,
+            totalSize = entry.size,
+        )
+    }
+
+    private suspend fun insertChunkRowsFromParts(
+        targetId: String,
+        chunkFileIds: List<String>,
+        chunkMessageIds: List<Long>?,
+        totalSize: Long,
+    ): Boolean {
+        if (chunkFileIds.isEmpty()) return false
+        if (chunkMetadataDao.hasChunks(targetId) != 0) return false
+        val lengths = ChunkMetadataLayout.byteLengthsForChunkedFile(totalSize, chunkFileIds.size)
         var byteOffset = 0L
-        val chunkSize = CHUNK_UPLOAD_SIZE.toInt()
         chunkFileIds.forEachIndexed { idx, cFileId ->
-            val msgId = entry.chunkMessageIds?.getOrNull(idx) ?: 0L
-            val isLast = idx == chunkFileIds.lastIndex
-            val byteLen = if (isLast) {
-                (entry.size - byteOffset).coerceAtMost(chunkSize.toLong()).toInt()
-            } else {
-                chunkSize
-            }
+            val msgId = chunkMessageIds?.getOrNull(idx) ?: 0L
             chunkMetadataDao.insertChunk(
                 ChunkMetadataEntity(
                     mediaItemId = targetId,
@@ -262,11 +305,79 @@ class BackupIndexManager @Inject constructor(
                     telegramFileId = cFileId,
                     telegramMessageId = msgId,
                     byteOffset = byteOffset,
-                    byteLength = byteLen,
+                    byteLength = lengths[idx],
                 ),
             )
-            byteOffset += byteLen
+            byteOffset += lengths[idx]
         }
+        return true
+    }
+
+    private suspend fun tryRecoverFromUploadedChunksJson(local: MediaItemEntity): Boolean {
+        val json = local.uploadedChunks ?: return false
+        val ids = parseStringJsonArray(json) ?: return false
+        val total = ChunkMetadataLayout.totalChunksFromSentinel(local.telegramFileId) ?: return false
+        if (ids.size != total) return false
+        return insertChunkRowsFromParts(local.id, ids, null, local.size)
+    }
+
+    private suspend fun tryRecoverFromMessageIds(
+        token: String,
+        chatId: String,
+        local: MediaItemEntity,
+        messageIds: List<Long>,
+    ) {
+        val total = ChunkMetadataLayout.totalChunksFromSentinel(local.telegramFileId) ?: return
+        if (messageIds.size != total) return
+        val fileIds = resolveDocumentFileIdsByForwarding(token, chatId, messageIds).getOrElse {
+            debugLog.log("IndexManager", "repairCorruptChunkMetadata: message-id resolve failed — ${it.message}")
+            return
+        }
+        if (fileIds.size != total) return
+        insertChunkRowsFromParts(local.id, fileIds, messageIds, local.size)
+    }
+
+    private suspend fun resolveDocumentFileIdsByForwarding(
+        token: String,
+        chatId: String,
+        messageIds: List<Long>,
+    ): Result<List<String>> = withContext(Dispatchers.IO) {
+        val safeToken = sanitizeTokenForPath(token)
+        val out = ArrayList<String>(messageIds.size)
+        for (mid in messageIds) {
+            if (mid <= 0L) return@withContext Result.failure(IllegalArgumentException("Invalid message id: $mid"))
+            val resp = rateLimiter.withRateLimit {
+                api.forwardMessage(safeToken, chatId, chatId, mid)
+            }
+            if (!resp.ok || resp.result == null) {
+                if (resp.errorCode == 429) {
+                    val retryAfterMs = (resp.parameters?.retryAfter ?: 30) * 1_000L
+                    return@withContext Result.failure(TelegramRateLimitException(retryAfterMs))
+                }
+                return@withContext Result.failure(Exception(resp.description ?: "forwardMessage failed for message $mid"))
+            }
+            val fileId = resp.result.document?.fileId
+                ?: return@withContext Result.failure(Exception("No document in forwarded message for $mid"))
+            out.add(fileId)
+            val newMid = resp.result.messageId
+            try {
+                api.deleteMessage(safeToken, chatId, newMid)
+            } catch (_: Exception) {
+                // Best-effort cleanup of transient forward.
+            }
+        }
+        Result.success(out)
+    }
+
+    private fun parseStringJsonArray(json: String): List<String>? =
+        runCatching { gson.fromJson(json, Array<String>::class.java)?.toList() }.getOrNull()
+
+    private fun parseLongJsonArray(json: String?): List<Long>? {
+        if (json.isNullOrBlank()) return null
+        runCatching { gson.fromJson(json, Array<Long>::class.java)?.toList() }.getOrNull()?.let { return it }
+        return runCatching {
+            gson.fromJson(json, Array<Double>::class.java)?.map { it.toLong() }
+        }.getOrNull()
     }
 
     private suspend fun mergeWithPinnedIndex(

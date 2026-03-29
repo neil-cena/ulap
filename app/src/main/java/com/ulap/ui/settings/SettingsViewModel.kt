@@ -12,13 +12,17 @@ import com.ulap.data.repository.UploadSpeedMode
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
+import com.ulap.domain.model.BotCredential
+import com.ulap.domain.usecase.AddSecondaryBotUseCase
 import com.ulap.domain.usecase.ClearCredentialsUseCase
 import com.ulap.domain.usecase.DeleteAllBackupsUseCase
 import com.ulap.domain.usecase.GetBackedUpWithLocalUseCase
 import com.ulap.domain.usecase.GetBackupStatsUseCase
+import com.ulap.domain.usecase.GetBotPoolUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
 import com.ulap.domain.usecase.ObserveCorruptChunkedBackupCountUseCase
+import com.ulap.domain.usecase.RemoveSecondaryBotUseCase
 import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
@@ -36,6 +40,14 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/** UI representation of one bot in the pool. */
+data class BotPoolEntry(
+    val index: Int,
+    val maskedToken: String,
+    val label: String,
+    val isPrimary: Boolean,
+)
+
 data class SettingsUiState(
     val maskedToken: String = "",
     val chatId: String = "",
@@ -46,6 +58,9 @@ data class SettingsUiState(
     val isDeletingBackups: Boolean = false,
     val deleteBackupsProgress: Pair<Int, Int>? = null,
     val deleteBackupsResult: DeleteBackupsUiResult? = null,
+    val botPool: List<BotPoolEntry> = emptyList(),
+    val isAddingBot: Boolean = false,
+    val addBotResult: String? = null,
 )
 
 sealed class DeleteBackupsUiResult {
@@ -75,6 +90,9 @@ class SettingsViewModel @Inject constructor(
     private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
     private val observeCorruptChunkedBackupCount: ObserveCorruptChunkedBackupCountUseCase,
     private val repairCorruptChunkMetadataFromPinnedIndex: RepairCorruptChunkMetadataFromPinnedIndexUseCase,
+    private val getBotPool: GetBotPoolUseCase,
+    private val addSecondaryBot: AddSecondaryBotUseCase,
+    private val removeSecondaryBot: RemoveSecondaryBotUseCase,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -118,13 +136,25 @@ class SettingsViewModel @Inject constructor(
     private fun loadState() {
         val token = getCredentials.getToken() ?: ""
         val chatId = getCredentials.getChatId() ?: ""
+        val poolEntries = getBotPool().map { bot ->
+            BotPoolEntry(
+                index = bot.index,
+                maskedToken = maskToken(bot.token),
+                label = bot.label,
+                isPrimary = bot.index == 0,
+            )
+        }
         _uiState.update {
             it.copy(
                 maskedToken = if (token.length > 8) "${token.take(4)}…${token.takeLast(4)}" else token,
                 chatId = chatId,
+                botPool = poolEntries,
             )
         }
     }
+
+    private fun maskToken(token: String): String =
+        if (token.length > 8) "${token.take(4)}…${token.takeLast(4)}" else token
 
     fun verifyConnection() {
         val token = getCredentials.getToken() ?: return
@@ -144,6 +174,30 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun setTheme(preference: ThemePreference) = userPrefs.setTheme(preference)
+
+    // ── Bot pool ──────────────────────────────────────────────────────────────
+
+    fun addBot(token: String, label: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isAddingBot = true, addBotResult = null) }
+            val result = addSecondaryBot(token, label)
+            val message = when (result) {
+                is VerifyResult.Success -> "Added ${result.botName}"
+                is VerifyResult.Error -> "Error: ${result.message}"
+            }
+            loadState()
+            _uiState.update { it.copy(isAddingBot = false, addBotResult = message) }
+        }
+    }
+
+    fun removeBot(botIndex: Int) {
+        removeSecondaryBot(botIndex)
+        loadState()
+    }
+
+    fun dismissAddBotResult() = _uiState.update { it.copy(addBotResult = null) }
+
+    // ─────────────────────────────────────────────────────────────────────────
     fun setStripExif(enabled: Boolean) = userPrefs.setStripExif(enabled)
 
     fun setWifiOnly(enabled: Boolean) {
@@ -203,7 +257,7 @@ class SettingsViewModel @Inject constructor(
                 result.isSuccess -> {
                     val n = result.getOrNull() ?: 0
                     if (n == 0) {
-                        "Nothing repaired. Open Backup and sync first so the pinned index includes chunk data, or items may not be in the index."
+                        "Nothing repaired. Sync so the pinned index lists chunk data, or ensure legacy chunk file IDs / message IDs still match this backup (count must match the chunked: total)."
                     } else {
                         "Repaired $n corrupted backup(s). Chunk metadata was restored from the pinned index."
                     }

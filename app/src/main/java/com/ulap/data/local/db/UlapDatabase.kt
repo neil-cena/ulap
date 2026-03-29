@@ -86,9 +86,15 @@ val MIGRATION_8_9 = object : Migration(8, 9) {
 /** Max items per Room IN-clause batch. SQLite's SQLITE_MAX_VARIABLE_NUMBER defaults to 999. */
 const val ROOM_BATCH_SIZE = 500
 
+val MIGRATION_9_10 = object : Migration(9, 10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE media_items ADD COLUMN uploadBotIndex INTEGER NOT NULL DEFAULT 0")
+    }
+}
+
 @Database(
     entities = [MediaItemEntity::class, BackupFolderEntity::class, SyncStateEntity::class, ChunkMetadataEntity::class],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(MediaTypeConverter::class, BackupStatusConverter::class, ChunkStatusConverter::class)

@@ -87,7 +87,8 @@ interface MediaItemDao {
         SET backupStatus = :status, errorMessage = :error, lastSyncedAt = :syncedAt,
             telegramFileId = :fileId, telegramMessageId = :messageId,
             thumbnailFileId = :thumbnailFileId, thumbnailMessageId = :thumbnailMessageId,
-            chunkMessageIds = :chunkMessageIds, contentHash = :contentHash
+            chunkMessageIds = :chunkMessageIds, contentHash = :contentHash,
+            uploadBotIndex = :uploadBotIndex
         WHERE id = :id
         """
     )
@@ -102,6 +103,7 @@ interface MediaItemDao {
         thumbnailMessageId: Long? = null,
         chunkMessageIds: String? = null,
         contentHash: String? = null,
+        uploadBotIndex: Int = 0,
     )
 
     @Query("UPDATE media_items SET backupStatus = 'PENDING', errorMessage = NULL WHERE backupStatus = 'FAILED'")
@@ -300,4 +302,17 @@ interface MediaItemDao {
         """,
     )
     fun observeCorruptChunkedBackupCount(): Flow<Int>
+
+    /**
+     * Chunked rows missing [com.ulap.data.local.entity.ChunkMetadataEntity] (same predicate as [observeCorruptChunkedBackupCount]).
+     */
+    @Query(
+        """
+        SELECT * FROM media_items mi
+        WHERE mi.telegramFileId LIKE 'chunked:%'
+        AND mi.backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND NOT EXISTS (SELECT 1 FROM chunk_metadata c WHERE c.mediaItemId = mi.id)
+        """,
+    )
+    suspend fun getCorruptChunkedBackedUpItems(): List<MediaItemEntity>
 }

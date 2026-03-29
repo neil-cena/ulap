@@ -31,7 +31,10 @@ class FetchIndexFromPinnedMessageUseCase @Inject constructor(
     }
 }
 
-/** Rebuilds missing `chunk_metadata` for corrupt chunked rows from the pinned backup index (no full re-merge). */
+/**
+ * Rebuilds missing `chunk_metadata` for corrupt chunked rows: pinned index (chunk file or message IDs),
+ * legacy `uploadedChunks` JSON, or `chunkMessageIds` JSON (resolves file IDs via short-lived forward+delete).
+ */
 class RepairCorruptChunkMetadataFromPinnedIndexUseCase @Inject constructor(
     private val credentialRepository: CredentialRepository,
     private val backupIndexManager: BackupIndexManager,

@@ -163,4 +163,17 @@
     <string name="folder_picker_subtitle">Select which folders to back up. You can change this later in Settings.</string>
     <string name="folder_picker_no_folders">No media folders found on this device.</string>
     <string name="folder_picker_item_count">%1$d items</string>
+
+    <!-- Bot Pool (Settings) -->
+    <string name="bot_pool_title">Bot Pool</string>
+    <string name="bot_pool_subtitle">Add extra bots to spread uploads across multiple tokens and reduce rate-limit risk. All bots must be added as admins to the same chat as your primary bot.</string>
+    <string name="bot_pool_add_button">Add bot</string>
+    <string name="bot_pool_adding_button">Verifying…</string>
+    <string name="bot_pool_add_title">Add secondary bot</string>
+    <string name="bot_pool_token_label">Bot token</string>
+    <string name="bot_pool_label_hint">Label (optional)</string>
+    <string name="bot_pool_add_instruction">1. Open @BotFather in Telegram and send /newbot.\n2. Follow the prompts and copy the token BotFather gives you.\n3. In Telegram, add the new bot to your backup chat and grant it Admin rights.\n4. Paste the token above and tap Add.</string>
+    <string name="bot_pool_remove_confirm">Remove this bot from the pool? Items it uploaded will still be downloadable.</string>
+    <string name="bot_pool_empty_hint">No secondary bots. Uploads use the primary bot only.</string>
+    <string name="bot_pool_hint_in_setup">You can add extra bots later in Settings → Bot Pool to spread uploads and reduce rate-limit risk.</string>
 </resources>

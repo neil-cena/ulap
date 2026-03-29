@@ -1,5 +1,7 @@
 package com.ulap.domain.repository
 
+import com.ulap.domain.model.BotCredential
+
 interface CredentialRepository {
     fun getBotToken(): String?
     fun getChatId(): String?
@@ -10,4 +12,13 @@ interface CredentialRepository {
     /** Last uploaded backup index document file_id (for "Sync from other device"). */
     fun getLastIndexFileId(): String?
     fun setLastIndexFileId(fileId: String?)
+
+    /** Returns additional (non-primary) bot credentials, ordered by their assigned index. */
+    fun getAdditionalBotTokens(): List<BotCredential>
+
+    /** Persists the list of additional bots, overwriting any previously saved list. */
+    fun saveAdditionalBotTokens(bots: List<BotCredential>)
+
+    /** Removes all additional bots, leaving only the primary credential. */
+    fun clearAdditionalBots()
 }

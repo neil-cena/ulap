@@ -1,6 +1,9 @@
 package com.ulap.data.repository
 
 import android.content.SharedPreferences
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
+import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -8,11 +11,18 @@ import javax.inject.Singleton
 private const val KEY_BOT_TOKEN = "bot_token"
 private const val KEY_CHAT_ID = "chat_id"
 private const val KEY_LAST_INDEX_FILE_ID = "last_index_file_id"
+private const val KEY_ADDITIONAL_BOTS = "additional_bots"
+
+/** Wire format stored under [KEY_ADDITIONAL_BOTS]. Only token and label are persisted;
+ *  index is derived from list position when reading. */
+private data class AdditionalBotEntry(val token: String, val label: String)
 
 @Singleton
 class CredentialRepositoryImpl @Inject constructor(
     private val encryptedPrefs: SharedPreferences,
 ) : CredentialRepository {
+
+    private val gson = Gson()
 
     override fun getBotToken(): String? = encryptedPrefs.getString(KEY_BOT_TOKEN, null)
 
@@ -36,5 +46,28 @@ class CredentialRepositoryImpl @Inject constructor(
 
     override fun setLastIndexFileId(fileId: String?) {
         encryptedPrefs.edit().putString(KEY_LAST_INDEX_FILE_ID, fileId?.takeIf { it.isNotBlank() }).apply()
+    }
+
+    override fun getAdditionalBotTokens(): List<BotCredential> {
+        val json = encryptedPrefs.getString(KEY_ADDITIONAL_BOTS, null) ?: return emptyList()
+        return try {
+            val type = object : TypeToken<List<AdditionalBotEntry>>() {}.type
+            val entries: List<AdditionalBotEntry> = gson.fromJson(json, type) ?: emptyList()
+            // Index 0 is the primary bot; additional bots are numbered from 1.
+            entries.mapIndexed { i, entry ->
+                BotCredential(index = i + 1, token = entry.token.trim(), label = entry.label)
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    override fun saveAdditionalBotTokens(bots: List<BotCredential>) {
+        val entries = bots.map { AdditionalBotEntry(it.token, it.label) }
+        encryptedPrefs.edit().putString(KEY_ADDITIONAL_BOTS, gson.toJson(entries)).apply()
+    }
+
+    override fun clearAdditionalBots() {
+        encryptedPrefs.edit().remove(KEY_ADDITIONAL_BOTS).apply()
     }
 }

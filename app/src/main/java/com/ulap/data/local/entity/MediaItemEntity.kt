@@ -40,4 +40,5 @@ data class MediaItemEntity(
     val uploadedChunkCount: Int = 0,       // count of entries; 0 = no resume state
     val chunkMessageIds: String? = null,   // JSON array of Telegram message IDs for each chunk
     val contentHash: String? = null,       // MD5 hex of file content; null = not yet computed
+    val uploadBotIndex: Int = 0,           // index into BotPool; 0 = primary bot
 )

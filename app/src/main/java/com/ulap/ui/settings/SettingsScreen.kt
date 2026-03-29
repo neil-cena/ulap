@@ -5,6 +5,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,14 +19,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -70,6 +76,8 @@ fun SettingsScreen(
 
     var showFreeSpaceWarning by remember { mutableStateOf(false) }
     var showFreeSpaceConfirm by remember { mutableStateOf(false) }
+    var showAddBotDialog by remember { mutableStateOf(false) }
+    var botToRemove by remember { mutableStateOf<Int?>(null) }
 
     val deleteLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -157,6 +165,20 @@ fun SettingsScreen(
                 ) { Text("Disconnect Bot") }
             }
         }
+
+        Spacer(Modifier.height(16.dp))
+        SectionTitle("Bot Pool")
+        BotPoolCard(
+            entries = state.botPool,
+            isAddingBot = state.isAddingBot,
+            addBotResult = state.addBotResult,
+            onAddBot = { token, label -> viewModel.addBot(token, label) },
+            onRemoveBot = { index -> botToRemove = index },
+            onDismissResult = viewModel::dismissAddBotResult,
+            showAddDialog = showAddBotDialog,
+            onShowAddDialog = { showAddBotDialog = true },
+            onDismissAddDialog = { showAddBotDialog = false },
+        )
 
         Spacer(Modifier.height(16.dp))
         SectionTitle("Backup")
@@ -267,7 +289,9 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    "If large videos show “No chunk metadata” after backup, metadata can be restored from your pinned backup index (same source as sync).",
+                    "If large videos show “No chunk metadata” after backup, chunk rows are rebuilt when possible: " +
+                        "from the pinned index (file IDs or message IDs), from legacy saved chunk file IDs on the item, " +
+                        "or by briefly forwarding chunk messages in this chat to read current Telegram file IDs (forwards are deleted right away).",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -291,7 +315,7 @@ fun SettingsScreen(
                     enabled = corruptChunkedCount > 0 && !isFixingCorruptBackups,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
-                    Text(if (isFixingCorruptBackups) "Repairing…" else "Repair from pinned index")
+                    Text(if (isFixingCorruptBackups) "Repairing…" else "Repair chunk metadata")
                 }
                 fixCorruptBackupsResult?.let { msg ->
                     Spacer(Modifier.height(8.dp))
@@ -396,6 +420,23 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = viewModel::dismissClear) { Text("Cancel") }
+            },
+        )
+    }
+
+    botToRemove?.let { indexToRemove ->
+        AlertDialog(
+            onDismissRequest = { botToRemove = null },
+            title = { Text("Remove bot?") },
+            text = { Text("This bot will be removed from the pool. Items it uploaded will still be downloadable using the primary bot as a fallback.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    viewModel.removeBot(indexToRemove)
+                    botToRemove = null
+                }) { Text("Remove") }
+            },
+            dismissButton = {
+                TextButton(onClick = { botToRemove = null }) { Text("Cancel") }
             },
         )
     }
@@ -515,6 +556,144 @@ private fun SettingRow(label: String, value: String) {
         )
         Text(value.ifBlank { "—" }, style = MaterialTheme.typography.bodyMedium)
     }
+}
+
+// ── Bot Pool card ─────────────────────────────────────────────────────────────
+
+@Composable
+private fun BotPoolCard(
+    entries: List<BotPoolEntry>,
+    isAddingBot: Boolean,
+    addBotResult: String?,
+    onAddBot: (token: String, label: String) -> Unit,
+    onRemoveBot: (Int) -> Unit,
+    onDismissResult: () -> Unit,
+    showAddDialog: Boolean,
+    onShowAddDialog: () -> Unit,
+    onDismissAddDialog: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Add extra bots to spread uploads across multiple tokens and reduce rate-limit risk. All bots must be admins in the same chat as the primary bot.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(12.dp))
+
+            if (entries.size <= 1) {
+                Text(
+                    "No secondary bots. Uploads use the primary bot only.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                entries.drop(1).forEachIndexed { i, entry ->
+                    if (i > 0) HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            val displayLabel = entry.label.ifBlank { "Bot ${entry.index}" }
+                            Text(displayLabel, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                entry.maskedToken,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        IconButton(onClick = { onRemoveBot(entry.index) }) {
+                            Icon(
+                                imageVector = Icons.Default.Delete,
+                                contentDescription = "Remove bot",
+                                tint = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                }
+            }
+
+            addBotResult?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onDismissResult) { Text("Dismiss") }
+            }
+
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = onShowAddDialog,
+                enabled = !isAddingBot,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text(if (isAddingBot) "Verifying…" else "Add bot") }
+        }
+    }
+
+    if (showAddDialog) {
+        AddBotDialog(
+            isAdding = isAddingBot,
+            onConfirm = { token, label ->
+                onAddBot(token, label)
+                onDismissAddDialog()
+            },
+            onDismiss = onDismissAddDialog,
+        )
+    }
+}
+
+@Composable
+private fun AddBotDialog(
+    isAdding: Boolean,
+    onConfirm: (token: String, label: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var token by remember { mutableStateOf("") }
+    var label by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Add secondary bot") },
+        text = {
+            Column {
+                Text(
+                    "Create a new bot via @BotFather (/newbot), copy the token, and add the bot as an admin to your backup chat.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = token,
+                    onValueChange = { token = it },
+                    label = { Text("Bot token") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = label,
+                    onValueChange = { label = it },
+                    label = { Text("Label (optional)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(token, label) },
+                enabled = token.isNotBlank() && !isAdding,
+            ) { Text("Add") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
 }
 
 // ── DEV ONLY — remove before release ──────────────────────────────────────────

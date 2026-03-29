@@ -62,6 +62,16 @@ interface TelegramBotApi {
         @Query("message_id") messageId: Long,
     ): TelegramResponse<Boolean>
 
+    /** Used to obtain current [TelegramDocument.fileId] for an existing chat message (repair path). */
+    @FormUrlEncoded
+    @POST("bot{token}/forwardMessage")
+    suspend fun forwardMessage(
+        @Path(value = "token", encoded = true) token: String,
+        @Field("chat_id") chatId: String,
+        @Field("from_chat_id") fromChatId: String,
+        @Field("message_id") messageId: Long,
+    ): TelegramResponse<TelegramMessage>
+
     @FormUrlEncoded
     @POST("bot{token}/deleteMessages")
     suspend fun deleteMessages(

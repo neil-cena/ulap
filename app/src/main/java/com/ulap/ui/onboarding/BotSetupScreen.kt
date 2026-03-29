@@ -242,6 +242,13 @@ fun BotSetupScreen(
                 Text(stringResource(R.string.bot_setup_verify_continue))
             }
         }
+        Spacer(Modifier.height(16.dp))
+        Text(
+            stringResource(R.string.bot_pool_hint_in_setup),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 4.dp),
+        )
         val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
         Spacer(Modifier.height(imeBottom.coerceAtLeast(24.dp)))
     }

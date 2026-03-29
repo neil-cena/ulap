@@ -16,6 +16,7 @@ import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.domain.model.FileUploadProgress
 import com.google.gson.Gson
 import com.ulap.data.remote.BackupIndexManager
+import com.ulap.data.remote.BotPool
 import com.ulap.data.remote.DownloadResult
 import com.ulap.data.remote.StreamingFastStartReader
 import com.ulap.data.remote.TelegramBotApi
@@ -82,6 +83,7 @@ class SyncEngine @Inject constructor(
     private val api: TelegramBotApi,
     private val rateLimiter: TelegramRateLimiter,
     private val userPrefs: UserPreferencesRepository,
+    private val botPool: BotPool,
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
@@ -364,10 +366,10 @@ class SyncEngine @Inject constructor(
             try {
                 supervisorScope {
                     val largeWorkers = (1..LARGE_FILE_CONCURRENCY).map {
-                        launch { for (e in largeQueue) processUpload(e, token, chatId) }
+                        launch { for (e in largeQueue) processUpload(e, chatId) }
                     }
                     val smallWorkers = (1..smallFileConcurrency).map {
-                        launch { for (e in smallQueue) processUpload(e, token, chatId) }
+                        launch { for (e in smallQueue) processUpload(e, chatId) }
                     }
                     // supervisorScope awaits all children before returning; joinAll() is not needed.
                 }
@@ -423,19 +425,34 @@ class SyncEngine @Inject constructor(
 
     private suspend fun processUpload(
         entity: MediaItemEntity,
-        token: String,
         chatId: String,
     ) {
+        val selectedBot = botPool.selectForUpload()
+        if (selectedBot == null) {
+            mediaItemDao.updateBackupResult(
+                id = entity.id,
+                status = BackupStatus.FAILED,
+                error = "No bot configured",
+                syncedAt = null,
+                fileId = null,
+                messageId = null,
+                thumbnailFileId = null,
+            )
+            _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+            return
+        }
         try {
-            processUploadInternal(entity, token, chatId)
+            processUploadInternal(entity, selectedBot.token, chatId, selectedBot.index)
         } catch (e: TelegramRateLimitException) {
+            // Mark this bot as rate-limited so subsequent uploads skip it during the cooldown.
+            botPool.markRateLimited(selectedBot.index, e.retryAfterMs)
             // Rate limit exhausted inside the rate limiter (all MAX_RETRIES 429s used).
             // The circuit breaker is now OPEN, so the next item's withRateLimit call will
             // naturally suspend until the cooldown expires — no explicit delay needed here.
             // The worker stays alive to process remaining queue items.
             // This item remains UPLOADING; resetStaleUploadingToPending resets it at the
             // start of the next backup run with chunk progress intact for resume.
-            debugLog.log("SyncEngine", "Rate limit exhausted for ${entity.fileName} — worker continues, item will retry next run")
+            debugLog.log("SyncEngine", "Rate limit exhausted for ${entity.fileName} (bot ${selectedBot.index}) — worker continues, item will retry next run")
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
             // unexpected I/O errors) so the worker coroutine stays alive for the next item.
@@ -457,6 +474,7 @@ class SyncEngine @Inject constructor(
         entity: MediaItemEntity,
         token: String,
         chatId: String,
+        selectedBotIndex: Int,
     ) {
         val existing = mediaItemDao.findByFileNameSizeDate(entity.fileName, entity.size, entity.dateTaken)
         if (existing != null && existing.id != entity.id && existing.telegramFileId != null &&
@@ -471,6 +489,7 @@ class SyncEngine @Inject constructor(
                 messageId = existing.telegramMessageId,
                 thumbnailFileId = existing.thumbnailFileId,
                 contentHash = existing.contentHash,
+                uploadBotIndex = existing.uploadBotIndex,
             )
             _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
             return
@@ -568,6 +587,7 @@ class SyncEngine @Inject constructor(
                         messageId = hashMatch.telegramMessageId,
                         thumbnailFileId = hashMatch.thumbnailFileId,
                         contentHash = contentHash,
+                        uploadBotIndex = hashMatch.uploadBotIndex,
                     )
                     if (isChunkedMatch) {
                         copyChunkMetadataForDedup(fromMediaId = hashMatch.id, toMediaId = entity.id)
@@ -800,6 +820,7 @@ class SyncEngine @Inject constructor(
                     thumbnailMessageId = effectiveThumbnailMessageId,
                     chunkMessageIds = result.chunkMessageIds,
                     contentHash = contentHash,
+                    uploadBotIndex = selectedBotIndex,
                 )
             }
             is UploadResult.Error -> {
@@ -836,7 +857,7 @@ class SyncEngine @Inject constructor(
 
             supervisorScope {
                 (1..DOWNLOAD_CONCURRENCY).map {
-                    launch { for (entity in queue) processDownload(entity, token) }
+                    launch { for (entity in queue) processDownload(entity) }
                 }
             }
         } finally {
@@ -858,15 +879,16 @@ class SyncEngine @Inject constructor(
     }
 
     suspend fun downloadItem(item: MediaItem) {
-        val token = credentialRepository.getBotToken() ?: return
         val entity = mediaItemDao.findById(item.id) ?: return
-        processDownload(entity, token)
+        processDownload(entity)
     }
 
     private suspend fun processDownload(
         entity: MediaItemEntity,
-        token: String,
     ) {
+        val token = botPool.getForDownload(entity.uploadBotIndex)?.token
+            ?: credentialRepository.getBotToken()
+            ?: return
         val fileId = entity.telegramFileId ?: return
 
         val mimeType = entity.mimeType
@@ -926,8 +948,10 @@ class SyncEngine @Inject constructor(
     }
 
     suspend fun downloadCloudItemToLocal(mediaId: String): Result<android.net.Uri> = withContext(Dispatchers.IO) {
-        val token = credentialRepository.getBotToken() ?: return@withContext Result.failure(Exception("No token"))
         val entity = mediaItemDao.findById(mediaId) ?: return@withContext Result.failure(Exception("Item not found"))
+        val token = botPool.getForDownload(entity.uploadBotIndex)?.token
+            ?: credentialRepository.getBotToken()
+            ?: return@withContext Result.failure(Exception("No token"))
         if (entity.backupStatus != BackupStatus.CLOUD_ONLY) return@withContext Result.failure(Exception("Not a cloud item"))
         val fileId = entity.telegramFileId ?: return@withContext Result.failure(Exception("No file id"))
         val mimeType = entity.mimeType
