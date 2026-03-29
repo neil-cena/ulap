@@ -19,4 +19,9 @@ interface MediaRepository {
     suspend fun markAsCloudOnly(ids: List<String>)
     /** Live stream of items in FAILED status. */
     fun observeFailedItems(): Flow<List<MediaItem>>
+
+    /**
+     * Count of backed-up items with `chunked:` sentinel but no `chunk_metadata` rows (broken chunked backup).
+     */
+    fun observeCorruptChunkedBackupCount(): Flow<Int>
 }

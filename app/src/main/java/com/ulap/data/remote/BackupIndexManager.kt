@@ -6,6 +6,7 @@ import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
+import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.MediaType
 import com.ulap.debug.DebugLogBuffer
@@ -193,28 +194,7 @@ class BackupIndexManager @Inject constructor(
             // Populate chunk_metadata table from schema v2 index entries.
             val chunkFileIds = entry.chunkFileIds
             if (!chunkFileIds.isNullOrEmpty() && chunkMetadataDao.hasChunks(targetId) == 0) {
-                var byteOffset = 0L
-                val chunkSize = com.ulap.data.remote.CHUNK_UPLOAD_SIZE.toInt()
-                chunkFileIds.forEachIndexed { idx, cFileId ->
-                    val msgId = entry.chunkMessageIds?.getOrNull(idx) ?: 0L
-                    val isLast = idx == chunkFileIds.lastIndex
-                    val byteLen = if (isLast) {
-                        (entry.size - byteOffset).coerceAtMost(chunkSize.toLong()).toInt()
-                    } else {
-                        chunkSize
-                    }
-                    chunkMetadataDao.insertChunk(
-                        com.ulap.data.local.entity.ChunkMetadataEntity(
-                            mediaItemId = targetId,
-                            chunkIndex = idx,
-                            telegramFileId = cFileId,
-                            telegramMessageId = msgId,
-                            byteOffset = byteOffset,
-                            byteLength = byteLen,
-                        )
-                    )
-                    byteOffset += byteLen
-                }
+                insertChunkRowsFromIndexEntry(targetId, entry)
             }
         }
         if (newEntities.isNotEmpty()) {
@@ -224,6 +204,69 @@ class BackupIndexManager @Inject constructor(
         }
         debugLog.log("IndexManager", "fetchAndMergeFromFileId: merged $merged new items")
         Result.success(merged)
+    }
+
+    /**
+     * For items that already have `chunked:` in DB but lost `chunk_metadata` (legacy bug), the normal
+     * merge skips them because `telegramFileId` is already "known". This pass reads the pinned index
+     * and inserts chunk rows when the manifest still lists [IndexEntry.chunkFileIds].
+     */
+    suspend fun repairCorruptChunkMetadataFromPinnedIndex(token: String, chatId: String): Result<Int> =
+        withContext(Dispatchers.IO) {
+            val entriesResult = loadPinnedIndexEntries(token, chatId)
+            if (entriesResult.isFailure) {
+                return@withContext Result.failure(
+                    entriesResult.exceptionOrNull() ?: Exception("Could not load pinned index"),
+                )
+            }
+            val entries = entriesResult.getOrThrow()
+            if (entries.isEmpty()) {
+                debugLog.log("IndexManager", "repairCorruptChunkMetadata: no pinned index")
+                return@withContext Result.success(0)
+            }
+            var repaired = 0
+            for (entry in entries) {
+                val chunkFileIds = entry.chunkFileIds
+                if (chunkFileIds.isNullOrEmpty()) continue
+                val local = mediaItemDao.findByTelegramFileId(entry.telegramFileId)
+                    ?: mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
+                if (local == null) continue
+                if (local.telegramFileId != entry.telegramFileId) continue
+                if (!local.telegramFileId.startsWith(CHUNKED_FILE_ID_PREFIX)) continue
+                if (chunkMetadataDao.hasChunks(local.id) != 0) continue
+                insertChunkRowsFromIndexEntry(local.id, entry)
+                repaired++
+            }
+            debugLog.log("IndexManager", "repairCorruptChunkMetadata: repaired $repaired item(s)")
+            Result.success(repaired)
+        }
+
+    private suspend fun insertChunkRowsFromIndexEntry(targetId: String, entry: IndexEntry) {
+        val chunkFileIds = entry.chunkFileIds ?: return
+        if (chunkFileIds.isEmpty()) return
+        if (chunkMetadataDao.hasChunks(targetId) != 0) return
+        var byteOffset = 0L
+        val chunkSize = CHUNK_UPLOAD_SIZE.toInt()
+        chunkFileIds.forEachIndexed { idx, cFileId ->
+            val msgId = entry.chunkMessageIds?.getOrNull(idx) ?: 0L
+            val isLast = idx == chunkFileIds.lastIndex
+            val byteLen = if (isLast) {
+                (entry.size - byteOffset).coerceAtMost(chunkSize.toLong()).toInt()
+            } else {
+                chunkSize
+            }
+            chunkMetadataDao.insertChunk(
+                ChunkMetadataEntity(
+                    mediaItemId = targetId,
+                    chunkIndex = idx,
+                    telegramFileId = cFileId,
+                    telegramMessageId = msgId,
+                    byteOffset = byteOffset,
+                    byteLength = byteLen,
+                ),
+            )
+            byteOffset += byteLen
+        }
     }
 
     private suspend fun mergeWithPinnedIndex(

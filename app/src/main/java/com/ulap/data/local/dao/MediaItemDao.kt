@@ -286,4 +286,18 @@ interface MediaItemDao {
 
     @Query("DELETE FROM media_items WHERE backupStatus = 'CLOUD_ONLY'")
     suspend fun deleteCloudOnlyItems()
+
+    /**
+     * Chunked backups use `telegramFileId` sentinel `chunked:…` with real part IDs in `chunk_metadata`.
+     * Rows matching this query lost chunk rows (e.g. legacy bug) and cannot play or export correctly.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM media_items mi
+        WHERE mi.telegramFileId LIKE 'chunked:%'
+        AND mi.backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND NOT EXISTS (SELECT 1 FROM chunk_metadata c WHERE c.mediaItemId = mi.id)
+        """,
+    )
+    fun observeCorruptChunkedBackupCount(): Flow<Int>
 }

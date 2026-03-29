@@ -18,6 +18,8 @@ import com.ulap.domain.usecase.GetBackedUpWithLocalUseCase
 import com.ulap.domain.usecase.GetBackupStatsUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
+import com.ulap.domain.usecase.ObserveCorruptChunkedBackupCountUseCase
+import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
 import com.ulap.sync.DeleteAllBackupsResult
@@ -71,6 +73,8 @@ class SettingsViewModel @Inject constructor(
     private val getBackupStats: GetBackupStatsUseCase,
     private val getBackedUpWithLocal: GetBackedUpWithLocalUseCase,
     private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
+    private val observeCorruptChunkedBackupCount: ObserveCorruptChunkedBackupCountUseCase,
+    private val repairCorruptChunkMetadataFromPinnedIndex: RepairCorruptChunkMetadataFromPinnedIndexUseCase,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -97,6 +101,15 @@ class SettingsViewModel @Inject constructor(
 
     val backupStats: StateFlow<BackupStats?> = getBackupStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    val corruptChunkedBackupCount: StateFlow<Int> = observeCorruptChunkedBackupCount()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
+
+    private val _isFixingCorruptBackups = MutableStateFlow(false)
+    val isFixingCorruptBackups: StateFlow<Boolean> = _isFixingCorruptBackups.asStateFlow()
+
+    private val _fixCorruptBackupsResult = MutableStateFlow<String?>(null)
+    val fixCorruptBackupsResult: StateFlow<String?> = _fixCorruptBackupsResult.asStateFlow()
 
     init {
         loadState()
@@ -175,6 +188,31 @@ class SettingsViewModel @Inject constructor(
     }
 
     fun clearDebugLog() = debugLog.clear()
+
+    fun dismissFixCorruptBackupsResult() {
+        _fixCorruptBackupsResult.value = null
+    }
+
+    fun repairCorruptChunkedBackups() {
+        if (_isFixingCorruptBackups.value) return
+        viewModelScope.launch {
+            _isFixingCorruptBackups.value = true
+            _fixCorruptBackupsResult.value = null
+            val result = repairCorruptChunkMetadataFromPinnedIndex()
+            _fixCorruptBackupsResult.value = when {
+                result.isSuccess -> {
+                    val n = result.getOrNull() ?: 0
+                    if (n == 0) {
+                        "Nothing repaired. Open Backup and sync first so the pinned index includes chunk data, or items may not be in the index."
+                    } else {
+                        "Repaired $n corrupted backup(s). Chunk metadata was restored from the pinned index."
+                    }
+                }
+                else -> "Repair failed: ${result.exceptionOrNull()?.message ?: "Unknown error"}"
+            }
+            _isFixingCorruptBackups.value = false
+        }
+    }
 
     // ── Free Up Space ─────────────────────────────────────────────────────────
 

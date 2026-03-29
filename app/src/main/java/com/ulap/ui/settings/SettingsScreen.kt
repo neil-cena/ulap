@@ -63,6 +63,9 @@ fun SettingsScreen(
     val pauseOnLowBattery by viewModel.pauseOnLowBattery.collectAsState()
     val uploadSpeedMode by viewModel.uploadSpeedMode.collectAsState()
     val backupStats by viewModel.backupStats.collectAsState()
+    val corruptChunkedCount by viewModel.corruptChunkedBackupCount.collectAsState()
+    val isFixingCorruptBackups by viewModel.isFixingCorruptBackups.collectAsState()
+    val fixCorruptBackupsResult by viewModel.fixCorruptBackupsResult.collectAsState()
     val freeSpace by viewModel.freeSpace.collectAsState()
 
     var showFreeSpaceWarning by remember { mutableStateOf(false) }
@@ -254,6 +257,52 @@ fun SettingsScreen(
                                 )
                             },
                         )
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Fix backup",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "If large videos show “No chunk metadata” after backup, metadata can be restored from your pinned backup index (same source as sync).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (corruptChunkedCount == 0) {
+                        "Corrupted chunked backups: 0 (none detected)"
+                    } else {
+                        "Corrupted chunked backups: $corruptChunkedCount"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = if (corruptChunkedCount > 0) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = viewModel::repairCorruptChunkedBackups,
+                    enabled = corruptChunkedCount > 0 && !isFixingCorruptBackups,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(if (isFixingCorruptBackups) "Repairing…" else "Repair from pinned index")
+                }
+                fixCorruptBackupsResult?.let { msg ->
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(onClick = viewModel::dismissFixCorruptBackupsResult) {
+                        Text("Dismiss")
                     }
                 }
             }

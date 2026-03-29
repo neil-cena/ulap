@@ -140,6 +140,9 @@ class MediaRepositoryImpl @Inject constructor(
     override fun observeFailedItems(): Flow<List<MediaItem>> =
         mediaItemDao.observeByStatus(BackupStatus.FAILED).map { list -> list.map { it.toDomain() } }
 
+    override fun observeCorruptChunkedBackupCount(): Flow<Int> =
+        mediaItemDao.observeCorruptChunkedBackupCount()
+
     private fun MediaItemEntity.toDomain() = MediaItem(
         id = id,
         path = path,

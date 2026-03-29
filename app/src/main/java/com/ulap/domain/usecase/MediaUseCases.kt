@@ -49,3 +49,9 @@ class ObserveFailedItemsUseCase @Inject constructor(
 ) {
     operator fun invoke(): Flow<List<MediaItem>> = mediaRepository.observeFailedItems()
 }
+
+class ObserveCorruptChunkedBackupCountUseCase @Inject constructor(
+    private val mediaRepository: MediaRepository,
+) {
+    operator fun invoke(): Flow<Int> = mediaRepository.observeCorruptChunkedBackupCount()
+}

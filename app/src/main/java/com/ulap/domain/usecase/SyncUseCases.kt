@@ -31,6 +31,18 @@ class FetchIndexFromPinnedMessageUseCase @Inject constructor(
     }
 }
 
+/** Rebuilds missing `chunk_metadata` for corrupt chunked rows from the pinned backup index (no full re-merge). */
+class RepairCorruptChunkMetadataFromPinnedIndexUseCase @Inject constructor(
+    private val credentialRepository: CredentialRepository,
+    private val backupIndexManager: BackupIndexManager,
+) {
+    suspend operator fun invoke(): Result<Int> {
+        val token = credentialRepository.getBotToken() ?: return Result.failure(Exception("No bot token"))
+        val chatId = credentialRepository.getChatId() ?: return Result.failure(Exception("No chat ID"))
+        return backupIndexManager.repairCorruptChunkMetadataFromPinnedIndex(token, chatId)
+    }
+}
+
 class DownloadCloudItemUseCase @Inject constructor(
     private val syncEngine: SyncEngine,
 ) {
