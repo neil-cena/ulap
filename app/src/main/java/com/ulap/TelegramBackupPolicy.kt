@@ -8,6 +8,9 @@ object TelegramBackupPolicy {
 
     const val TELEGRAM_PHOTO_MAX_EDGE_PX = 10_000
 
+    /** Telegram [sendPhoto]: width/height ratio must be at most 20 (long side / short side ≤ 20). */
+    const val TELEGRAM_PHOTO_MAX_ASPECT_RATIO = 20
+
     const val MSG_COULD_NOT_OPEN_FILE = "Could not open file"
 
     const val MSG_EMPTY_FILE = "Empty file"
@@ -23,10 +26,18 @@ object TelegramBackupPolicy {
     }
 
     /**
-     * After a successful [android.graphics.BitmapFactory] inJustDecodeBounds (positive dimensions).
+     * When true, send JPEG/PNG as [sendDocument] instead of [sendPhoto] to avoid
+     * `PHOTO_INVALID_DIMENSIONS` (max edge, aspect ratio, or undecodable bounds).
      */
-    fun shouldSendPhotoAsDocumentByDecodedBounds(outWidth: Int, outHeight: Int): Boolean =
-        outWidth > TELEGRAM_PHOTO_MAX_EDGE_PX || outHeight > TELEGRAM_PHOTO_MAX_EDGE_PX
+    fun shouldSendPhotoAsDocumentByDecodedBounds(outWidth: Int, outHeight: Int): Boolean {
+        if (outWidth <= 0 || outHeight <= 0) return true
+        if (outWidth > TELEGRAM_PHOTO_MAX_EDGE_PX || outHeight > TELEGRAM_PHOTO_MAX_EDGE_PX) {
+            return true
+        }
+        val longEdge = maxOf(outWidth, outHeight)
+        val shortEdge = minOf(outWidth, outHeight)
+        return longEdge > TELEGRAM_PHOTO_MAX_ASPECT_RATIO * shortEdge
+    }
 
     sealed class PreBackupEvaluation {
         data object Success : PreBackupEvaluation()

@@ -128,11 +128,10 @@ class TelegramUploader @Inject constructor(
         val skipSendPhotoForDimensions = if (bytes != null && isPhotoMime) {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-            if (opts.outWidth > 0 && opts.outHeight > 0) {
-                TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(opts.outWidth, opts.outHeight)
-            } else {
-                false
-            }
+            TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(
+                opts.outWidth,
+                opts.outHeight,
+            )
         } else {
             false
         }
@@ -373,7 +372,7 @@ class TelegramUploader @Inject constructor(
         }
     }
 
-    /** Upload a JPEG thumbnail as sendPhoto. Returns (fileId, messageId), or null on error. */
+    /** Upload a JPEG thumbnail. Prefers [sendPhoto]; uses [sendDocument] when dimensions violate Telegram photo rules. */
     suspend fun uploadThumbnail(
         token: String,
         chatId: String,
@@ -382,13 +381,44 @@ class TelegramUploader @Inject constructor(
         try {
             val safeToken = sanitizeTokenForPath(token)
             val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
-            val part = MultipartBody.Part.createFormData(
+            val jpegType = "image/jpeg".toMediaType()
+            fun photoPart() = MultipartBody.Part.createFormData(
                 "photo",
                 "thumb.jpg",
-                jpeg.toRequestBody("image/jpeg".toMediaType()),
+                jpeg.toRequestBody(jpegType),
             )
+            fun documentPart() = MultipartBody.Part.createFormData(
+                "document",
+                "thumb.jpg",
+                jpeg.toRequestBody(jpegType),
+            )
+
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts)
+            val skipSendPhoto = TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(
+                opts.outWidth,
+                opts.outHeight,
+            )
+
+            suspend fun uploadAsDocument(): Pair<String, Long>? {
+                val docResponse = rateLimiter.withRateLimit {
+                    api.sendDocument(safeToken, chatIdBody, documentPart(), null)
+                }
+                return if (docResponse.ok && docResponse.result?.document != null) {
+                    rateLimiter.recordSuccess()
+                    Pair(docResponse.result.document.fileId, docResponse.result.messageId)
+                } else {
+                    rateLimiter.recordFailure()
+                    null
+                }
+            }
+
+            if (skipSendPhoto) {
+                return@withContext uploadAsDocument()
+            }
+
             val response = rateLimiter.withRateLimit {
-                api.sendPhoto(safeToken, chatIdBody, part, null)
+                api.sendPhoto(safeToken, chatIdBody, photoPart(), null)
             }
             if (response.ok && response.result?.photo != null) {
                 rateLimiter.recordSuccess()
@@ -397,7 +427,7 @@ class TelegramUploader @Inject constructor(
                 Pair(fileId, response.result.messageId)
             } else {
                 rateLimiter.recordFailure()
-                null
+                if (response.errorCode == 400) uploadAsDocument() else null
             }
         } catch (_: Exception) {
             null
