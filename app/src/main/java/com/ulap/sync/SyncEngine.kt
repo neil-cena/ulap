@@ -523,6 +523,26 @@ class SyncEngine @Inject constructor(
             return
         }
 
+        if (entity.size == 0L) {
+            inputStream.close()
+            mediaItemDao.updateBackupResult(
+                id = entity.id,
+                status = BackupStatus.FAILED,
+                error = "Empty file",
+                syncedAt = null,
+                fileId = null,
+                messageId = null,
+                thumbnailFileId = null,
+            )
+            _progress.update { prev ->
+                prev.copy(
+                    itemsDone = prev.itemsDone + 1,
+                    activeUploads = prev.activeUploads - entity.id,
+                )
+            }
+            return
+        }
+
         // Compute MD5 from a separate stream open so the upload stream is untouched.
         // Non-fatal: if hashing fails (e.g. stream error) we proceed without it.
         val contentUri = Uri.parse(entity.contentUri)
@@ -532,24 +552,34 @@ class SyncEngine @Inject constructor(
         if (contentHash != null) {
             val hashMatch = mediaItemDao.findByContentHash(contentHash)
             if (hashMatch != null && hashMatch.id != entity.id && hashMatch.telegramFileId != null) {
-                inputStream.close()
-                mediaItemDao.updateBackupResult(
-                    id = entity.id,
-                    status = BackupStatus.BACKED_UP,
-                    error = null,
-                    syncedAt = System.currentTimeMillis(),
-                    fileId = hashMatch.telegramFileId,
-                    messageId = hashMatch.telegramMessageId,
-                    thumbnailFileId = hashMatch.thumbnailFileId,
-                    contentHash = contentHash,
-                )
-                _progress.update { prev ->
-                    prev.copy(
-                        itemsDone = prev.itemsDone + 1,
-                        activeUploads = prev.activeUploads - entity.id,
+                val matchFileId = hashMatch.telegramFileId
+                val isChunkedMatch = matchFileId.startsWith(CHUNKED_FILE_ID_PREFIX)
+                // Chunked items need chunk_metadata rows; copying only the sentinel file_id breaks playback.
+                if (isChunkedMatch && chunkMetadataDao.hasChunks(hashMatch.id) == 0) {
+                    // Unsafe to dedup — fall through to a full upload.
+                } else {
+                    inputStream.close()
+                    mediaItemDao.updateBackupResult(
+                        id = entity.id,
+                        status = BackupStatus.BACKED_UP,
+                        error = null,
+                        syncedAt = System.currentTimeMillis(),
+                        fileId = matchFileId,
+                        messageId = hashMatch.telegramMessageId,
+                        thumbnailFileId = hashMatch.thumbnailFileId,
+                        contentHash = contentHash,
                     )
+                    if (isChunkedMatch) {
+                        copyChunkMetadataForDedup(fromMediaId = hashMatch.id, toMediaId = entity.id)
+                    }
+                    _progress.update { prev ->
+                        prev.copy(
+                            itemsDone = prev.itemsDone + 1,
+                            activeUploads = prev.activeUploads - entity.id,
+                        )
+                    }
+                    return
                 }
-                return
             }
         }
 
@@ -732,7 +762,11 @@ class SyncEngine @Inject constructor(
         when (result) {
             is UploadResult.Success -> {
                 mediaItemDao.clearChunkProgress(entity.id)
-                chunkMetadataDao.deleteChunksForMedia(entity.id)
+                // Chunked uploads store per-part file_ids only in chunk_metadata; the sentinel
+                // telegramFileId is not enough for playback or index export — do not wipe rows.
+                if (shouldDeleteChunkMetadataAfterSuccessfulUpload(result.fileId)) {
+                    chunkMetadataDao.deleteChunksForMedia(entity.id)
+                }
                 // Prefer Telegram's returned thumbnail; fall back to our pre-extracted one for videos.
                 val effectiveThumbnailFileId = result.thumbnailFileId ?: videoThumbnailFileId
                 val effectiveThumbnailMessageId = if (result.thumbnailFileId != null) result.thumbnailMessageId else videoThumbnailMessageId
@@ -934,6 +968,20 @@ class SyncEngine @Inject constructor(
     }
 
     /**
+     * Clones chunk rows from an existing backed-up item to [toMediaId] for hash dedup.
+     * Telegram part file_ids are shared; each local media row needs its own chunk_metadata rows.
+     */
+    private suspend fun copyChunkMetadataForDedup(fromMediaId: String, toMediaId: String) {
+        chunkMetadataDao.deleteChunksForMedia(toMediaId)
+        val rows = chunkMetadataDao.getChunksForMedia(fromMediaId)
+        for (row in rows) {
+            chunkMetadataDao.insertChunk(
+                row.copy(id = 0L, mediaItemId = toMediaId),
+            )
+        }
+    }
+
+    /**
      * Streams the file at [uri] through MD5 and returns the hex digest, or null if the file
      * cannot be opened. Uses a fixed 64KB buffer to keep memory usage constant for large files.
      */
@@ -993,6 +1041,14 @@ internal fun sanitizeDisplayFileName(fileName: String, mimeType: String): String
 
     return if (canonicalExt != currentExt) "$base.$canonicalExt" else fileName
 }
+
+/**
+ * After a successful upload, non-chunked items may still have stale chunk_metadata from an
+ * abandoned chunked attempt — those rows should be removed. Chunked items keep the sentinel
+ * [CHUNKED_FILE_ID_PREFIX] file_id; per-part Telegram file_ids live only in chunk_metadata.
+ */
+internal fun shouldDeleteChunkMetadataAfterSuccessfulUpload(resultFileId: String): Boolean =
+    !resultFileId.startsWith(CHUNKED_FILE_ID_PREFIX)
 
 sealed class DeleteAllBackupsResult {
     object Success : DeleteAllBackupsResult()

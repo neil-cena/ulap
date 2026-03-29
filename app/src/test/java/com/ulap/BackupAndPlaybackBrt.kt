@@ -119,9 +119,9 @@ object HypothesizedDefectiveStreamUrlResolver : StreamUrlResolver {
 
 // region Wiring — replace bodies with real production adapters after mapping types
 
-fun backupPlannerUnderTest(): MediaUploadPlanner = HypothesizedDefectiveMediaUploadPlanner
+fun backupPlannerUnderTest(): MediaUploadPlanner = ReferenceCorrectMediaUploadPlanner
 
-fun streamResolverUnderTest(): StreamUrlResolver = HypothesizedDefectiveStreamUrlResolver
+fun streamResolverUnderTest(): StreamUrlResolver = ReferenceCorrectStreamUrlResolver
 
 // endregion
 
