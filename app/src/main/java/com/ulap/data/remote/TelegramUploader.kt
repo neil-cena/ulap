@@ -1,8 +1,6 @@
 package com.ulap.data.remote
 
-import android.graphics.BitmapFactory
 import com.google.gson.Gson
-import com.ulap.TelegramBackupPolicy
 import com.ulap.di.UploadClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -16,8 +14,6 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API limit
-/** [sendPhoto] only accepts up to 10 MiB; larger JPEG/PNG must use [sendDocument]. */
-private const val MAX_TELEGRAM_PHOTO_BYTES = 10L * 1024 * 1024
 internal const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
 
 // Top-level so BackupForegroundService can import it for the notification string.
@@ -114,85 +110,27 @@ class TelegramUploader @Inject constructor(
         val captionBody = caption?.toRequestBody("text/plain".toMediaType())
         val safeToken = sanitizeTokenForPath(token)
 
-        // JPEG/PNG can use sendPhoto only up to Telegram's 10 MiB limit; larger ones (still ≤50MB
-        // single-upload) are sent as documents. Other image types go straight to sendDocument.
-        val isPhotoMime = mimeType == "image/jpeg" || mimeType == "image/png"
-        val isPhotoCandidate = isPhotoMime && fileSize <= MAX_TELEGRAM_PHOTO_BYTES
         val isVideo = mimeType.startsWith("video/")
 
-        // For photo candidates we read bytes into memory first (files are ≤50MB here)
-        // so that if Telegram rejects the photo (bad aspect ratio, etc.) we can retry
-        // the same bytes as a document without needing to re-open the stream.
-        val bytes: ByteArray? = if (isPhotoCandidate) inputStream.readBytes() else null
-
-        val skipSendPhotoForDimensions = if (bytes != null && isPhotoMime) {
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
-            TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(
-                opts.outWidth,
-                opts.outHeight,
-            )
-        } else {
-            false
-        }
-
         fun makeBody(name: String): MultipartBody.Part {
-            val requestBody = if (bytes != null) {
-                var reported = 0L
-                ProgressRequestBody(
-                    delegate = bytes.toRequestBody(mimeType.toMediaType()),
-                    totalBytes = bytes.size.toLong(),
-                    onProgress = { uploaded, total ->
-                        val delta = uploaded - reported; reported = uploaded
-                        onProgress(delta, total)
-                    },
-                )
-            } else {
-                StreamProgressRequestBody(
-                    inputStream = inputStream,
-                    contentLength = fileSize,
-                    contentType = mimeType.toMediaType(),
-                    onProgress = onProgress,
-                )
-            }
+            val requestBody = StreamProgressRequestBody(
+                inputStream = inputStream,
+                contentLength = fileSize,
+                contentType = mimeType.toMediaType(),
+                onProgress = onProgress,
+            )
             return MultipartBody.Part.createFormData(name = name, filename = fileName, body = requestBody)
         }
 
         val response = rateLimiter.withRateLimit {
-            when {
-                isPhotoCandidate && !skipSendPhotoForDimensions ->
-                    api.sendPhoto(safeToken, chatIdBody, makeBody("photo"), captionBody)
-                isVideo -> api.sendVideo(safeToken, chatIdBody, makeBody("video"), captionBody)
-                else -> api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
-            }
+            if (isVideo) api.sendVideo(safeToken, chatIdBody, makeBody("video"), captionBody)
+            else api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
         }
 
         if (!response.ok || response.result == null) {
             if (response.errorCode == 429) {
                 val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1_000L
                 throw TelegramRateLimitException(retryAfterMs)
-            }
-            // sendPhoto rejected (panorama aspect ratio, edge-case file, etc.)
-            // Fall back to sendDocument so the file is still preserved.
-            // Oversized-for-photo JPEG/PNG should not reach here; keep fallback for API changes / edge cases.
-            if (response.errorCode == 400 && isPhotoMime && bytes != null) {
-                val fallbackResponse = rateLimiter.withRateLimit {
-                    api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
-                }
-                if (fallbackResponse.ok && fallbackResponse.result != null) {
-                    rateLimiter.recordSuccess()
-                    val msg = fallbackResponse.result
-                    val fileId = msg.document?.fileId
-                        ?: return UploadResult.Error(Exception("No file_id in fallback response"))
-                    val thumbId = msg.document?.thumbnail?.fileId
-                    return UploadResult.Success(messageId = msg.messageId, fileId = fileId, thumbnailFileId = thumbId)
-                }
-                rateLimiter.recordFailure()
-                val desc = fallbackResponse.description?.takeIf { it.isNotBlank() }
-                    ?: TelegramBackupPolicy.GENERIC_UPLOAD_FAILED_MESSAGE
-                return UploadResult.Error(
-                    TelegramApiException(fallbackResponse.errorCode, desc),
-                )
             }
             rateLimiter.recordFailure()
             return UploadResult.Error(
@@ -203,10 +141,8 @@ class TelegramUploader @Inject constructor(
         rateLimiter.recordSuccess()
         val msg = response.result
         val fileId = msg.document?.fileId ?: msg.video?.fileId
-            ?: msg.photo?.maxByOrNull { it.fileSize ?: 0 }?.fileId
             ?: return UploadResult.Error(Exception("No file_id in response"))
         val thumbId = when {
-            msg.photo != null -> msg.photo.maxByOrNull { it.fileSize ?: 0 }?.fileId
             msg.video != null -> msg.video.thumbnail?.fileId
             msg.document != null -> msg.document.thumbnail?.fileId
             else -> null
@@ -372,7 +308,7 @@ class TelegramUploader @Inject constructor(
         }
     }
 
-    /** Upload a JPEG thumbnail. Prefers [sendPhoto]; uses [sendDocument] when dimensions violate Telegram photo rules. */
+    /** Upload a JPEG thumbnail as sendDocument. Returns (fileId, messageId), or null on error. */
     suspend fun uploadThumbnail(
         token: String,
         chatId: String,
@@ -381,53 +317,20 @@ class TelegramUploader @Inject constructor(
         try {
             val safeToken = sanitizeTokenForPath(token)
             val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
-            val jpegType = "image/jpeg".toMediaType()
-            fun photoPart() = MultipartBody.Part.createFormData(
-                "photo",
-                "thumb.jpg",
-                jpeg.toRequestBody(jpegType),
-            )
-            fun documentPart() = MultipartBody.Part.createFormData(
+            val part = MultipartBody.Part.createFormData(
                 "document",
                 "thumb.jpg",
-                jpeg.toRequestBody(jpegType),
+                jpeg.toRequestBody("image/jpeg".toMediaType()),
             )
-
-            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, opts)
-            val skipSendPhoto = TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(
-                opts.outWidth,
-                opts.outHeight,
-            )
-
-            suspend fun uploadAsDocument(): Pair<String, Long>? {
-                val docResponse = rateLimiter.withRateLimit {
-                    api.sendDocument(safeToken, chatIdBody, documentPart(), null)
-                }
-                return if (docResponse.ok && docResponse.result?.document != null) {
-                    rateLimiter.recordSuccess()
-                    Pair(docResponse.result.document.fileId, docResponse.result.messageId)
-                } else {
-                    rateLimiter.recordFailure()
-                    null
-                }
-            }
-
-            if (skipSendPhoto) {
-                return@withContext uploadAsDocument()
-            }
-
             val response = rateLimiter.withRateLimit {
-                api.sendPhoto(safeToken, chatIdBody, photoPart(), null)
+                api.sendDocument(safeToken, chatIdBody, part, null)
             }
-            if (response.ok && response.result?.photo != null) {
+            if (response.ok && response.result?.document != null) {
                 rateLimiter.recordSuccess()
-                val fileId = response.result.photo.maxByOrNull { it.fileSize ?: 0 }?.fileId
-                    ?: return@withContext null
-                Pair(fileId, response.result.messageId)
+                Pair(response.result.document.fileId, response.result.messageId)
             } else {
                 rateLimiter.recordFailure()
-                if (response.errorCode == 400) uploadAsDocument() else null
+                null
             }
         } catch (_: Exception) {
             null
