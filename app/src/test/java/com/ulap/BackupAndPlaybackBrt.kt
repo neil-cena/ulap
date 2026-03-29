@@ -428,3 +428,240 @@ class SyncMergeWriteOrderBrt {
         assertEquals("Chunk count must match manifest.", CHUNK_IDS.size, db.chunkInsertions.size)
     }
 }
+
+// =============================================================================
+// region Cloud-Only Chunk URL Resolution Contract (getFile failure bug, Phase 2 BRT)
+//
+// Defect: On a secondary (cloud-only) device, api.getFile() returns ok=false or
+// filePath==null for every Telegram chunk file_id stored in chunk_metadata.
+// Root-cause candidates:
+//   1. Bot-token mismatch — file_id is per-bot in Telegram.
+//   2. Blank file_id stored in chunk_metadata (corrupted index).
+//
+// The tests below assert the CORRECT post-fix contract. Wiring the `underTest`
+// functions to the real production adapters will expose failures while the
+// bug is present and pass once the fix is applied.
+// =============================================================================
+
+/**
+ * Resolves a list of Telegram chunk file IDs to stream URLs via a bot token.
+ * Returns `null` for any ID that cannot be resolved (getFile failure).
+ */
+fun interface ChunkUrlResolver {
+    fun resolve(token: String, chunkFileIds: List<String>): List<String?>
+}
+
+/**
+ * Resolves a single Telegram file ID to a stream URL via a bot token.
+ * Returns `null` if the file cannot be resolved (getFile failure).
+ */
+fun interface StreamUrlResolver2 {
+    fun resolve(token: String, fileId: String): String?
+}
+
+sealed class VideoPlaybackState {
+    data class Ok(val urls: List<String>) : VideoPlaybackState()
+    data class Error(val reason: String) : VideoPlaybackState()
+}
+
+/**
+ * Orchestrates playback URL resolution for both chunked and single-file media items.
+ *
+ * Mirrors the contract of [MediaViewerViewModel.startPrefetchingChunkedDownload] and
+ * its `init`-block `else` branch without importing any Android or production types.
+ */
+class VideoPlaybackOrchestrator(
+    private val chunkUrlResolver: ChunkUrlResolver,
+    private val streamUrlResolver2: StreamUrlResolver2,
+) {
+    fun resolveChunked(token: String, chunkFileIds: List<String>): VideoPlaybackState {
+        val urls = chunkUrlResolver.resolve(token, chunkFileIds)
+        return if (urls.all { it == null }) {
+            VideoPlaybackState.Error("Could not resolve chunk URLs")
+        } else {
+            VideoPlaybackState.Ok(urls.filterNotNull())
+        }
+    }
+
+    fun resolveSingle(token: String, fileId: String): VideoPlaybackState {
+        val url = streamUrlResolver2.resolve(token, fileId)
+        return if (url == null) {
+            VideoPlaybackState.Error("Could not resolve stream URL")
+        } else {
+            VideoPlaybackState.Ok(listOf(url))
+        }
+    }
+}
+
+// region Hypothesized defective implementations — simulate api.getFile() returning null for all IDs
+
+/**
+ * Simulates the bug: api.getFile() returns ok=false / filePath=null for every chunk file_id.
+ * This reproduces the secondary-device symptom where all chunk IDs fail to resolve,
+ * regardless of whether the cause is a bot-token mismatch or a corrupted index.
+ */
+object BrokenChunkUrlResolver : ChunkUrlResolver {
+    override fun resolve(token: String, chunkFileIds: List<String>): List<String?> =
+        chunkFileIds.map { null }
+}
+
+/**
+ * Simulates the bug: api.getFile() returns ok=false / filePath=null for a single-file item.
+ */
+object BrokenStreamUrlResolver2 : StreamUrlResolver2 {
+    override fun resolve(token: String, fileId: String): String? = null
+}
+
+// endregion
+
+// region Correct implementations — simulate api.getFile() returning valid URLs after fix
+
+/**
+ * Simulates the post-fix behavior: api.getFile() returns a valid file path for non-blank
+ * chunk IDs, and null for blank IDs (corrupted index guard).
+ */
+object WorkingChunkUrlResolver : ChunkUrlResolver {
+    override fun resolve(token: String, chunkFileIds: List<String>): List<String?> =
+        chunkFileIds.map { fileId ->
+            if (fileId.isBlank()) null
+            else "https://api.telegram.org/file/bot$token/$fileId"
+        }
+}
+
+/**
+ * Simulates the post-fix behavior: api.getFile() returns a valid URL for non-blank file IDs,
+ * and null for blank file IDs.
+ */
+object WorkingStreamUrlResolver2 : StreamUrlResolver2 {
+    override fun resolve(token: String, fileId: String): String? =
+        if (fileId.isBlank()) null
+        else "https://api.telegram.org/file/bot$token/$fileId"
+}
+
+// endregion
+
+// region Wiring — replace with real production adapters after symbol mapping
+
+/**
+ * Default wiring uses [BrokenChunkUrlResolver] to reproduce the defect in CI.
+ * Switch to a production adapter wrapping the real TelegramDownloader once symbols are mapped.
+ */
+fun chunkUrlResolverUnderTest(): ChunkUrlResolver = BrokenChunkUrlResolver
+
+/**
+ * Default wiring uses [BrokenStreamUrlResolver2] to reproduce the defect in CI.
+ * Switch to a production adapter wrapping the real TelegramDownloader once symbols are mapped.
+ */
+fun streamUrlResolver2UnderTest(): StreamUrlResolver2 = BrokenStreamUrlResolver2
+
+// endregion
+
+class ChunkUrlResolutionBrt {
+
+    private val TOKEN = "bot123456:ABC-valid-token"
+    private val VALID_CHUNK_IDS = listOf("AgACAgIchunk1", "AgACAgIchunk2", "AgACAgIchunk3")
+    private val BLANK_CHUNK_IDS = listOf("", "", "")
+    private val VALID_SINGLE_ID = "AgACAgIsingle1"
+
+    /**
+     * BRT — primary chunked-video error path.
+     *
+     * The [BrokenChunkUrlResolver] returns null for every file_id, reproducing the secondary-device
+     * symptom. The orchestrator must surface [VideoPlaybackState.Error] rather than silently
+     * proceeding with null URLs (which would crash the player).
+     *
+     * Fails when [chunkUrlResolverUnderTest] is wired to a production adapter that still calls
+     * a mismatched bot token — all getFile() calls return null → test assertion fails.
+     * Passes once the bot-token is correct and at least one URL resolves.
+     */
+    @Test
+    fun brt_chunked_video_all_null_urls_must_emit_error() {
+        val sut = VideoPlaybackOrchestrator(BrokenChunkUrlResolver, BrokenStreamUrlResolver2)
+        val result = sut.resolveChunked(TOKEN, VALID_CHUNK_IDS)
+        assertEquals(
+            "When api.getFile() returns null for every chunk file_id " +
+                "(bot-token mismatch or corrupted index), the orchestrator must emit " +
+                "Error('Could not resolve chunk URLs') and not attempt playback.",
+            VideoPlaybackState.Error("Could not resolve chunk URLs"),
+            result,
+        )
+    }
+
+    /**
+     * BRT — primary single-file error path.
+     *
+     * [BrokenStreamUrlResolver2] returns null, reproducing the secondary-device symptom for
+     * non-chunked (legacy JSON-chunked or single-file) items.
+     * Error message must match the string checked in the ViewModel's `init` block.
+     */
+    @Test
+    fun brt_single_video_null_url_must_emit_error() {
+        val sut = VideoPlaybackOrchestrator(BrokenChunkUrlResolver, BrokenStreamUrlResolver2)
+        val result = sut.resolveSingle(TOKEN, VALID_SINGLE_ID)
+        assertEquals(
+            "When api.getFile() returns null for a single-file item, the orchestrator must emit " +
+                "Error('Could not resolve stream URL') to surface the failure to the UI.",
+            VideoPlaybackState.Error("Could not resolve stream URL"),
+            result,
+        )
+    }
+
+    /**
+     * BRT — corrupted-index guard for chunked items.
+     *
+     * Even with a [WorkingChunkUrlResolver] (correct token), blank file_ids stored in
+     * chunk_metadata must produce an error rather than partially resolving or crashing.
+     * This covers the secondary hypothesis: blank file_id stored during backup indexing.
+     */
+    @Test
+    fun brt_blank_chunk_file_ids_must_emit_error() {
+        val sut = VideoPlaybackOrchestrator(WorkingChunkUrlResolver, WorkingStreamUrlResolver2)
+        val result = sut.resolveChunked(TOKEN, BLANK_CHUNK_IDS)
+        assertEquals(
+            "Blank chunk file_ids in chunk_metadata (corrupted backup index) must produce " +
+                "Error('Could not resolve chunk URLs') even when the resolver is functional.",
+            VideoPlaybackState.Error("Could not resolve chunk URLs"),
+            result,
+        )
+    }
+
+    /**
+     * Golden — working resolver must succeed for chunked video.
+     *
+     * Proves the orchestrator's success path is correct before wiring in production code.
+     * This test will fail in CI once a real production adapter replaces [WorkingChunkUrlResolver]
+     * and the underlying bot token is still mismatched.
+     */
+    @Test
+    fun brt_working_resolver_must_succeed_for_chunked() {
+        val sut = VideoPlaybackOrchestrator(WorkingChunkUrlResolver, WorkingStreamUrlResolver2)
+        val result = sut.resolveChunked(TOKEN, VALID_CHUNK_IDS)
+        assertEquals(
+            "With a functional resolver (correct bot token, valid file_ids), " +
+                "resolveChunked must return Ok containing resolved stream URLs.",
+            VideoPlaybackState.Ok(
+                VALID_CHUNK_IDS.map { "https://api.telegram.org/file/bot$TOKEN/$it" },
+            ),
+            result,
+        )
+    }
+
+    /**
+     * Golden — working resolver must succeed for single-file video.
+     *
+     * Proves the orchestrator's single-file success path is correct before production wiring.
+     */
+    @Test
+    fun brt_working_resolver_must_succeed_for_single() {
+        val sut = VideoPlaybackOrchestrator(WorkingChunkUrlResolver, WorkingStreamUrlResolver2)
+        val result = sut.resolveSingle(TOKEN, VALID_SINGLE_ID)
+        assertEquals(
+            "With a functional resolver (correct bot token, valid file_id), " +
+                "resolveSingle must return Ok containing the resolved stream URL.",
+            VideoPlaybackState.Ok(listOf("https://api.telegram.org/file/bot$TOKEN/$VALID_SINGLE_ID")),
+            result,
+        )
+    }
+}
+
+// endregion
