@@ -111,6 +111,23 @@ class MediaRepositoryImpl @Inject constructor(
             }
         }
 
+        if (effectiveFullScan) {
+            // Detect locally-deleted files: BACKED_UP items in enabled buckets that are no
+            // longer present in the MediaStore scan are files the user deleted from the device.
+            // Mark them CLOUD_ONLY so the viewer falls through to the cloud resolution path
+            // instead of trying (and silently failing) to open the now-stale content URI.
+            val scannedIds = scanned.map { it.id }.toHashSet()
+            val enabledBucketSet = enabledBuckets.toHashSet()
+            val deletedLocallyIds = mediaItemDao.getAllBackedUp()
+                .filter { it.bucketName in enabledBucketSet && it.contentUri.isNotBlank() && it.id !in scannedIds }
+                .map { it.id }
+            if (deletedLocallyIds.isNotEmpty()) {
+                deletedLocallyIds.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+                    mediaItemDao.markAsCloudOnly(batch)
+                }
+            }
+        }
+
         val now = System.currentTimeMillis()
         if (effectiveFullScan) {
             syncStateDao.upsert(syncState.copy(
