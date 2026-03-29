@@ -44,7 +44,14 @@ import org.json.JSONException
 import org.json.JSONObject
 import java.util.concurrent.Executors
 
-data class ScannedCredentials(val token: String, val chatId: String)
+/** One additional bot entry carried inside a scanned QR payload. */
+data class ScannedBotEntry(val token: String, val label: String)
+
+data class ScannedCredentials(
+    val token: String,
+    val chatId: String,
+    val additionalBots: List<ScannedBotEntry> = emptyList(),
+)
 
 @Composable
 fun QrScanScreen(onScanned: (ScannedCredentials) -> Unit) {
@@ -177,7 +184,17 @@ private fun parseUlapQr(raw: String): ScannedCredentials? {
         val json = JSONObject(raw)
         val token = json.optString("t").takeIf { it.isNotBlank() } ?: return null
         val chatId = json.optString("c").takeIf { it.isNotBlank() } ?: return null
-        ScannedCredentials(token, chatId)
+        val additionalBots = mutableListOf<ScannedBotEntry>()
+        val bArray = json.optJSONArray("b")
+        if (bArray != null) {
+            for (i in 0 until bArray.length()) {
+                val obj = bArray.optJSONObject(i) ?: continue
+                val k = obj.optString("k").trim()
+                val l = obj.optString("l")
+                if (k.isNotBlank()) additionalBots.add(ScannedBotEntry(k, l))
+            }
+        }
+        ScannedCredentials(token, chatId, additionalBots)
     } catch (_: JSONException) {
         null
     }

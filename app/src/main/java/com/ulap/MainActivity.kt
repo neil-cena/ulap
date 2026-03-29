@@ -35,7 +35,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.ulap.domain.usecase.GetCredentialsUseCase
+import com.ulap.domain.usecase.GetBotPoolUseCase
 import com.ulap.domain.usecase.SaveCredentialsUseCase
+import com.ulap.data.remote.BotPool
+import com.ulap.domain.model.BotCredential
+import com.ulap.domain.repository.CredentialRepository
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.sync.MediaObserverService
 import com.ulap.sync.BackupForegroundService
@@ -71,6 +75,15 @@ class MainActivity : ComponentActivity() {
 
     @Inject
     lateinit var saveCredentials: SaveCredentialsUseCase
+
+    @Inject
+    lateinit var getBotPool: GetBotPoolUseCase
+
+    @Inject
+    lateinit var credentialRepository: CredentialRepository
+
+    @Inject
+    lateinit var botPool: BotPool
 
     @Inject
     lateinit var userPrefs: UserPreferencesRepository
@@ -164,6 +177,13 @@ private fun UlapNavHost(
                 val context = LocalContext.current
                 QrScanScreen(onScanned = { creds ->
                     saveCredentials(creds.token, creds.chatId)
+                    if (creds.additionalBots.isNotEmpty()) {
+                        val additional = creds.additionalBots.mapIndexed { i, entry ->
+                            BotCredential(index = i + 1, token = entry.token, label = entry.label)
+                        }
+                        credentialRepository.saveAdditionalBotTokens(additional)
+                        botPool.clearCooldowns()
+                    }
                     SyncWorker.schedule(
                         context.applicationContext,
                         wifiOnly = userPrefs.wifiOnly.value,
@@ -178,6 +198,7 @@ private fun UlapNavHost(
                 QrShowScreen(
                     token = getCredentials.getToken() ?: "",
                     chatId = getCredentials.getChatId() ?: "",
+                    additionalBots = getBotPool().drop(1),
                 )
             }
             composable(Screen.FolderPicker.route) { backStack ->

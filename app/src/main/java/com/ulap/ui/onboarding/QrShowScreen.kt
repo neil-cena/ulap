@@ -26,17 +26,28 @@ import androidx.compose.ui.unit.dp
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
+import com.ulap.domain.model.BotCredential
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 
 @Composable
 fun QrShowScreen(
     token: String,
     chatId: String,
+    additionalBots: List<BotCredential> = emptyList(),
 ) {
-    val payload = remember(token, chatId) {
-        JSONObject().put("t", token).put("c", chatId).toString()
+    val payload = remember(token, chatId, additionalBots) {
+        val json = JSONObject().put("t", token).put("c", chatId)
+        if (additionalBots.isNotEmpty()) {
+            val arr = JSONArray()
+            additionalBots.forEach { bot ->
+                arr.put(JSONObject().put("k", bot.token).put("l", bot.label))
+            }
+            json.put("b", arr)
+        }
+        json.toString()
     }
 
     var qrBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -69,7 +80,7 @@ fun QrShowScreen(
         }
         Spacer(Modifier.height(24.dp))
         Text(
-            "This code contains your bot token and chat ID.\nOnly share it with devices you own.",
+            "This code contains your bot token, chat ID${if (additionalBots.isNotEmpty()) ", and ${additionalBots.size} additional bot${if (additionalBots.size == 1) "" else "s"}" else ""}.\nOnly share it with devices you own.",
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
