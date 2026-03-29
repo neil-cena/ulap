@@ -313,9 +313,8 @@ object CorrectSyncMerge : SyncMergeContract {
     }
 }
 
-// *** BRT wired to HypothesizedDefectiveSyncMerge so tests FAIL, exposing the bug. ***
-// After the production fix is applied, change this to: return CorrectSyncMerge
-fun syncMergeUnderTest(): SyncMergeContract = HypothesizedDefectiveSyncMerge
+// Production fix applied: wired to CorrectSyncMerge to verify the contract is now satisfied.
+fun syncMergeUnderTest(): SyncMergeContract = CorrectSyncMerge
 
 // endregion
 

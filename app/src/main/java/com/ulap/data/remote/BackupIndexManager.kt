@@ -147,6 +147,7 @@ class BackupIndexManager @Inject constructor(
 
         var merged = 0
         val newEntities = mutableListOf<MediaItemEntity>()
+        val pendingChunkInsertions = mutableListOf<Pair<String, IndexEntry>>()
 
         for (entry in manifest.items) {
             if (entry.telegramFileId in knownFileIds) continue
@@ -165,6 +166,12 @@ class BackupIndexManager @Inject constructor(
                 )
                 targetId = local.id
                 merged++
+                // Populate chunk_metadata table from schema v2 index entries.
+                // Case A: parent already in DB, FK satisfied — insert immediately.
+                val chunkFileIds = entry.chunkFileIds
+                if (!chunkFileIds.isNullOrEmpty() && chunkMetadataDao.hasChunks(targetId) == 0) {
+                    insertChunkRowsFromIndexEntry(targetId, entry)
+                }
             } else {
                 val cloudId = "cloud_${entry.id}"
                 if (cloudId in knownCloudIds) continue
@@ -190,16 +197,22 @@ class BackupIndexManager @Inject constructor(
                 newEntities.add(entity)
                 targetId = cloudId
                 merged++
-            }
-            // Populate chunk_metadata table from schema v2 index entries.
-            val chunkFileIds = entry.chunkFileIds
-            if (!chunkFileIds.isNullOrEmpty() && chunkMetadataDao.hasChunks(targetId) == 0) {
-                insertChunkRowsFromIndexEntry(targetId, entry)
+                // Populate chunk_metadata table from schema v2 index entries.
+                // Case B: parent not yet in DB — defer until after upsertAll to satisfy FK.
+                val chunkFileIds = entry.chunkFileIds
+                if (!chunkFileIds.isNullOrEmpty() && chunkMetadataDao.hasChunks(targetId) == 0) {
+                    pendingChunkInsertions.add(Pair(targetId, entry))
+                }
             }
         }
         if (newEntities.isNotEmpty()) {
             newEntities.chunked(ROOM_BATCH_SIZE).forEach { batch ->
                 mediaItemDao.upsertAll(batch)
+            }
+        }
+        for ((pendingId, pendingEntry) in pendingChunkInsertions) {
+            if (chunkMetadataDao.hasChunks(pendingId) == 0) {
+                insertChunkRowsFromIndexEntry(pendingId, pendingEntry)
             }
         }
         debugLog.log("IndexManager", "fetchAndMergeFromFileId: merged $merged new items")
