@@ -53,25 +53,17 @@ fun interface StreamUrlResolver {
 
 // endregion
 
-// region Deterministic “Telegram photo” threshold (contract constant, not API truth)
-
-private const val TELEGRAM_PHOTO_MAX_EDGE_PX = 10_000
-
-private fun dimensionsAllowedForPhoto(width: Int?, height: Int?): Boolean {
-    if (width == null || height == null) return true
-    if (width <= 0 || height <= 0) return false
-    return width <= TELEGRAM_PHOTO_MAX_EDGE_PX && height <= TELEGRAM_PHOTO_MAX_EDGE_PX
-}
-
-// endregion
-
 // region Reference (correct) behavior — proves assertions are internally consistent
 
 object ReferenceCorrectMediaUploadPlanner : MediaUploadPlanner {
     override fun plan(input: MediaInput): UploadPlan = when {
         !input.uriReadable -> UploadPlan.AbortUnreadableUri
         input.sizeBytes == 0L -> UploadPlan.AbortEmpty
-        !dimensionsAllowedForPhoto(input.widthPx, input.heightPx) -> UploadPlan.SendAsDocument
+        !TelegramBackupPolicy.dimensionsOkForPhoto(input.widthPx, input.heightPx) -> UploadPlan.SendAsDocument
+        input.widthPx != null &&
+            input.heightPx != null &&
+            TelegramBackupPolicy.shouldSendPhotoAsDocumentByDecodedBounds(input.widthPx, input.heightPx) ->
+            UploadPlan.SendAsDocument
         else -> UploadPlan.SendAsPhoto
     }
 }
@@ -137,7 +129,7 @@ class BackupAndPlaybackBrt {
         assertEquals(
             UploadPlan.SendAsDocument,
             ReferenceCorrectMediaUploadPlanner.plan(
-                MediaInput(100, TELEGRAM_PHOTO_MAX_EDGE_PX + 1, 100, uriReadable = true),
+                MediaInput(100, TelegramBackupPolicy.TELEGRAM_PHOTO_MAX_EDGE_PX + 1, 100, uriReadable = true),
             ),
         )
     }
@@ -183,7 +175,7 @@ class BackupAndPlaybackBrt {
         val plan = sut.plan(
             MediaInput(
                 sizeBytes = 5000,
-                widthPx = TELEGRAM_PHOTO_MAX_EDGE_PX + 1,
+                widthPx = TelegramBackupPolicy.TELEGRAM_PHOTO_MAX_EDGE_PX + 1,
                 heightPx = 100,
                 uriReadable = true,
             ),
