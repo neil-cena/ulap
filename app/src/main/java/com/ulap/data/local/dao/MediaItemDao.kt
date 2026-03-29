@@ -224,6 +224,9 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_items WHERE telegramFileId = :fileId LIMIT 1")
     suspend fun findByTelegramFileId(fileId: String): MediaItemEntity?
 
+    @Query("UPDATE media_items SET uploadBotIndex = :uploadBotIndex WHERE telegramFileId = :telegramFileId")
+    suspend fun updateUploadBotIndexByFileId(telegramFileId: String, uploadBotIndex: Int)
+
     @Query("SELECT * FROM media_items WHERE id IN (:ids)")
     suspend fun findByIds(ids: List<String>): List<MediaItemEntity>
 

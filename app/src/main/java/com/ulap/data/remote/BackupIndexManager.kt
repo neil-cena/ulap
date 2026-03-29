@@ -151,7 +151,13 @@ class BackupIndexManager @Inject constructor(
         val pendingChunkInsertions = mutableListOf<Pair<String, IndexEntry>>()
 
         for (entry in manifest.items) {
-            if (entry.telegramFileId in knownFileIds) continue
+            if (entry.telegramFileId in knownFileIds) {
+                val indexBotIndex = entry.uploadBotIndex
+                if (indexBotIndex != null) {
+                    mediaItemDao.updateUploadBotIndexByFileId(entry.telegramFileId, indexBotIndex)
+                }
+                continue
+            }
             val local = mediaItemDao.findByFileNameSizeDate(entry.fileName, entry.size, entry.dateTaken)
             val targetId: String
             if (local != null) {
