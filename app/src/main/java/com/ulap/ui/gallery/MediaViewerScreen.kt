@@ -168,76 +168,79 @@ fun MediaViewerScreen(
                 key = { page -> allItems.getOrNull(page)?.id ?: page },
             ) { page ->
                 val item = allItems.getOrNull(page) ?: return@HorizontalPager
-                when {
-                    item.contentUri.isNotBlank() -> {
-                        if (item.mediaType == MediaType.VIDEO) {
-                            VideoPlayerView(
-                                uris = listOf(Uri.parse(item.contentUri)),
-                                onControllerVisibilityChanged = onControllerVisibilityChanged,
-                                onFullscreenClick = onFullscreenClick,
-                            )
-                        } else {
-                            ZoomableImage(
-                                uri = Uri.parse(item.contentUri),
-                                contentDescription = item.fileName,
-                                onTap = onToggleOverlay,
-                            )
+                    when {
+                        // If the ViewModel has claimed this item for cloud resolution (e.g. stale
+                        // local URI detected), prefer the cloud path even if contentUri is set.
+                        item.contentUri.isNotBlank() && streamUrlsCache[item.id] == null -> {
+                            if (item.mediaType == MediaType.VIDEO) {
+                                VideoPlayerView(
+                                    uris = listOf(Uri.parse(item.contentUri)),
+                                    onControllerVisibilityChanged = onControllerVisibilityChanged,
+                                    onFullscreenClick = onFullscreenClick,
+                                    onError = { viewModel.onLocalPlaybackError(item) },
+                                )
+                            } else {
+                                ZoomableImage(
+                                    uri = Uri.parse(item.contentUri),
+                                    contentDescription = item.fileName,
+                                    onTap = onToggleOverlay,
+                                )
+                            }
                         }
-                    }
-                    else -> {
-                        val state = streamUrlsCache[item.id] ?: StreamUrlsState.Loading
-                        when (state) {
-                            is StreamUrlsState.Loading -> Box(
-                                Modifier.fillMaxSize().pointerInput(Unit) {
-                                    detectTapGestures(onTap = { onToggleOverlay() })
-                                },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(color = Color.White)
-                            }
-                            is StreamUrlsState.Error -> Box(
-                                Modifier.fillMaxSize().pointerInput(Unit) {
-                                    detectTapGestures(onTap = { onToggleOverlay() })
-                                },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(state.message, color = Color.White, modifier = Modifier.fillMaxWidth(0.8f))
-                            }
-                            is StreamUrlsState.Ready -> {
-                                val urls = state.urls
-                                if (item.mediaType == MediaType.VIDEO) {
+                        else -> {
+                            val state = streamUrlsCache[item.id] ?: StreamUrlsState.Loading
+                            when (state) {
+                                is StreamUrlsState.Loading -> Box(
+                                    Modifier.fillMaxSize().pointerInput(Unit) {
+                                        detectTapGestures(onTap = { onToggleOverlay() })
+                                    },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(color = Color.White)
+                                }
+                                is StreamUrlsState.Error -> Box(
+                                    Modifier.fillMaxSize().pointerInput(Unit) {
+                                        detectTapGestures(onTap = { onToggleOverlay() })
+                                    },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text(state.message, color = Color.White, modifier = Modifier.fillMaxWidth(0.8f))
+                                }
+                                is StreamUrlsState.Ready -> {
+                                    val urls = state.urls
+                                    if (item.mediaType == MediaType.VIDEO) {
+                                        VideoPlayerView(
+                                            uris = urls.map { Uri.parse(it) },
+                                            onControllerVisibilityChanged = onControllerVisibilityChanged,
+                                            onFullscreenClick = onFullscreenClick,
+                                        )
+                                    } else {
+                                        ZoomableImage(
+                                            uri = Uri.parse(urls.first()),
+                                            contentDescription = item.fileName,
+                                            onTap = onToggleOverlay,
+                                        )
+                                    }
+                                }
+                                is StreamUrlsState.ReadyProgressive -> {
                                     VideoPlayerView(
-                                        uris = urls.map { Uri.parse(it) },
+                                        uris = listOf(Uri.parse(state.fileUri)),
+                                        dataSourceFactory = state.dataSourceFactory,
                                         onControllerVisibilityChanged = onControllerVisibilityChanged,
                                         onFullscreenClick = onFullscreenClick,
                                     )
-                                } else {
-                                    ZoomableImage(
-                                        uri = Uri.parse(urls.first()),
-                                        contentDescription = item.fileName,
-                                        onTap = onToggleOverlay,
-                                    )
                                 }
-                            }
-                            is StreamUrlsState.ReadyProgressive -> {
-                                VideoPlayerView(
-                                    uris = listOf(Uri.parse(state.fileUri)),
-                                    dataSourceFactory = state.dataSourceFactory,
-                                    onControllerVisibilityChanged = onControllerVisibilityChanged,
-                                    onFullscreenClick = onFullscreenClick,
-                                )
-                            }
-                            else -> Box(
-                                Modifier.fillMaxSize().pointerInput(Unit) {
-                                    detectTapGestures(onTap = { onToggleOverlay() })
-                                },
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(color = Color.White)
+                                else -> Box(
+                                    Modifier.fillMaxSize().pointerInput(Unit) {
+                                        detectTapGestures(onTap = { onToggleOverlay() })
+                                    },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(color = Color.White)
+                                }
                             }
                         }
                     }
-                }
             }
             val currentItem = allItems.getOrNull(pagerState.currentPage)
             val isCurrentVideo = currentItem?.mediaType == MediaType.VIDEO

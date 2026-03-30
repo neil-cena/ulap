@@ -13,9 +13,10 @@ private const val KEY_CHAT_ID = "chat_id"
 private const val KEY_LAST_INDEX_FILE_ID = "last_index_file_id"
 private const val KEY_ADDITIONAL_BOTS = "additional_bots"
 
-/** Wire format stored under [KEY_ADDITIONAL_BOTS]. Only token and label are persisted;
- *  index is derived from list position when reading. */
-private data class AdditionalBotEntry(val token: String, val label: String)
+/** Wire format stored under [KEY_ADDITIONAL_BOTS]. Index is persisted to survive bot removal
+ *  without shifting positions. For legacy entries without a stored index (index == 0),
+ *  the list position is used as a fallback on read. */
+private data class AdditionalBotEntry(val token: String, val label: String, val index: Int = 0)
 
 @Singleton
 class CredentialRepositoryImpl @Inject constructor(
@@ -54,8 +55,14 @@ class CredentialRepositoryImpl @Inject constructor(
             val type = object : TypeToken<List<AdditionalBotEntry>>() {}.type
             val entries: List<AdditionalBotEntry> = gson.fromJson(json, type) ?: emptyList()
             // Index 0 is the primary bot; additional bots are numbered from 1.
+            // For legacy entries (index == 0 because the field was absent in JSON), fall back to
+            // the list position so existing data keeps working.
             entries.mapIndexed { i, entry ->
-                BotCredential(index = i + 1, token = entry.token.trim(), label = entry.label)
+                BotCredential(
+                    index = if (entry.index > 0) entry.index else i + 1,
+                    token = entry.token.trim(),
+                    label = entry.label,
+                )
             }
         } catch (_: Exception) {
             emptyList()
@@ -63,7 +70,7 @@ class CredentialRepositoryImpl @Inject constructor(
     }
 
     override fun saveAdditionalBotTokens(bots: List<BotCredential>) {
-        val entries = bots.map { AdditionalBotEntry(it.token, it.label) }
+        val entries = bots.map { AdditionalBotEntry(it.token, it.label, it.index) }
         encryptedPrefs.edit().putString(KEY_ADDITIONAL_BOTS, gson.toJson(entries)).apply()
     }
 

@@ -10,6 +10,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -24,6 +26,8 @@ fun VideoPlayerView(
     onControllerVisibilityChanged: (visible: Boolean) -> Unit = {},
     /** Called when the user taps the fullscreen button inside the player controls. */
     onFullscreenClick: (() -> Unit)? = null,
+    /** Called when ExoPlayer encounters a fatal playback error. */
+    onError: ((PlaybackException) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val exoPlayer = remember(uris, dataSourceFactory) {
@@ -34,6 +38,13 @@ fun VideoPlayerView(
                 setMediaSource(mediaSource)
             } else {
                 setMediaItems(uris.map { MediaItem.fromUri(it) })
+            }
+            if (onError != null) {
+                addListener(object : Player.Listener {
+                    override fun onPlayerError(error: PlaybackException) {
+                        onError(error)
+                    }
+                })
             }
             prepare()
             playWhenReady = true

@@ -1,11 +1,13 @@
 package com.ulap.ui.gallery
 
 import android.content.Context
+import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.media3.datasource.DataSource
 import com.ulap.data.local.dao.ChunkMetadataDao
+import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
 import com.ulap.data.remote.ParallelChunkDownloader
 import com.ulap.data.remote.ParallelChunkDownloader.Companion.chunkDirFor
@@ -69,6 +71,7 @@ class MediaViewerViewModel @Inject constructor(
     private val downloader: TelegramDownloader,
     private val parallelDownloader: ParallelChunkDownloader,
     private val chunkMetadataDao: ChunkMetadataDao,
+    private val mediaItemDao: MediaItemDao,
     private val downloadCloudItem: DownloadCloudItemUseCase,
     private val okHttpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val appContext: Context,
@@ -105,67 +108,136 @@ class MediaViewerViewModel @Inject constructor(
                 }.collect { value ->
                     if (value == null) return@collect
                     val (items, windowIds, cache) = value
-                    val token = getCredentials.getToken() ?: return@collect
-                    val toFetch = windowIds.mapNotNull { id ->
-                        items.find { it.id == id }
-                    }.filter { item ->
-                        item.contentUri.isBlank() &&
-                            item.backupStatus == BackupStatus.CLOUD_ONLY &&
+                    // Guard: primary token must exist for any resolution to work.
+                    getCredentials.getToken() ?: return@collect
+
+                    // All candidates: in the viewport window, have a fileId, and are not already
+                    // being resolved or successfully resolved.
+                    val candidates = windowIds.mapNotNull { id -> items.find { it.id == id } }
+                        .filter { item ->
                             item.telegramFileId != null &&
-                            cache[item.id] !is StreamUrlsState.Ready &&
-                            cache[item.id] !is StreamUrlsState.ReadyProgressive &&
-                            cache[item.id] !is StreamUrlsState.Loading
+                                cache[item.id] !is StreamUrlsState.Ready &&
+                                cache[item.id] !is StreamUrlsState.ReadyProgressive &&
+                                cache[item.id] !is StreamUrlsState.Loading
+                        }
+
+                    // Items that are already marked as cloud-only with no local file.
+                    val clearCloudOnly = candidates.filter { item ->
+                        item.contentUri.isBlank() && item.backupStatus == BackupStatus.CLOUD_ONLY
                     }
+
+                    // Items that still have a local URI but may have been deleted from the device.
+                    val potentiallyStale = candidates.filter { item ->
+                        item.contentUri.isNotBlank() && item.backupStatus == BackupStatus.BACKED_UP
+                    }
+
+                    // Probe accessibility on IO; fix the DB for any confirmed-stale items so
+                    // future opens skip the local-file branch immediately.
+                    val staleItems: List<MediaItem> = if (potentiallyStale.isNotEmpty()) {
+                        withContext(Dispatchers.IO) {
+                            val stale = potentiallyStale.filter { !isContentUriAccessible(it.contentUri) }
+                            if (stale.isNotEmpty()) {
+                                mediaItemDao.markAsCloudOnly(stale.map { it.id })
+                            }
+                            stale
+                        }
+                    } else emptyList()
+
+                    val toFetch = clearCloudOnly + staleItems
                     if (toFetch.isEmpty()) return@collect
+
                     var newCache = cache
                     for (item in toFetch) {
                         newCache = newCache + (item.id to StreamUrlsState.Loading)
                     }
                     _streamUrlsCache.value = newCache
+
                     for (item in toFetch) {
-                        val fileId = item.telegramFileId!!
-                        // Legacy chunked: JSON array "[...]"
-                        val isLegacyChunked = fileId.trim().startsWith("[")
-                        // New chunked: sentinel "chunked:N"
-                        val isNewChunked = fileId.startsWith(CHUNKED_FILE_ID_PREFIX)
-                        val isVideo = item.mediaType == MediaType.VIDEO
-
-                        val itemToken = getCredentials.getTokenForBot(item.uploadBotIndex)
-                        if (itemToken == null) {
-                            _streamUrlsCache.value = _streamUrlsCache.value + (
-                                item.id to StreamUrlsState.Error("Bot at index ${item.uploadBotIndex} not configured")
-                            )
-                            continue
-                        }
-
-                        when {
-                            isNewChunked && isVideo -> {
-                                startPrefetchingChunkedDownload(itemToken, item.id)
-                            }
-                            isLegacyChunked && isVideo -> {
-                                startProgressiveChunkedDownload(itemToken, fileId, item.id)
-                            }
-                            else -> {
-                                val urls = try {
-                                    withContext(Dispatchers.IO) {
-                                        downloader.resolveStreamUrls(itemToken, fileId)
-                                    }
-                                } catch (_: Exception) {
-                                    emptyList()
-                                }
-                                val state: StreamUrlsState = if (urls.isEmpty()) {
-                                    StreamUrlsState.Error("Could not resolve stream URL")
-                                } else {
-                                    StreamUrlsState.Ready(urls)
-                                }
-                                _streamUrlsCache.value = _streamUrlsCache.value + (item.id to state)
-                            }
-                        }
+                        resolveStreamUrlsForItem(item)
                     }
                 }
             } catch (_: Exception) {
                 // Swallow flow errors to prevent crashing the app
             }
+        }
+    }
+
+    /**
+     * Dispatches cloud URL resolution for [item] based on its [MediaItem.telegramFileId] format.
+     * Spawns its own coroutine via [viewModelScope] in all branches so callers are non-blocking.
+     *
+     * Layer 4 (token fallback): if the item's specific bot is not configured, falls back to the
+     * primary bot token rather than immediately emitting an error.
+     */
+    private fun resolveStreamUrlsForItem(item: MediaItem) {
+        val fileId = item.telegramFileId ?: return
+        val isLegacyChunked = fileId.trim().startsWith("[")
+        val isNewChunked = fileId.startsWith(CHUNKED_FILE_ID_PREFIX)
+        val isVideo = item.mediaType == MediaType.VIDEO
+
+        // Layer 4: fall back to primary bot when the per-item bot is not configured.
+        val itemToken = getCredentials.getTokenForBot(item.uploadBotIndex)
+            ?: getCredentials.getToken()
+        if (itemToken == null) {
+            _streamUrlsCache.value = _streamUrlsCache.value + (
+                item.id to StreamUrlsState.Error("No bot token configured")
+            )
+            return
+        }
+
+        when {
+            isNewChunked && isVideo -> {
+                startPrefetchingChunkedDownload(itemToken, item.id)
+            }
+            isLegacyChunked && isVideo -> {
+                startProgressiveChunkedDownload(itemToken, fileId, item.id)
+            }
+            else -> viewModelScope.launch {
+                val urls = try {
+                    withContext(Dispatchers.IO) {
+                        downloader.resolveStreamUrls(itemToken, fileId)
+                    }
+                } catch (_: Exception) {
+                    emptyList()
+                }
+                val state: StreamUrlsState = if (urls.isEmpty()) {
+                    StreamUrlsState.Error("Could not resolve stream URL")
+                } else {
+                    StreamUrlsState.Ready(urls)
+                }
+                _streamUrlsCache.value = _streamUrlsCache.value + (item.id to state)
+            }
+        }
+    }
+
+    /**
+     * Called when ExoPlayer reports a playback error for a local-URI item (Layer 2 fallback).
+     *
+     * Immediately shows a spinner (Loading state) so the UI is responsive, then fixes the
+     * database by marking the item CLOUD_ONLY, and dispatches cloud URL resolution.
+     * If the item has no Telegram backup, a permanent error is shown instead.
+     */
+    fun onLocalPlaybackError(item: MediaItem) {
+        if (item.telegramFileId == null) return
+        // Switch UI to spinner immediately so the black ExoPlayer surface disappears.
+        _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Loading)
+        // Persist the corrected state so future opens skip the dead local-file branch.
+        viewModelScope.launch(Dispatchers.IO) {
+            mediaItemDao.markAsCloudOnly(listOf(item.id))
+        }
+        resolveStreamUrlsForItem(item)
+    }
+
+    /**
+     * Returns true if [uriString] points to a file the ContentResolver can open.
+     * Must be called from a background (IO) thread.
+     */
+    private fun isContentUriAccessible(uriString: String): Boolean {
+        return try {
+            appContext.contentResolver.openInputStream(Uri.parse(uriString))?.close()
+            true
+        } catch (_: Exception) {
+            false
         }
     }
 
