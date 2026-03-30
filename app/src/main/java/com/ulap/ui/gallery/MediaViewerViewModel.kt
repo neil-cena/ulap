@@ -75,6 +75,8 @@ class MediaViewerViewModel @Inject constructor(
     private val downloadCloudItem: DownloadCloudItemUseCase,
     private val okHttpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val appContext: Context,
+    private val debugLog: com.ulap.debug.DebugLogBuffer,
+    private val telegramLogger: com.ulap.data.remote.TelegramLogger,
 ) : ViewModel() {
 
     private val mediaId: String = savedStateHandle.get<String>("mediaId") ?: ""
@@ -225,6 +227,25 @@ class MediaViewerViewModel @Inject constructor(
         viewModelScope.launch(Dispatchers.IO) {
             mediaItemDao.markAsCloudOnly(listOf(item.id))
         }
+        resolveStreamUrlsForItem(item)
+    }
+
+    /**
+     * Called when ExoPlayer reports a playback error for a cloud-streaming item (StreamUrlsState.Ready path).
+     *
+     * Re-resolves the CDN URL immediately, which obtains a fresh link from Telegram's API.
+     * This handles the most common failure mode: stale/expired CDN URLs.
+     * If re-resolution also fails, resolveStreamUrlsForItem emits StreamUrlsState.Error.
+     */
+    fun onCloudPlaybackError(item: MediaItem, error: androidx.media3.common.PlaybackException) {
+        if (item.telegramFileId == null) {
+            _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Error("Video unavailable"))
+            return
+        }
+        if (_streamUrlsCache.value[item.id] is StreamUrlsState.Loading) return
+        _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Loading)
+        debugLog.log("VideoPlayer", "Cloud playback error id=${item.id} code=${error.errorCodeName}")
+        viewModelScope.launch { telegramLogger.flushNow() }
         resolveStreamUrlsForItem(item)
     }
 
@@ -483,5 +504,24 @@ class MediaViewerViewModel @Inject constructor(
 
     fun clearDownloadState() {
         _downloadState.value = null
+    }
+
+    fun onVideoOpened(item: com.ulap.domain.model.MediaItem) {
+        debugLog.log("VideoPlayer", "VIDEO OPENED: id=${item.id} name=${item.fileName} type=${item.mediaType}")
+        viewModelScope.launch { telegramLogger.flushNow() }
+    }
+
+    fun onVideoClosed(item: com.ulap.domain.model.MediaItem) {
+        debugLog.log("VideoPlayer", "VIDEO CLOSED: id=${item.id} name=${item.fileName}")
+        viewModelScope.launch { telegramLogger.flushNow() }
+    }
+
+    fun onVideoPlayerState(item: com.ulap.domain.model.MediaItem, description: String) {
+        debugLog.log("VideoPlayer", "state id=${item.id}: $description")
+    }
+
+    fun onVideoError(item: com.ulap.domain.model.MediaItem, error: androidx.media3.common.PlaybackException) {
+        debugLog.log("VideoPlayer", "ERROR id=${item.id} code=${error.errorCodeName} msg=${error.message}")
+        viewModelScope.launch { telegramLogger.flushNow() }
     }
 }

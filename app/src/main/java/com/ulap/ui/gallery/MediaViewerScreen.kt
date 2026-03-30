@@ -177,7 +177,13 @@ fun MediaViewerScreen(
                                     uris = listOf(Uri.parse(item.contentUri)),
                                     onControllerVisibilityChanged = onControllerVisibilityChanged,
                                     onFullscreenClick = onFullscreenClick,
-                                    onError = { viewModel.onLocalPlaybackError(item) },
+                                    onError = { err ->
+                                        viewModel.onLocalPlaybackError(item)
+                                        viewModel.onVideoError(item, err)
+                                    },
+                                    onVideoOpened = { viewModel.onVideoOpened(item) },
+                                    onVideoReleased = { viewModel.onVideoClosed(item) },
+                                    onPlayerStateChanged = { desc -> viewModel.onVideoPlayerState(item, desc) },
                                 )
                             } else {
                                 ZoomableImage(
@@ -213,6 +219,13 @@ fun MediaViewerScreen(
                                             uris = urls.map { Uri.parse(it) },
                                             onControllerVisibilityChanged = onControllerVisibilityChanged,
                                             onFullscreenClick = onFullscreenClick,
+                                            onVideoOpened = { viewModel.onVideoOpened(item) },
+                                            onVideoReleased = { viewModel.onVideoClosed(item) },
+                                            onPlayerStateChanged = { desc -> viewModel.onVideoPlayerState(item, desc) },
+                                            onError = { err ->
+                                                viewModel.onCloudPlaybackError(item, err)
+                                                viewModel.onVideoError(item, err)
+                                            },
                                         )
                                     } else {
                                         ZoomableImage(
@@ -228,6 +241,9 @@ fun MediaViewerScreen(
                                         dataSourceFactory = state.dataSourceFactory,
                                         onControllerVisibilityChanged = onControllerVisibilityChanged,
                                         onFullscreenClick = onFullscreenClick,
+                                        onVideoOpened = { viewModel.onVideoOpened(item) },
+                                        onVideoReleased = { viewModel.onVideoClosed(item) },
+                                        onPlayerStateChanged = { desc -> viewModel.onVideoPlayerState(item, desc) },
                                     )
                                 }
                                 else -> Box(
