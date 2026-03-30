@@ -112,6 +112,9 @@ interface MediaItemDao {
     @Query("UPDATE media_items SET backupStatus = 'PENDING', errorMessage = NULL WHERE backupStatus = 'UPLOADING'")
     suspend fun resetStaleUploadingToPending()
 
+    @Query("UPDATE media_items SET backupStatus = 'PENDING', errorMessage = NULL WHERE id = :id")
+    suspend fun resetItemToPending(id: String)
+
     /** Mark items with chunked file_id (JSON array) as FAILED so they can be re-uploaded with 19MB chunks (streamable). */
     @Query(
         """

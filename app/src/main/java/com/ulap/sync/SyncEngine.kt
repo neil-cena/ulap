@@ -47,6 +47,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -67,6 +68,7 @@ private const val LARGE_FILE_CONCURRENCY = 1
 private const val SMALL_FILE_CONCURRENCY = 3
 private const val DOWNLOAD_CONCURRENCY = 3
 private const val CHUNKED_THRESHOLD = 50L * 1024 * 1024 // same as TelegramUploader's single upload limit
+private const val MAX_BOT_COOLDOWN_WAIT_MS = 30 * 60 * 1000L
 
 @Singleton
 class SyncEngine @Inject constructor(
@@ -427,6 +429,12 @@ class SyncEngine @Inject constructor(
         entity: MediaItemEntity,
         chatId: String,
     ) {
+        val bots = botPool.allBots()
+        if (bots.size > 1 && botPool.isAllBotsTemporarilyCooledDown()) {
+            val waitMs = (botPool.maxTempCooldownExpiryMs() - System.currentTimeMillis())
+                .coerceIn(0L, MAX_BOT_COOLDOWN_WAIT_MS)
+            if (waitMs > 0) delay(waitMs)
+        }
         val selectedBot = botPool.selectForUpload()
         if (selectedBot == null) {
             mediaItemDao.updateBackupResult(
@@ -446,13 +454,51 @@ class SyncEngine @Inject constructor(
         } catch (e: TelegramRateLimitException) {
             // Mark this bot as rate-limited so subsequent uploads skip it during the cooldown.
             botPool.markRateLimited(selectedBot.index, e.retryAfterMs)
-            // Rate limit exhausted inside the rate limiter (all MAX_RETRIES 429s used).
-            // The circuit breaker is now OPEN, so the next item's withRateLimit call will
-            // naturally suspend until the cooldown expires — no explicit delay needed here.
-            // The worker stays alive to process remaining queue items.
-            // This item remains UPLOADING; resetStaleUploadingToPending resets it at the
-            // start of the next backup run with chunk progress intact for resume.
-            debugLog.log("SyncEngine", "Rate limit exhausted for ${entity.fileName} (bot ${selectedBot.index}) — worker continues, item will retry next run")
+            if (bots.size > 1) {
+                // Multi-bot: clear chunk progress and re-queue PENDING so the next run
+                // assigns a different bot (the cooled-down one will be skipped by selectForUpload).
+                chunkMetadataDao.deleteChunksForMedia(entity.id)
+                mediaItemDao.resetItemToPending(entity.id)
+                debugLog.log("SyncEngine", "Rate limit on bot ${selectedBot.index} for ${entity.fileName} — chunk progress cleared, re-queued for handoff")
+            } else {
+                // Single-bot: item stays UPLOADING, retried next run with chunk progress intact.
+                debugLog.log("SyncEngine", "Rate limit exhausted for ${entity.fileName} (bot ${selectedBot.index}) — worker continues, item will retry next run")
+            }
+        } catch (e: TelegramApiException) {
+            if (e.isPermanent) {
+                botPool.markPermanentlyBanned(selectedBot.index)
+                if (bots.size > 1 && !botPool.isAllPermanentlyBanned()) {
+                    // Other bots remain — clear chunks and re-queue for handoff.
+                    chunkMetadataDao.deleteChunksForMedia(entity.id)
+                    mediaItemDao.resetItemToPending(entity.id)
+                    debugLog.log("SyncEngine", "Permanent ban on bot ${selectedBot.index} for ${entity.fileName} — re-queued for handoff")
+                } else {
+                    // No usable bots remain — terminal failure.
+                    mediaItemDao.updateBackupResult(
+                        id = entity.id,
+                        status = BackupStatus.FAILED,
+                        error = "All bots permanently banned or no other bot available",
+                        syncedAt = null,
+                        fileId = null,
+                        messageId = null,
+                        thumbnailFileId = null,
+                    )
+                    _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+                    debugLog.log("SyncEngine", "All bots permanently banned — ${entity.fileName} marked FAILED")
+                }
+            } else {
+                // Non-permanent API error — mark FAILED and keep the worker alive.
+                mediaItemDao.updateBackupResult(
+                    id = entity.id,
+                    status = BackupStatus.FAILED,
+                    error = e.toUploadErrorDetail(),
+                    syncedAt = null,
+                    fileId = null,
+                    messageId = null,
+                    thumbnailFileId = null,
+                )
+                _progress.update { it.copy(itemsDone = it.itemsDone + 1) }
+            }
         } catch (e: Exception) {
             // Catch anything that escaped (e.g. OkHttp re-trying on a consumed stream,
             // unexpected I/O errors) so the worker coroutine stays alive for the next item.

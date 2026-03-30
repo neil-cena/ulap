@@ -11,8 +11,9 @@ import javax.inject.Singleton
  * Manages a pool of Telegram bot credentials for upload distribution and download routing.
  *
  * Upload selection: round-robin across all configured bots, skipping any that are currently
- * cooling down after a 429 rate-limit response. If every bot is cooling down the one with
- * the soonest expiry is returned so uploads can resume as quickly as possible.
+ * cooling down after a 429 rate-limit response or permanently banned. If every eligible bot
+ * is cooling down the one with the soonest expiry is returned so uploads can resume as quickly
+ * as possible. Returns null when all bots are permanently banned.
  *
  * Download routing: a [com.ulap.data.local.entity.MediaItemEntity.uploadBotIndex] of 0
  * always maps to the primary bot; additional bots are looked up by their stored index.
@@ -28,6 +29,9 @@ class BotPool @Inject constructor(
     /** Maps bot index → epoch-ms timestamp after which the bot may be used again. */
     private val cooldowns = ConcurrentHashMap<Int, Long>()
 
+    /** Set of bot indices that are permanently banned and must never be selected for upload. */
+    private val permanentBans = ConcurrentHashMap.newKeySet<Int>()
+
     /**
      * Returns all configured bots: index 0 = primary, followed by additional bots in order.
      * Returns an empty list when no primary token is configured.
@@ -41,29 +45,59 @@ class BotPool @Inject constructor(
     /**
      * Selects the next available bot for an upload using round-robin order.
      *
-     * Bots that are still within their rate-limit cooldown window are skipped.
-     * If all bots are cooling down the one with the soonest recovery time is returned
-     * so the upload pipeline can proceed with minimal extra delay.
+     * Permanently banned bots and bots still within their rate-limit cooldown window are skipped.
+     * If all eligible (non-banned) bots are cooling down the one with the soonest recovery time
+     * is returned so the upload pipeline can proceed with minimal extra delay.
      *
-     * Returns null only when no primary bot is configured.
+     * Returns null when no primary bot is configured or when ALL bots are permanently banned.
      */
     fun selectForUpload(): BotCredential? {
         val bots = allBots()
         if (bots.isEmpty()) return null
 
-        val now = System.currentTimeMillis()
-        val startPos = roundRobinCounter.getAndIncrement() % bots.size
+        val eligible = bots.filter { !permanentBans.contains(it.index) }
+        if (eligible.isEmpty()) return null
 
-        for (offset in 0 until bots.size) {
-            val bot = bots[(startPos + offset) % bots.size]
+        val now = System.currentTimeMillis()
+        val startPos = roundRobinCounter.getAndIncrement() % eligible.size
+
+        for (offset in 0 until eligible.size) {
+            val bot = eligible[(startPos + offset) % eligible.size]
             val expiry = cooldowns[bot.index]
             if (expiry == null || now >= expiry) {
                 return bot
             }
         }
 
-        // Every bot is rate-limited — return the one that recovers soonest.
-        return bots.minByOrNull { cooldowns[it.index] ?: 0L }
+        // Every eligible bot is rate-limited — return the one that recovers soonest.
+        return eligible.minByOrNull { cooldowns[it.index] ?: 0L }
+    }
+
+    /**
+     * Selects the next available bot for an upload, excluding bots whose indices are in
+     * [excludeIndices]. Also skips permanently banned bots and bots in cooldown.
+     *
+     * Returns null if no eligible bot exists after applying all filters.
+     */
+    fun selectForUploadExcluding(excludeIndices: Set<Int>): BotCredential? {
+        val bots = allBots()
+        if (bots.isEmpty()) return null
+
+        val eligible = bots.filter { !permanentBans.contains(it.index) && !excludeIndices.contains(it.index) }
+        if (eligible.isEmpty()) return null
+
+        val now = System.currentTimeMillis()
+        val startPos = roundRobinCounter.getAndIncrement() % eligible.size
+
+        for (offset in 0 until eligible.size) {
+            val bot = eligible[(startPos + offset) % eligible.size]
+            val expiry = cooldowns[bot.index]
+            if (expiry == null || now >= expiry) {
+                return bot
+            }
+        }
+
+        return null
     }
 
     /**
@@ -72,6 +106,51 @@ class BotPool @Inject constructor(
      */
     fun markRateLimited(botIndex: Int, retryAfterMs: Long) {
         cooldowns[botIndex] = System.currentTimeMillis() + retryAfterMs
+    }
+
+    /**
+     * Permanently bans [botIndex] from being selected for uploads. This is tracked separately
+     * from temporary cooldowns and persists until [clearCooldowns] is called.
+     */
+    fun markPermanentlyBanned(botIndex: Int) {
+        permanentBans.add(botIndex)
+    }
+
+    /** Returns true if [botIndex] has been permanently banned. */
+    fun isPermanentlyBanned(botIndex: Int): Boolean = permanentBans.contains(botIndex)
+
+    /** Returns true only when every bot in [allBots] is permanently banned. */
+    fun isAllPermanentlyBanned(): Boolean {
+        val bots = allBots()
+        if (bots.isEmpty()) return false
+        return bots.all { permanentBans.contains(it.index) }
+    }
+
+    /**
+     * Returns true only when ALL bots have a future cooldown expiry AND none are permanently
+     * banned. If any bot is permanently banned this returns false.
+     */
+    fun isAllBotsTemporarilyCooledDown(): Boolean {
+        val bots = allBots()
+        if (bots.isEmpty()) return false
+        if (bots.any { permanentBans.contains(it.index) }) return false
+        val now = System.currentTimeMillis()
+        return bots.all { bot ->
+            val expiry = cooldowns[bot.index]
+            expiry != null && expiry > now
+        }
+    }
+
+    /**
+     * Returns the maximum cooldown expiry timestamp among bots that have a future expiry and
+     * are NOT permanently banned. Returns 0L when no such bot exists.
+     */
+    fun maxTempCooldownExpiryMs(): Long {
+        val now = System.currentTimeMillis()
+        return allBots()
+            .filter { !permanentBans.contains(it.index) }
+            .mapNotNull { bot -> cooldowns[bot.index]?.takeIf { it > now } }
+            .maxOrNull() ?: 0L
     }
 
     /**
@@ -84,8 +163,9 @@ class BotPool @Inject constructor(
         return bots.find { it.index == botIndex } ?: bots.firstOrNull()
     }
 
-    /** Clears all rate-limit cooldowns. Useful after credentials change. */
+    /** Clears all rate-limit cooldowns and permanent bans. Useful after credentials change. */
     fun clearCooldowns() {
         cooldowns.clear()
+        permanentBans.clear()
     }
 }
