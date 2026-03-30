@@ -1,5 +1,6 @@
 package com.ulap.domain.usecase
 
+import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BackupIndexManager
 import com.ulap.domain.repository.CredentialRepository
 import com.ulap.sync.DeleteAllBackupsResult
@@ -44,6 +45,12 @@ class RepairCorruptChunkMetadataFromPinnedIndexUseCase @Inject constructor(
         val chatId = credentialRepository.getChatId() ?: return Result.failure(Exception("No chat ID"))
         return backupIndexManager.repairCorruptChunkMetadataFromPinnedIndex(token, chatId)
     }
+}
+
+class MarkCorruptChunkedItemsForReuploadUseCase @Inject constructor(
+    private val mediaItemDao: MediaItemDao,
+) {
+    suspend operator fun invoke(): Int = mediaItemDao.markCorruptChunkedItemsForReupload()
 }
 
 class DownloadCloudItemUseCase @Inject constructor(

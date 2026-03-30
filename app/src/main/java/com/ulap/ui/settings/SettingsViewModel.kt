@@ -21,6 +21,7 @@ import com.ulap.domain.usecase.GetBackupStatsUseCase
 import com.ulap.domain.usecase.GetBotPoolUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
+import com.ulap.domain.usecase.MarkCorruptChunkedItemsForReuploadUseCase
 import com.ulap.domain.usecase.ObserveCorruptChunkedBackupCountUseCase
 import com.ulap.domain.usecase.RemoveSecondaryBotUseCase
 import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
@@ -90,6 +91,7 @@ class SettingsViewModel @Inject constructor(
     private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
     private val observeCorruptChunkedBackupCount: ObserveCorruptChunkedBackupCountUseCase,
     private val repairCorruptChunkMetadataFromPinnedIndex: RepairCorruptChunkMetadataFromPinnedIndexUseCase,
+    private val markCorruptChunkedItemsForReupload: MarkCorruptChunkedItemsForReuploadUseCase,
     private val getBotPool: GetBotPoolUseCase,
     private val addSecondaryBot: AddSecondaryBotUseCase,
     private val removeSecondaryBot: RemoveSecondaryBotUseCase,
@@ -116,6 +118,12 @@ class SettingsViewModel @Inject constructor(
 
     val uploadSpeedMode: StateFlow<UploadSpeedMode> = userPrefs.uploadSpeedMode
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), UploadSpeedMode.BALANCED)
+
+    val telegramLoggingEnabled: StateFlow<Boolean> = userPrefs.telegramLoggingEnabled
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), false)
+
+    val telegramLoggingChatId: StateFlow<String?> = userPrefs.telegramLoggingChatId
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val backupStats: StateFlow<BackupStats?> = getBackupStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -212,6 +220,10 @@ class SettingsViewModel @Inject constructor(
 
     fun setUploadSpeedMode(mode: UploadSpeedMode) = userPrefs.setUploadSpeedMode(mode)
 
+    fun setTelegramLoggingEnabled(enabled: Boolean) = userPrefs.setTelegramLoggingEnabled(enabled)
+
+    fun setTelegramLoggingChatId(chatId: String?) = userPrefs.setTelegramLoggingChatId(chatId)
+
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }
 
@@ -256,10 +268,18 @@ class SettingsViewModel @Inject constructor(
             _fixCorruptBackupsResult.value = when {
                 result.isSuccess -> {
                     val n = result.getOrNull() ?: 0
-                    if (n == 0) {
-                        "Nothing repaired. Sync so the pinned index lists chunk data, or ensure legacy chunk file IDs / message IDs still match this backup (count must match the chunked: total)."
-                    } else {
+                    if (n > 0) {
                         "Repaired $n corrupted backup(s). Chunk metadata was restored from the pinned index."
+                    } else {
+                        // Repair found no recoverable data — the chunk file IDs were wiped before
+                        // the index could capture them (legacy bug). Mark affected videos for
+                        // re-upload so the next sync recreates the metadata.
+                        val requeued = runCatching { markCorruptChunkedItemsForReupload() }.getOrNull() ?: 0
+                        if (requeued > 0) {
+                            "Chunk data is unrecoverable from the index. Marked $requeued video(s) for re-upload. Start a backup to restore streaming."
+                        } else {
+                            "No corrupted chunked backups found."
+                        }
                     }
                 }
                 else -> "Repair failed: ${result.exceptionOrNull()?.message ?: "Unknown error"}"

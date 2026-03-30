@@ -296,6 +296,22 @@ interface MediaItemDao {
     suspend fun deleteCloudOnlyItems()
 
     /**
+     * Marks corrupt chunked items (backed-up but with no chunk_metadata rows) as FAILED so
+     * the next sync pipeline re-uploads them and recreates the chunk_metadata rows.
+     * Returns the count of items marked.
+     */
+    @Query(
+        """
+        UPDATE media_items
+        SET backupStatus = 'FAILED', errorMessage = 'Re-upload required (chunk metadata missing)'
+        WHERE telegramFileId LIKE 'chunked:%'
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND NOT EXISTS (SELECT 1 FROM chunk_metadata c WHERE c.mediaItemId = id)
+        """,
+    )
+    suspend fun markCorruptChunkedItemsForReupload(): Int
+
+    /**
      * Chunked backups use `telegramFileId` sentinel `chunked:…` with real part IDs in `chunk_metadata`.
      * Rows matching this query lost chunk rows (e.g. legacy bug) and cannot play or export correctly.
      */
