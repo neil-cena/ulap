@@ -88,9 +88,16 @@ class MainActivity : ComponentActivity() {
     @Inject
     lateinit var userPrefs: UserPreferencesRepository
 
+    @Inject
+    lateinit var debugLog: com.ulap.debug.DebugLogBuffer
+
+    @Inject
+    lateinit var telegramLogger: com.ulap.data.remote.TelegramLogger
+
     override fun onCreate(savedInstanceState: Bundle?) {
         installSplashScreen()
         super.onCreate(savedInstanceState)
+        debugLog.log("MainActivity", "onCreate")
         enableEdgeToEdge()
         val startDestination = if (getCredentials.hasCredentials()) Screen.Timeline.route
         else Screen.Onboarding.route
@@ -120,9 +127,25 @@ class MainActivity : ComponentActivity() {
                     botPool = botPool,
                     userPrefs = userPrefs,
                     openBackupRetryFromIntent = openBackupRetry,
+                    debugLog = debugLog,
                 )
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        debugLog.log("MainActivity", "onResume")
+    }
+
+    override fun onPause() {
+        super.onPause()
+        debugLog.log("MainActivity", "onPause")
+    }
+
+    override fun onStop() {
+        super.onStop()
+        debugLog.log("MainActivity", "onStop")
     }
 }
 
@@ -136,10 +159,17 @@ private fun UlapNavHost(
     botPool: BotPool,
     userPrefs: UserPreferencesRepository,
     openBackupRetryFromIntent: Boolean = false,
+    debugLog: com.ulap.debug.DebugLogBuffer? = null,
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = backStackEntry?.destination?.route
+
+    LaunchedEffect(currentRoute) {
+        if (currentRoute != null) {
+            debugLog?.log("Navigation", "route=$currentRoute")
+        }
+    }
     // Start as false; only flip to true after navigation to Backup has been issued so
     // BackupScreen's LaunchedEffect fires after the screen is on the back-stack.
     var pendingOpenBackupRetry by remember { mutableStateOf(false) }

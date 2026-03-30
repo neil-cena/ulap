@@ -28,6 +28,12 @@ fun VideoPlayerView(
     onFullscreenClick: (() -> Unit)? = null,
     /** Called when ExoPlayer encounters a fatal playback error. */
     onError: ((PlaybackException) -> Unit)? = null,
+    /** Called when the player transitions to a ready/playing state for the first time. */
+    onVideoOpened: (() -> Unit)? = null,
+    /** Called when the player is released (video closed / navigated away). */
+    onVideoReleased: (() -> Unit)? = null,
+    /** Called on every significant player state change for logging. Receives a human-readable description. */
+    onPlayerStateChanged: ((description: String) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val exoPlayer = remember(uris, dataSourceFactory) {
@@ -39,20 +45,64 @@ fun VideoPlayerView(
             } else {
                 setMediaItems(uris.map { MediaItem.fromUri(it) })
             }
-            if (onError != null) {
+
+            if (onError != null || onVideoOpened != null || onPlayerStateChanged != null) {
                 addListener(object : Player.Listener {
+
                     override fun onPlayerError(error: PlaybackException) {
-                        onError(error)
+                        onPlayerStateChanged?.invoke("ERROR: ${error.errorCodeName} — ${error.message}")
+                        onError?.invoke(error)
+                    }
+
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        val stateName = when (playbackState) {
+                            Player.STATE_IDLE -> "IDLE"
+                            Player.STATE_BUFFERING -> "BUFFERING"
+                            Player.STATE_READY -> {
+                                onVideoOpened?.invoke()
+                                "READY"
+                            }
+                            Player.STATE_ENDED -> "ENDED"
+                            else -> "UNKNOWN($playbackState)"
+                        }
+                        onPlayerStateChanged?.invoke("playbackState=$stateName")
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        onPlayerStateChanged?.invoke("isPlaying=$isPlaying")
+                    }
+
+                    override fun onPositionDiscontinuity(
+                        oldPosition: Player.PositionInfo,
+                        newPosition: Player.PositionInfo,
+                        reason: Int,
+                    ) {
+                        val reasonName = when (reason) {
+                            Player.DISCONTINUITY_REASON_SEEK -> "SEEK"
+                            Player.DISCONTINUITY_REASON_SEEK_ADJUSTMENT -> "SEEK_ADJUSTMENT"
+                            Player.DISCONTINUITY_REASON_AUTO_TRANSITION -> "AUTO_TRANSITION"
+                            Player.DISCONTINUITY_REASON_REMOVE -> "REMOVE"
+                            Player.DISCONTINUITY_REASON_SKIP -> "SKIP"
+                            else -> "UNKNOWN($reason)"
+                        }
+                        onPlayerStateChanged?.invoke(
+                            "discontinuity reason=$reasonName " +
+                                "pos=${oldPosition.positionMs}ms→${newPosition.positionMs}ms"
+                        )
                     }
                 })
             }
+
             prepare()
             playWhenReady = true
         }
     }
 
     DisposableEffect(uris, dataSourceFactory) {
-        onDispose { exoPlayer.release() }
+        onDispose {
+            onVideoReleased?.invoke()
+            exoPlayer.release()
+        }
     }
 
     AndroidView(

@@ -406,6 +406,8 @@ fun SettingsScreen(
 
         // ── DEV ONLY ─────────────────────────────────────────────────────────
         Spacer(Modifier.height(24.dp))
+        DiagnosticsSection(viewModel)
+        Spacer(Modifier.height(24.dp))
         DebugLogPanel(viewModel)
         // ─────────────────────────────────────────────────────────────────────
     }

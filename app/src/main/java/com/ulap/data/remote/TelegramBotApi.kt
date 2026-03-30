@@ -73,6 +73,14 @@ interface TelegramBotApi {
     ): TelegramResponse<TelegramMessage>
 
     @FormUrlEncoded
+    @POST("bot{token}/sendMessage")
+    suspend fun sendMessage(
+        @Path(value = "token", encoded = true) token: String,
+        @Field("chat_id") chatId: String,
+        @Field("text") text: String,
+    ): TelegramResponse<TelegramMessage>
+
+    @FormUrlEncoded
     @POST("bot{token}/deleteMessages")
     suspend fun deleteMessages(
         @Path(value = "token", encoded = true) token: String,

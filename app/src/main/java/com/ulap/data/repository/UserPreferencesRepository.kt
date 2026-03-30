@@ -23,6 +23,8 @@ private const val KEY_STRIP_EXIF = "strip_exif"
 private const val KEY_WIFI_ONLY = "wifi_only_backup"
 private const val KEY_PAUSE_ON_LOW_BATTERY = "pause_on_low_battery"
 private const val KEY_UPLOAD_SPEED_MODE = "upload_speed_mode"
+private const val KEY_TELEGRAM_LOGGING_ENABLED = "telegram_logging_enabled"
+private const val KEY_TELEGRAM_LOGGING_CHAT_ID = "telegram_logging_chat_id"
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
@@ -45,6 +47,12 @@ class UserPreferencesRepository @Inject constructor(
 
     private val _uploadSpeedMode = MutableStateFlow(loadUploadSpeedMode())
     val uploadSpeedMode: StateFlow<UploadSpeedMode> = _uploadSpeedMode.asStateFlow()
+
+    private val _telegramLoggingEnabled = MutableStateFlow(prefs.getBoolean(KEY_TELEGRAM_LOGGING_ENABLED, false))
+    val telegramLoggingEnabled: StateFlow<Boolean> = _telegramLoggingEnabled.asStateFlow()
+
+    private val _telegramLoggingChatId = MutableStateFlow(prefs.getString(KEY_TELEGRAM_LOGGING_CHAT_ID, null))
+    val telegramLoggingChatId: StateFlow<String?> = _telegramLoggingChatId.asStateFlow()
 
     fun setTheme(preference: ThemePreference) {
         prefs.edit().putString(KEY_THEME, preference.name).apply()
@@ -74,6 +82,16 @@ class UserPreferencesRepository @Inject constructor(
     fun setUploadSpeedMode(mode: UploadSpeedMode) {
         prefs.edit().putString(KEY_UPLOAD_SPEED_MODE, mode.name).apply()
         _uploadSpeedMode.value = mode
+    }
+
+    fun setTelegramLoggingEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_TELEGRAM_LOGGING_ENABLED, enabled).apply()
+        _telegramLoggingEnabled.value = enabled
+    }
+
+    fun setTelegramLoggingChatId(chatId: String?) {
+        prefs.edit().putString(KEY_TELEGRAM_LOGGING_CHAT_ID, chatId?.takeIf { it.isNotBlank() }).apply()
+        _telegramLoggingChatId.value = chatId?.takeIf { it.isNotBlank() }
     }
 
     private fun loadTheme(): ThemePreference {

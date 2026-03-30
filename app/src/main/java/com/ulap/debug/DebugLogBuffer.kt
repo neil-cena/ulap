@@ -1,6 +1,8 @@
 package com.ulap.debug
 
 import android.util.Log
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,6 +23,17 @@ class DebugLogBuffer @Inject constructor() {
     private val _entries = MutableStateFlow<List<String>>(emptyList())
     val entries: StateFlow<List<String>> = _entries.asStateFlow()
 
+    /**
+     * Secondary tap for [com.ulap.data.remote.TelegramLogger].
+     * Non-suspend [log] calls [trySend] so callers are never blocked.
+     * Capacity=64 with DROP_OLDEST: when the consumer is slow or disconnected,
+     * the oldest buffered lines are silently discarded rather than blocking the caller.
+     */
+    val newEntryChannel: Channel<String> = Channel(
+        capacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+
     fun log(tag: String, message: String) {
         Log.d(tag, message)
         val line = "${fmt.format(Date())} [$tag] $message"
@@ -30,6 +43,7 @@ class DebugLogBuffer @Inject constructor() {
         } else {
             current + line
         }
+        newEntryChannel.trySend(line)
     }
 
     fun clear() {

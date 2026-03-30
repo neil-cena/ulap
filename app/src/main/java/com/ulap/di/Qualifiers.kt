@@ -9,3 +9,7 @@ annotation class UploadClient
 @Qualifier
 @Retention(AnnotationRetention.BINARY)
 annotation class PlainPrefs
+
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ApplicationScope

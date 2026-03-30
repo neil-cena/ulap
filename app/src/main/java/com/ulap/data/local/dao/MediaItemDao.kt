@@ -28,6 +28,14 @@ interface MediaItemDao {
     @Update
     suspend fun update(item: MediaItemEntity)
 
+    /**
+     * Batch UPDATE for existing rows. Use this instead of [upsertAll] when the rows already
+     * exist in the DB, to avoid the DELETE+INSERT cycle that OnConflictStrategy.REPLACE performs.
+     * That DELETE triggers the ForeignKey.CASCADE on chunk_metadata, wiping all chunk rows.
+     */
+    @Update
+    suspend fun updateAll(items: List<MediaItemEntity>)
+
     @Query(
         """
         SELECT * FROM media_items

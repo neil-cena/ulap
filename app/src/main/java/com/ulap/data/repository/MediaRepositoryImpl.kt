@@ -89,25 +89,48 @@ class MediaRepositoryImpl @Inject constructor(
                 .flatMap { mediaItemDao.findByIds(it) }
                 .associateBy { it.id }
 
-            val toUpsert = scanned.map { entity ->
+            val newItems = mutableListOf<MediaItemEntity>()
+            val existingItems = mutableListOf<MediaItemEntity>()
+
+            for (entity in scanned) {
                 val existing = existingMap[entity.id]
-                if (existing != null &&
-                    (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.EXCLUDED)
-                ) {
-                    entity.copy(
+                if (existing == null) {
+                    newItems += entity
+                } else if (existing.backupStatus == BackupStatus.BACKED_UP || existing.backupStatus == BackupStatus.EXCLUDED) {
+                    // Preserve ALL backup-related columns so we don't lose Telegram metadata.
+                    // IMPORTANT: we must use UPDATE (not REPLACE/INSERT) for existing rows.
+                    // INSERT OR REPLACE performs a DELETE + INSERT which triggers the FK CASCADE
+                    // on chunk_metadata (ON DELETE CASCADE), wiping all chunk rows for the item.
+                    existingItems += entity.copy(
                         backupStatus = existing.backupStatus,
                         telegramFileId = existing.telegramFileId,
                         telegramMessageId = existing.telegramMessageId,
                         lastSyncedAt = existing.lastSyncedAt,
                         thumbnailFileId = existing.thumbnailFileId,
+                        thumbnailMessageId = existing.thumbnailMessageId,
+                        uploadBotIndex = existing.uploadBotIndex,
+                        contentHash = existing.contentHash,
+                        chunkMessageIds = existing.chunkMessageIds,
+                        uploadedChunks = existing.uploadedChunks,
+                        uploadedChunkCount = existing.uploadedChunkCount,
+                        errorMessage = existing.errorMessage,
                     )
                 } else {
-                    entity
+                    // PENDING / FAILED / UPLOADING / CLOUD_ONLY: safe to REPLACE since
+                    // chunk_metadata for non-BACKED_UP items is either empty or intentionally
+                    // stale (upload in progress). Losing it here just forces a re-upload.
+                    existingItems += entity
                 }
             }
 
-            toUpsert.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+            // INSERT for brand-new items (no existing row, no CASCADE risk).
+            newItems.chunked(ROOM_BATCH_SIZE).forEach { batch ->
                 mediaItemDao.upsertAll(batch)
+            }
+            // UPDATE for existing items — avoids the DELETE+INSERT cycle that REPLACE triggers,
+            // which would cascade-delete chunk_metadata rows for BACKED_UP chunked videos.
+            existingItems.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+                mediaItemDao.updateAll(batch)
             }
         }
 
