@@ -18,6 +18,7 @@ import com.ulap.domain.model.MediaType
 import com.ulap.domain.usecase.DownloadCloudItemUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.GetTimelineUseCase
+import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -44,6 +45,10 @@ internal const val STREAM_CACHE_TTL_MS = 24L * 60 * 60 * 1000 // 24 hours
 /** Sanitizes [itemId] to a filesystem-safe suffix (strips any path separators). */
 private fun streamFileName(itemId: String) = "ulap_stream_${itemId.replace('/', '_').replace('\\', '_')}.mp4"
 private fun streamMarkerName(itemId: String) = "ulap_stream_${itemId.replace('/', '_').replace('\\', '_')}.done"
+
+/** Canonical error for when chunk_metadata is empty during playback (DB wipe / missing sync). */
+internal fun streamErrorForMissingChunkMetadata(): StreamUrlsState.Error =
+    StreamUrlsState.Error("Chunk data missing — please re-download this video.")
 
 sealed class DownloadState {
     data object Idle : DownloadState()
@@ -73,6 +78,7 @@ class MediaViewerViewModel @Inject constructor(
     private val chunkMetadataDao: ChunkMetadataDao,
     private val mediaItemDao: MediaItemDao,
     private val downloadCloudItem: DownloadCloudItemUseCase,
+    private val repairChunkMetadata: RepairCorruptChunkMetadataFromPinnedIndexUseCase,
     private val okHttpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val appContext: Context,
     private val debugLog: com.ulap.debug.DebugLogBuffer,
@@ -274,10 +280,18 @@ class MediaViewerViewModel @Inject constructor(
             evictStreamCache(activeItemId = itemId)
 
             try {
-                val chunks = chunkMetadataDao.getChunksForMedia(itemId)
+                var chunks = chunkMetadataDao.getChunksForMedia(itemId)
                 if (chunks.isEmpty()) {
+                    // Attempt repair before giving up — re-fetches chunk file IDs from the
+                    // pinned Telegram index (uploadedChunks JSON or chunkMessageIds).
+                    runCatching { repairChunkMetadata() }
+                    chunks = chunkMetadataDao.getChunksForMedia(itemId)
+                }
+                if (chunks.isEmpty()) {
+                    debugLog.log("ChunkPrefetch", "chunk metadata empty for itemId=$itemId")
+                    viewModelScope.launch { telegramLogger.flushNow() }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
-                        itemId to StreamUrlsState.Error("No chunk metadata found")
+                        itemId to streamErrorForMissingChunkMetadata()
                     )
                     return@launch
                 }
@@ -286,6 +300,8 @@ class MediaViewerViewModel @Inject constructor(
                 val urls = downloader.resolveStreamUrlsBatched(token, fileIds)
 
                 if (urls.all { it == null }) {
+                    debugLog.log("ChunkPrefetch", "chunk URLs all null for itemId=$itemId")
+                    viewModelScope.launch { telegramLogger.flushNow() }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
                         itemId to StreamUrlsState.Error("Could not resolve chunk URLs")
                     )
@@ -312,8 +328,9 @@ class MediaViewerViewModel @Inject constructor(
                 prefetchEngine.setPrefetchOrigin(0)
 
             } catch (e: Exception) {
+                debugLog.log("ChunkPrefetch", "prefetch setup failed for itemId=$itemId: ${e.javaClass.simpleName}")
                 _streamUrlsCache.value = _streamUrlsCache.value + (
-                    itemId to StreamUrlsState.Error(e.message ?: "Prefetch setup failed")
+                    itemId to StreamUrlsState.Error("Video could not be prepared. Please try again.")
                 )
             }
         }
