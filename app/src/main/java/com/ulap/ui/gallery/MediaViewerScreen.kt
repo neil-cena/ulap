@@ -210,7 +210,12 @@ fun MediaViewerScreen(
                                     },
                                     contentAlignment = Alignment.Center,
                                 ) {
-                                    Text(state.message, color = Color.White, modifier = Modifier.fillMaxWidth(0.8f))
+                                    Text(
+                                        state.message,
+                                        color = Color.White,
+                                        modifier = Modifier.fillMaxWidth(0.8f),
+                                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    )
                                 }
                                 is StreamUrlsState.Ready -> {
                                     val urls = state.urls
@@ -244,6 +249,10 @@ fun MediaViewerScreen(
                                         onVideoOpened = { viewModel.onVideoOpened(item) },
                                         onVideoReleased = { viewModel.onVideoClosed(item) },
                                         onPlayerStateChanged = { desc -> viewModel.onVideoPlayerState(item, desc) },
+                                        onError = { err ->
+                                            viewModel.onCloudPlaybackError(item, err)
+                                            viewModel.onVideoError(item, err)
+                                        },
                                     )
                                 }
                                 else -> Box(

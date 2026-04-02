@@ -2,6 +2,8 @@ package com.ulap.ui.gallery
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -182,11 +184,13 @@ class MediaViewerViewModel @Inject constructor(
         val isLegacyChunked = fileId.trim().startsWith("[")
         val isNewChunked = fileId.startsWith(CHUNKED_FILE_ID_PREFIX)
         val isVideo = item.mediaType == MediaType.VIDEO
+        Log.d("UlapChunkPlay", "resolveStreamUrlsForItem id=${item.id} fileId=${fileId.take(30)} isNewChunked=$isNewChunked isVideo=$isVideo bot=${item.uploadBotIndex}")
+        debugLog.log("ChunkPlay", "resolve id=${item.id} fileId=${fileId.take(30)} isNewChunked=$isNewChunked")
 
-        // Layer 4: fall back to primary bot when the per-item bot is not configured.
         val itemToken = getCredentials.getTokenForBot(item.uploadBotIndex)
             ?: getCredentials.getToken()
         if (itemToken == null) {
+            Log.e("UlapChunkPlay", "No token for bot index ${item.uploadBotIndex}")
             _streamUrlsCache.value = _streamUrlsCache.value + (
                 item.id to StreamUrlsState.Error("No bot token configured")
             )
@@ -244,11 +248,33 @@ class MediaViewerViewModel @Inject constructor(
      * If re-resolution also fails, resolveStreamUrlsForItem emits StreamUrlsState.Error.
      */
     fun onCloudPlaybackError(item: MediaItem, error: androidx.media3.common.PlaybackException) {
+        Log.e("UlapChunkPlay", "onCloudPlaybackError id=${item.id} code=${error.errorCodeName} msg=${error.message}", error)
         if (item.telegramFileId == null) {
             _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Error("Video unavailable"))
             return
         }
-        if (_streamUrlsCache.value[item.id] is StreamUrlsState.Loading) return
+
+        val currentState = _streamUrlsCache.value[item.id]
+        if (currentState is StreamUrlsState.Loading) return
+
+        // Chunked (ReadyProgressive) items cannot be fixed by re-resolving URLs — the DataSource
+        // reads from local chunk files, so a retry would just hit the same error. Surface it.
+        if (currentState is StreamUrlsState.ReadyProgressive) {
+            val msg = friendlyPlaybackErrorMessage(error)
+            _streamUrlsCache.value = _streamUrlsCache.value + (
+                item.id to StreamUrlsState.Error(msg)
+            )
+            debugLog.log("VideoPlayer", "Chunked playback failed id=${item.id} code=${error.errorCodeName}")
+            viewModelScope.launch {
+                telegramLogger.flushNow()
+                android.os.Handler(appContext.mainLooper).post {
+                    Toast.makeText(appContext, "ChunkPlay: $msg", Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
+
+        // For single-URL streaming (Ready), re-resolve the CDN URL (it may have expired).
         _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Loading)
         debugLog.log("VideoPlayer", "Cloud playback error id=${item.id} code=${error.errorCodeName}")
         viewModelScope.launch { telegramLogger.flushNow() }
@@ -275,21 +301,25 @@ class MediaViewerViewModel @Inject constructor(
      */
     private fun startPrefetchingChunkedDownload(token: String, itemId: String) {
         val chunkDir = chunkDirFor(appContext.cacheDir, itemId)
+        debugLog.log("ChunkPrefetch", "start itemId=$itemId chunkDir=$chunkDir")
 
         viewModelScope.launch(Dispatchers.IO) {
             evictStreamCache(activeItemId = itemId)
 
             try {
                 var chunks = chunkMetadataDao.getChunksForMedia(itemId)
+                debugLog.log("ChunkPrefetch", "chunks from DB: ${chunks.size} for itemId=$itemId")
                 if (chunks.isEmpty()) {
-                    // Attempt repair before giving up — re-fetches chunk file IDs from the
-                    // pinned Telegram index (uploadedChunks JSON or chunkMessageIds).
                     runCatching { repairChunkMetadata() }
                     chunks = chunkMetadataDao.getChunksForMedia(itemId)
+                    debugLog.log("ChunkPrefetch", "after repair: ${chunks.size} chunks for itemId=$itemId")
                 }
                 if (chunks.isEmpty()) {
                     debugLog.log("ChunkPrefetch", "chunk metadata empty for itemId=$itemId")
                     viewModelScope.launch { telegramLogger.flushNow() }
+                    android.os.Handler(appContext.mainLooper).post {
+                        Toast.makeText(appContext, "ChunkPlay: No chunk metadata for $itemId", Toast.LENGTH_LONG).show()
+                    }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
                         itemId to streamErrorForMissingChunkMetadata()
                     )
@@ -297,11 +327,17 @@ class MediaViewerViewModel @Inject constructor(
                 }
 
                 val fileIds = chunks.map { it.telegramFileId }
+                debugLog.log("ChunkPrefetch", "resolving ${fileIds.size} chunk URLs for itemId=$itemId")
+                viewModelScope.launch { telegramLogger.flushNow() }
                 val urls = downloader.resolveStreamUrlsBatched(token, fileIds)
+                debugLog.log("ChunkPrefetch", "resolved URLs: total=${urls.size} nonNull=${urls.count { it != null }} for itemId=$itemId")
 
                 if (urls.all { it == null }) {
                     debugLog.log("ChunkPrefetch", "chunk URLs all null for itemId=$itemId")
                     viewModelScope.launch { telegramLogger.flushNow() }
+                    android.os.Handler(appContext.mainLooper).post {
+                        Toast.makeText(appContext, "ChunkPlay: All chunk URLs null for $itemId", Toast.LENGTH_LONG).show()
+                    }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
                         itemId to StreamUrlsState.Error("Could not resolve chunk URLs")
                     )
@@ -315,9 +351,12 @@ class MediaViewerViewModel @Inject constructor(
                     chunkMeta = chunks,
                     resolvedUrls = urls,
                     okHttpClient = okHttpClient,
+                    logCallback = { msg -> debugLog.log("ChunkDL", msg) },
                 )
 
                 val factory = PrefetchingVideoDataSource.Factory(chunkDir, chunks, prefetchEngine)
+                debugLog.log("ChunkPrefetch", "emitting ReadyProgressive for itemId=$itemId chunkCount=${chunks.size} totalSize=${chunks.sumOf { it.byteLength.toLong() }}")
+                viewModelScope.launch { telegramLogger.flushNow() }
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.ReadyProgressive(
                         fileUri = chunkDir.toURI().toString(),
@@ -328,7 +367,12 @@ class MediaViewerViewModel @Inject constructor(
                 prefetchEngine.setPrefetchOrigin(0)
 
             } catch (e: Exception) {
-                debugLog.log("ChunkPrefetch", "prefetch setup failed for itemId=$itemId: ${e.javaClass.simpleName}")
+                Log.e("UlapChunkPlay", "prefetch setup failed for itemId=$itemId", e)
+                debugLog.log("ChunkPrefetch", "EXCEPTION for itemId=$itemId: ${e.javaClass.simpleName}: ${e.message}")
+                viewModelScope.launch { telegramLogger.flushNow() }
+                android.os.Handler(appContext.mainLooper).post {
+                    Toast.makeText(appContext, "ChunkPlay: ${e.javaClass.simpleName}: ${e.message?.take(80)}", Toast.LENGTH_LONG).show()
+                }
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.Error("Video could not be prepared. Please try again.")
                 )
@@ -538,7 +582,21 @@ class MediaViewerViewModel @Inject constructor(
     }
 
     fun onVideoError(item: com.ulap.domain.model.MediaItem, error: androidx.media3.common.PlaybackException) {
+        Log.e("UlapChunkPlay", "onVideoError id=${item.id} code=${error.errorCodeName} msg=${error.message}", error)
         debugLog.log("VideoPlayer", "ERROR id=${item.id} code=${error.errorCodeName} msg=${error.message}")
         viewModelScope.launch { telegramLogger.flushNow() }
+    }
+
+    private fun friendlyPlaybackErrorMessage(error: androidx.media3.common.PlaybackException): String {
+        val raw = error.message ?: ""
+        if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED
+            && raw.contains("NO_EXCEEDS_CAPABILITIES", ignoreCase = true)
+        ) {
+            return "This video's resolution exceeds your device's playback capabilities.\n\nTry downloading it instead."
+        }
+        if (error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_DECODER_INIT_FAILED) {
+            return "Your device cannot decode this video format.\n\nTry downloading it instead."
+        }
+        return "Playback failed: ${error.errorCodeName}"
     }
 }

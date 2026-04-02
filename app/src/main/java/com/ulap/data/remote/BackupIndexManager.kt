@@ -1,5 +1,6 @@
 package com.ulap.data.remote
 
+import android.util.Log
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import com.ulap.data.local.dao.ChunkMetadataDao
@@ -40,6 +41,7 @@ data class IndexEntry(
     // Schema v2: full chunk data for cross-device restoration without needing the uploader's chat history
     @SerializedName("chunkCount") val chunkCount: Int? = null,
     @SerializedName("chunkFileIds") val chunkFileIds: List<String>? = null,
+    @SerializedName("chunkByteLengths") val chunkByteLengths: List<Int>? = null,
     @SerializedName("uploadBotIndex") val uploadBotIndex: Int? = null,
 )
 
@@ -152,6 +154,7 @@ class BackupIndexManager @Inject constructor(
 
         for (entry in manifest.items) {
             if (entry.telegramFileId in knownFileIds) {
+                Log.d("UlapChunkPlay", "fetchAndMerge: skip known fileId=${entry.telegramFileId.take(20)} for ${entry.fileName}")
                 val indexBotIndex = entry.uploadBotIndex
                 if (indexBotIndex != null) {
                     mediaItemDao.updateUploadBotIndexByFileId(entry.telegramFileId, indexBotIndex)
@@ -162,6 +165,7 @@ class BackupIndexManager @Inject constructor(
             val targetId: String
             if (local != null) {
                 val status = if (local.contentUri.isBlank()) BackupStatus.CLOUD_ONLY else BackupStatus.BACKED_UP
+                Log.d("UlapChunkPlay", "fetchAndMerge: matched local=${local.id} for ${entry.fileName} status=$status chunkFileIds=${entry.chunkFileIds?.size}")
                 mediaItemDao.updateBackupResult(
                     id = local.id,
                     status = status,
@@ -183,6 +187,7 @@ class BackupIndexManager @Inject constructor(
             } else {
                 val cloudId = "cloud_${entry.id}"
                 if (cloudId in knownCloudIds) continue
+                Log.d("UlapChunkPlay", "fetchAndMerge: creating cloud entity $cloudId for ${entry.fileName} chunkFileIds=${entry.chunkFileIds?.size}")
                 val entity = MediaItemEntity(
                     id = cloudId,
                     path = "",
@@ -304,6 +309,7 @@ class BackupIndexManager @Inject constructor(
             targetId = targetId,
             chunkFileIds = chunkFileIds,
             chunkMessageIds = entry.chunkMessageIds,
+            chunkByteLengths = entry.chunkByteLengths,
             totalSize = entry.size,
         )
     }
@@ -312,11 +318,17 @@ class BackupIndexManager @Inject constructor(
         targetId: String,
         chunkFileIds: List<String>,
         chunkMessageIds: List<Long>?,
+        chunkByteLengths: List<Int>? = null,
         totalSize: Long,
     ): Boolean {
         if (chunkFileIds.isEmpty()) return false
         if (chunkMetadataDao.hasChunks(targetId) != 0) return false
-        val lengths = ChunkMetadataLayout.byteLengthsForChunkedFile(totalSize, chunkFileIds.size)
+        val lengths = if (chunkByteLengths != null && chunkByteLengths.size == chunkFileIds.size) {
+            chunkByteLengths
+        } else {
+            ChunkMetadataLayout.byteLengthsForChunkedFile(totalSize, chunkFileIds.size)
+        }
+        Log.d("UlapChunkPlay", "insertChunkRows targetId=$targetId chunks=${chunkFileIds.size} lengths=${lengths.take(3)} totalSize=$totalSize")
         var byteOffset = 0L
         chunkFileIds.forEachIndexed { idx, cFileId ->
             val msgId = chunkMessageIds?.getOrNull(idx) ?: 0L
@@ -340,7 +352,7 @@ class BackupIndexManager @Inject constructor(
         val ids = parseStringJsonArray(json) ?: return false
         val total = ChunkMetadataLayout.totalChunksFromSentinel(local.telegramFileId) ?: return false
         if (ids.size != total) return false
-        return insertChunkRowsFromParts(local.id, ids, null, local.size)
+        return insertChunkRowsFromParts(local.id, ids, null, totalSize = local.size)
     }
 
     private suspend fun tryRecoverFromMessageIds(
@@ -356,7 +368,7 @@ class BackupIndexManager @Inject constructor(
             return
         }
         if (fileIds.size != total) return
-        insertChunkRowsFromParts(local.id, fileIds, messageIds, local.size)
+        insertChunkRowsFromParts(local.id, fileIds, messageIds, totalSize = local.size)
     }
 
     private suspend fun resolveDocumentFileIdsByForwarding(
@@ -563,6 +575,7 @@ class BackupIndexManager @Inject constructor(
                 },
             chunkCount = chunks.size.takeIf { it > 0 },
             chunkFileIds = chunks.map { it.telegramFileId }.takeIf { it.isNotEmpty() },
+            chunkByteLengths = chunks.map { it.byteLength }.takeIf { it.isNotEmpty() },
             uploadBotIndex = uploadBotIndex.takeIf { it != 0 },
         )
     }

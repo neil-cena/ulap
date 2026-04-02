@@ -13,7 +13,7 @@ import java.io.InputStream
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val MAX_SINGLE_UPLOAD_SIZE = 50L * 1024 * 1024 // 50MB Bot API limit
+private const val MAX_SINGLE_UPLOAD_SIZE = 20L * 1024 * 1024 // 20MB Bot API getFile() limit for download/streaming
 internal const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
 
 // Top-level so BackupForegroundService can import it for the notification string.
@@ -199,9 +199,10 @@ class TelegramUploader @Inject constructor(
             uploadedSoFar = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
         }
 
-        val buf = ByteArray(CHUNK_UPLOAD_SIZE.toInt())
+        val chunkSize = CHUNK_UPLOAD_SIZE.toInt()
+        val buf = ByteArray(chunkSize)
         var read: Int
-        while (inputStream.read(buf).also { read = it } != -1) {
+        while (readFully(inputStream, buf).also { read = it } != -1) {
             val byteOffset = uploadedSoFar
             val chunkData = buf.copyOf(read)
             val chunkCaption = "[ulap-chunk] $fileName part ${chunkIndex + 1}/$totalChunks"
@@ -228,13 +229,12 @@ class TelegramUploader @Inject constructor(
             chunkIndex++
         }
 
-        // Store sentinel file ID that tells the download path to use the chunk_metadata table.
         UploadResult.Success(
             messageId = 0L,
-            fileId = "$CHUNKED_FILE_ID_PREFIX$totalChunks",
+            fileId = "$CHUNKED_FILE_ID_PREFIX$chunkIndex",
             thumbnailFileId = thumbnailFileId,
             thumbnailMessageId = thumbnailMessageId,
-            chunkMessageIds = null, // chunk_metadata table is the source of truth now
+            chunkMessageIds = null,
         )
     }
 
@@ -306,6 +306,23 @@ class TelegramUploader @Inject constructor(
             val jitter = (base * 0.2 * (Math.random() * 2 - 1)).toLong()
             delay(base + jitter)
         }
+    }
+
+    /**
+     * Reads exactly [buf].size bytes from [input], unless EOF is reached first.
+     * Returns the total bytes read (may be < buf.size only for the final chunk), or -1 at EOF.
+     * This prevents short reads from [StreamingFastStartReader.FastStartInputStream] at segment
+     * boundaries from producing undersized chunks that break the byte-length assumptions in
+     * [ChunkMetadataLayout] and [PrefetchingVideoDataSource].
+     */
+    private fun readFully(input: InputStream, buf: ByteArray): Int {
+        var offset = 0
+        while (offset < buf.size) {
+            val n = input.read(buf, offset, buf.size - offset)
+            if (n == -1) break
+            offset += n
+        }
+        return if (offset == 0) -1 else offset
     }
 
     /** Upload a JPEG thumbnail as sendDocument. Returns (fileId, messageId), or null on error. */

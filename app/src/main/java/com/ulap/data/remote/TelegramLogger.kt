@@ -1,7 +1,6 @@
 package com.ulap.data.remote
 
 import com.ulap.debug.DebugLogBuffer
-import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.domain.repository.CredentialRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.Channel
@@ -36,7 +35,7 @@ private const val RATE_LIMIT_MAX_MESSAGES = 25
 class TelegramLogger(
     private val api: TelegramBotApi,
     private val channel: Channel<String>,
-    private val botToken: StateFlow<String?>,
+    private val credentialRepository: CredentialRepository,
     private val loggingChatId: StateFlow<String?>,
     private val telegramLoggingEnabled: StateFlow<Boolean>,
     private val scope: CoroutineScope,
@@ -71,7 +70,7 @@ class TelegramLogger(
      * [Thread.UncaughtExceptionHandler]; never throws.
      */
     fun logFatal(throwable: Throwable) {
-        val token = botToken.value ?: return
+        val token = credentialRepository.getBotToken() ?: return
         val chatId = loggingChatId.value ?: return
         if (!telegramLoggingEnabled.value) return
 
@@ -116,7 +115,7 @@ class TelegramLogger(
     /** Must be called while holding [mutex]. Sends current [buffer] as one (or more) messages. */
     private suspend fun sendBatchLocked() {
         if (buffer.isEmpty() && droppedCount == 0) return
-        val token = botToken.value ?: run { buffer.clear(); droppedCount = 0; return }
+        val token = credentialRepository.getBotToken() ?: run { buffer.clear(); droppedCount = 0; return }
         val chatId = loggingChatId.value ?: run { buffer.clear(); droppedCount = 0; return }
         if (!telegramLoggingEnabled.value) { buffer.clear(); droppedCount = 0; return }
 

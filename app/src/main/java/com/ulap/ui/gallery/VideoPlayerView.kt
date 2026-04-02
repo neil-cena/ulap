@@ -13,6 +13,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.datasource.DataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -37,7 +38,9 @@ fun VideoPlayerView(
 ) {
     val context = LocalContext.current
     val exoPlayer = remember(uris, dataSourceFactory) {
-        ExoPlayer.Builder(context).build().apply {
+        val renderersFactory = DefaultRenderersFactory(context)
+            .setEnableDecoderFallback(true)
+        ExoPlayer.Builder(context, renderersFactory).build().apply {
             if (dataSourceFactory != null && uris.size == 1) {
                 val mediaSource = ProgressiveMediaSource.Factory(dataSourceFactory)
                     .createMediaSource(MediaItem.fromUri(uris.first()))

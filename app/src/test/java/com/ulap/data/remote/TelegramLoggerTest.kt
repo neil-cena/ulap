@@ -1,5 +1,7 @@
 package com.ulap.data.remote
 
+import com.ulap.domain.model.BotCredential
+import com.ulap.domain.repository.CredentialRepository
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
@@ -11,6 +13,19 @@ import org.junit.Test
 
 @Suppress("NonAsciiCharacters")
 class TelegramLoggerTest {
+
+    private class FakeCredentialRepo(private val token: String?) : CredentialRepository {
+        override fun getBotToken(): String? = token
+        override fun getChatId(): String? = null
+        override fun saveCredentials(token: String, chatId: String) {}
+        override fun clearCredentials() {}
+        override fun hasCredentials(): Boolean = token != null
+        override fun getLastIndexFileId(): String? = null
+        override fun setLastIndexFileId(fileId: String?) {}
+        override fun getAdditionalBotTokens(): List<BotCredential> = emptyList()
+        override fun saveAdditionalBotTokens(bots: List<BotCredential>) {}
+        override fun clearAdditionalBots() {}
+    }
 
     private class FakeTelegramBotApi : TelegramBotApi {
 
@@ -115,7 +130,7 @@ class TelegramLoggerTest {
         val logger = TelegramLogger(
             api = fakeApi,
             channel = channel,
-            botToken = MutableStateFlow(null),
+            credentialRepository = FakeCredentialRepo(null),
             loggingChatId = MutableStateFlow("chat-id"),
             telegramLoggingEnabled = MutableStateFlow(true),
             scope = backgroundScope,
@@ -139,7 +154,7 @@ class TelegramLoggerTest {
         val logger = TelegramLogger(
             api = fakeApi,
             channel = channel,
-            botToken = MutableStateFlow("valid-token"),
+            credentialRepository = FakeCredentialRepo("valid-token"),
             loggingChatId = MutableStateFlow("chat-id"),
             telegramLoggingEnabled = MutableStateFlow(false),
             scope = backgroundScope,
@@ -163,7 +178,7 @@ class TelegramLoggerTest {
         val logger = TelegramLogger(
             api = fakeApi,
             channel = channel,
-            botToken = MutableStateFlow("valid-token"),
+            credentialRepository = FakeCredentialRepo("valid-token"),
             loggingChatId = MutableStateFlow("chat-id"),
             telegramLoggingEnabled = MutableStateFlow(true),
             scope = backgroundScope,
@@ -199,7 +214,7 @@ class TelegramLoggerTest {
         val logger = TelegramLogger(
             api = fakeApi,
             channel = channel,
-            botToken = MutableStateFlow("valid-token"),
+            credentialRepository = FakeCredentialRepo("valid-token"),
             loggingChatId = MutableStateFlow("chat-id"),
             telegramLoggingEnabled = MutableStateFlow(true),
             scope = backgroundScope,

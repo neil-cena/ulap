@@ -1,5 +1,6 @@
 package com.ulap.ui.gallery
 
+import android.util.Log
 import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.remote.ParallelChunkDownloader
 import com.ulap.data.remote.ParallelChunkDownloader.Companion.chunkFile
@@ -30,6 +31,7 @@ class ChunkPrefetchEngine(
     private val chunkMeta: List<ChunkMetadataEntity>,
     private val resolvedUrls: List<String?>,
     private val okHttpClient: OkHttpClient,
+    private val logCallback: (String) -> Unit = {},
     private val windowSize: Int = 4,
     private val concurrency: Int = 3,
 ) {
@@ -62,12 +64,11 @@ class ChunkPrefetchEngine(
     /** Advance the prefetch origin to [chunkIndex] and trigger window update. */
     fun advanceOrigin(chunkIndex: Int) = setPrefetchOrigin(chunkIndex)
 
-    /** Returns true if the chunk file is fully downloaded and has correct size. */
+    /** Returns true if the chunk file exists and has been fully downloaded. */
     fun isChunkReady(chunkIndex: Int): Boolean {
         if (completed[chunkIndex] == true) return true
-        val meta = chunkMeta.getOrNull(chunkIndex) ?: return false
         val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
-        val ready = file.exists() && file.length() == meta.byteLength.toLong()
+        val ready = file.exists() && file.length() > 0
         if (ready) completed[chunkIndex] = true
         return ready
     }
@@ -77,15 +78,30 @@ class ChunkPrefetchEngine(
      * there is no URL available for it. Polls with 50ms intervals.
      */
     suspend fun waitForChunk(chunkIndex: Int) {
-        // Kick off download if not already running.
+        if (isChunkReady(chunkIndex)) return
+
         mutex.withLock {
             if (!isChunkReady(chunkIndex) && !downloading.containsKey(chunkIndex)) {
+                logCallback("waitForChunk: kick-starting download for chunk=$chunkIndex")
                 startDownload(chunkIndex)
             }
         }
+        var waited = 0
         while (!isChunkReady(chunkIndex)) {
-            if (resolvedUrls.getOrNull(chunkIndex) == null) break
+            if (resolvedUrls.getOrNull(chunkIndex) == null) {
+                logCallback("waitForChunk: no URL for chunk=$chunkIndex, giving up")
+                break
+            }
             kotlinx.coroutines.delay(50)
+            waited += 50
+            if (waited % 5000 == 0) {
+                val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
+                logCallback("waitForChunk: still waiting chunk=$chunkIndex waited=${waited}ms fileExists=${file.exists()} fileLen=${if (file.exists()) file.length() else -1}")
+            }
+        }
+        if (waited > 0) {
+            val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
+            logCallback("waitForChunk: done chunk=$chunkIndex waited=${waited}ms fileExists=${file.exists()} fileLen=${if (file.exists()) file.length() else -1}")
         }
     }
 
@@ -97,22 +113,32 @@ class ChunkPrefetchEngine(
     private fun startDownload(chunkIndex: Int) {
         val url = resolvedUrls.getOrNull(chunkIndex) ?: return
         val meta = chunkMeta.getOrNull(chunkIndex) ?: return
+        chunkDir.mkdirs()
         val targetFile = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
 
         val job = scope.launch {
             try {
+                logCallback("download start chunk=$chunkIndex url=${url.take(80)}")
                 val request = Request.Builder().url(url).build()
                 okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) return@launch
-                    val body = response.body ?: return@launch
+                    if (!response.isSuccessful) {
+                        logCallback("download FAILED chunk=$chunkIndex HTTP ${response.code}")
+                        return@launch
+                    }
+                    val body = response.body ?: run {
+                        logCallback("download FAILED chunk=$chunkIndex empty body")
+                        return@launch
+                    }
                     val tmpFile = File(targetFile.parent, targetFile.name + ".tmp")
                     body.byteStream().use { input ->
                         tmpFile.outputStream().use { output ->
                             input.copyTo(output)
                         }
                     }
+                    logCallback("download done chunk=$chunkIndex fileSize=${tmpFile.length()} metaByteLen=${meta.byteLength}")
                     if (!tmpFile.renameTo(targetFile)) {
                         tmpFile.delete()
+                        logCallback("download FAILED chunk=$chunkIndex rename failed")
                         return@launch
                     }
                     completed[chunkIndex] = true
@@ -125,7 +151,8 @@ class ChunkPrefetchEngine(
                         startDownload(nextToFill)
                     }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                logCallback("download EXCEPTION chunk=$chunkIndex: ${e.javaClass.simpleName}: ${e.message}")
                 downloading.remove(chunkIndex)
             }
         }

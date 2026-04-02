@@ -345,7 +345,7 @@ fun SettingsScreen(
                     if (stats.excluded > 0) {
                         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                         Text(
-                            "${stats.excluded} file${if (stats.excluded == 1) "" else "s"} can't be backed up (exceeds 2 GB limit)",
+                            "${stats.excluded} file${if (stats.excluded == 1) "" else "s"} excluded (folder not enabled)",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

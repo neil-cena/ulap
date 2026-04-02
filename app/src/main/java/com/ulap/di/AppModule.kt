@@ -12,7 +12,6 @@ import dagger.hilt.components.SingletonComponent
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
 import javax.inject.Singleton
 
 @Module
@@ -35,7 +34,7 @@ class AppModule {
     ): TelegramLogger = TelegramLogger(
         api = api,
         channel = debugLogBuffer.newEntryChannel,
-        botToken = MutableStateFlow(credentialRepository.getBotToken()),
+        credentialRepository = credentialRepository,
         loggingChatId = userPrefs.telegramLoggingChatId,
         telegramLoggingEnabled = userPrefs.telegramLoggingEnabled,
         scope = scope,

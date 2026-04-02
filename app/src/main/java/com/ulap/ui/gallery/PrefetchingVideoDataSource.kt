@@ -1,6 +1,7 @@
 package com.ulap.ui.gallery
 
 import android.net.Uri
+import android.util.Log
 import androidx.media3.common.C
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
@@ -26,6 +27,7 @@ class PrefetchingVideoDataSource(
     private val prefetchEngine: ChunkPrefetchEngine,
 ) : BaseDataSource(/* isNetwork = */ false) {
 
+    private val totalSize = chunkMeta.sumOf { it.byteLength.toLong() }
     private var currentChunkIndex = 0
     private var currentRaf: RandomAccessFile? = null
     private var positionInChunk = 0L
@@ -37,9 +39,20 @@ class PrefetchingVideoDataSource(
         currentChunkIndex = findChunkIndexForOffset(globalOffset)
         val chunk = chunkMeta.getOrNull(currentChunkIndex)
         positionInChunk = if (chunk != null) globalOffset - chunk.byteOffset else 0L
-        bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) dataSpec.length else C.LENGTH_UNSET.toLong()
+
+        bytesRemaining = if (dataSpec.length != C.LENGTH_UNSET.toLong()) {
+            dataSpec.length
+        } else {
+            totalSize - globalOffset
+        }
+        Log.d("UlapChunkPlay", "DataSource.open pos=$globalOffset totalSize=$totalSize bytesRemaining=$bytesRemaining chunkIdx=$currentChunkIndex posInChunk=$positionInChunk totalChunks=${chunkMeta.size}")
+
         prefetchEngine.setPrefetchOrigin(currentChunkIndex)
+        runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
         openCurrentChunk()
+        if (currentRaf == null) {
+            Log.w("UlapChunkPlay", "DataSource.open: chunk file STILL not found after wait for idx=$currentChunkIndex, file=${ParallelChunkDownloader.chunkFile(chunkDir, currentChunkIndex)}")
+        }
         transferStarted(dataSpec)
         return bytesRemaining
     }
@@ -48,23 +61,27 @@ class PrefetchingVideoDataSource(
         if (bytesRemaining == 0L) return C.RESULT_END_OF_INPUT
         if (currentChunkIndex >= chunkMeta.size) return C.RESULT_END_OF_INPUT
 
-        // Wait for current chunk file to be ready.
         val chunk = chunkMeta[currentChunkIndex]
         runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
 
         val raf = currentRaf ?: run {
             openCurrentChunk()
-            currentRaf ?: return C.RESULT_END_OF_INPUT
+            currentRaf ?: run {
+                advanceToNextChunk()
+                return if (currentChunkIndex < chunkMeta.size) read(buffer, offset, length)
+                else C.RESULT_END_OF_INPUT
+            }
         }
 
-        val chunkRemaining = chunk.byteLength - positionInChunk
+        val actualFileLen = raf.length()
+        val chunkRemaining = actualFileLen - positionInChunk
         if (chunkRemaining <= 0) {
-            // Advance to next chunk.
             advanceToNextChunk()
-            return read(buffer, offset, length)
+            return if (currentChunkIndex < chunkMeta.size) read(buffer, offset, length)
+            else C.RESULT_END_OF_INPUT
         }
 
-        val toRead = if (bytesRemaining != C.LENGTH_UNSET.toLong()) {
+        val toRead = if (bytesRemaining > 0) {
             minOf(length.toLong(), bytesRemaining, chunkRemaining).toInt()
         } else {
             minOf(length.toLong(), chunkRemaining).toInt()
@@ -72,14 +89,17 @@ class PrefetchingVideoDataSource(
 
         raf.seek(positionInChunk)
         val bytesRead = raf.read(buffer, offset, toRead)
-        if (bytesRead == -1) return C.RESULT_END_OF_INPUT
+        if (bytesRead == -1) {
+            advanceToNextChunk()
+            return if (currentChunkIndex < chunkMeta.size) read(buffer, offset, length)
+            else C.RESULT_END_OF_INPUT
+        }
 
         positionInChunk += bytesRead
-        if (bytesRemaining != C.LENGTH_UNSET.toLong()) bytesRemaining -= bytesRead
+        if (bytesRemaining > 0) bytesRemaining -= bytesRead
         bytesTransferred(bytesRead)
 
-        // If we've exhausted this chunk, advance to next.
-        if (positionInChunk >= chunk.byteLength) {
+        if (positionInChunk >= actualFileLen) {
             advanceToNextChunk()
         }
 

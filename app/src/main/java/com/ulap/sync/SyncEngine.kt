@@ -4,6 +4,8 @@ import android.content.ContentResolver
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import com.ulap.PhotoThumbnailSpec
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Environment
@@ -67,7 +69,7 @@ import javax.inject.Singleton
 private const val LARGE_FILE_CONCURRENCY = 1
 private const val SMALL_FILE_CONCURRENCY = 3
 private const val DOWNLOAD_CONCURRENCY = 3
-private const val CHUNKED_THRESHOLD = 50L * 1024 * 1024 // same as TelegramUploader's single upload limit
+private const val CHUNKED_THRESHOLD = 20L * 1024 * 1024 // matches Telegram Bot API getFile() download limit
 private const val MAX_BOT_COOLDOWN_WAIT_MS = 30 * 60 * 1000L
 
 @Singleton
@@ -761,6 +763,41 @@ class SyncEngine @Inject constructor(
             }
         }
 
+        // For chunked image uploads, generate and upload a heavily-compressed preview so the
+        // secondary device can show a grid thumbnail without downloading the full file.
+        var photoThumbnailFileId: String? = null
+        var photoThumbnailMessageId: Long? = null
+        if (!isVideo && willChunk) {
+            try {
+                val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                contentResolver.openInputStream(Uri.parse(entity.contentUri))?.use { s ->
+                    BitmapFactory.decodeStream(s, null, boundsOpts)
+                }
+                val (targetW, targetH) = PhotoThumbnailSpec.computeScaledDimensions(
+                    boundsOpts.outWidth, boundsOpts.outHeight,
+                )
+                val sampleSize = PhotoThumbnailSpec.computeInSampleSize(
+                    boundsOpts.outWidth, boundsOpts.outHeight, targetW, targetH,
+                )
+                val decodeOpts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+                val sampled = contentResolver.openInputStream(Uri.parse(entity.contentUri))?.use { s ->
+                    BitmapFactory.decodeStream(s, null, decodeOpts)
+                }
+                if (sampled != null) {
+                    val scaled = Bitmap.createScaledBitmap(sampled, targetW, targetH, true)
+                    sampled.recycle()
+                    val out = java.io.ByteArrayOutputStream()
+                    scaled.compress(Bitmap.CompressFormat.JPEG, PhotoThumbnailSpec.THUMB_JPEG_QUALITY, out)
+                    scaled.recycle()
+                    val thumbResult = uploader.uploadThumbnail(token, chatId, out.toByteArray())
+                    photoThumbnailFileId = thumbResult?.first
+                    photoThumbnailMessageId = thumbResult?.second
+                }
+            } catch (_: Exception) {
+                // Thumbnail generation is non-fatal; proceed without it.
+            }
+        }
+
         var result: UploadResult? = null
         try {
             result = uploadStream.use {
@@ -829,8 +866,8 @@ class SyncEngine @Inject constructor(
                             )))
                         }
                     },
-                    thumbnailFileId = videoThumbnailFileId,
-                    thumbnailMessageId = videoThumbnailMessageId,
+                    thumbnailFileId = videoThumbnailFileId ?: photoThumbnailFileId,
+                    thumbnailMessageId = videoThumbnailMessageId ?: photoThumbnailMessageId,
                 )
             }
         } finally {
