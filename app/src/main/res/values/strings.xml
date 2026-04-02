@@ -128,6 +128,17 @@
     <string name="media_type_empty_images">No images found</string>
     <string name="media_type_empty_videos">No videos found</string>
 
+    <!-- Gallery long-press actions -->
+    <string name="gallery_action_info">Info</string>
+    <string name="gallery_action_share">Share</string>
+    <string name="gallery_action_remove_device">Remove from device</string>
+    <string name="gallery_action_download">Download</string>
+    <string name="gallery_download_saved">Saved to Pictures / Ulap Restore</string>
+    <string name="gallery_download_failed">Download failed</string>
+    <string name="gallery_share_unavailable">Download this item first, or it can’t be shared safely.</string>
+    <string name="gallery_remove_failed">Couldn’t remove from device</string>
+    <string name="gallery_removed_from_device">Removed from this device (still in your backup)</string>
+
     <!-- Onboarding & folder picker -->
     <string name="start_backup">Start Backup</string>
     <string name="qr_scan_instruction">Point the camera at the QR code shown on your other phone</string>

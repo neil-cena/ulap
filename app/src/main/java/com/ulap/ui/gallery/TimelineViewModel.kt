@@ -1,8 +1,10 @@
 package com.ulap.ui.gallery
 
 import android.content.Context
+import android.content.IntentSender
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.ulap.R
 import com.ulap.data.local.ThumbnailUrlCache
 import com.ulap.data.remote.TelegramDownloader
 import com.ulap.data.repository.UserPreferencesRepository
@@ -10,10 +12,14 @@ import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.model.BackupStatus
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.model.TimelineGroup
+import com.ulap.domain.usecase.DownloadCloudItemUseCase
 import com.ulap.domain.usecase.FetchIndexFromPinnedMessageUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.GetTimelineUseCase
+import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
 import com.ulap.domain.usecase.RefreshFoldersUseCase
+import com.ulap.domain.usecase.RemoveLocalMediaFileUseCase
+import com.ulap.domain.usecase.RemoveLocalMediaOutcome
 import com.ulap.domain.usecase.ScanMediaUseCase
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -26,6 +32,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.transformLatest
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,6 +43,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.time.Instant
 import java.time.YearMonth
 import java.time.ZoneId
@@ -43,6 +51,11 @@ import java.time.format.DateTimeFormatter
 import java.time.temporal.WeekFields
 import java.util.Locale
 import javax.inject.Inject
+
+data class RemoveFromDeviceConfirmationState(
+    val deleteSender: IntentSender? = null,
+    val pendingMediaItemId: String? = null,
+)
 
 @HiltViewModel
 class TimelineViewModel @Inject constructor(
@@ -56,6 +69,9 @@ class TimelineViewModel @Inject constructor(
     private val thumbnailUrlCache: ThumbnailUrlCache,
     private val debugLog: DebugLogBuffer,
     private val userPrefs: UserPreferencesRepository,
+    private val downloadCloudItem: DownloadCloudItemUseCase,
+    private val removeLocalMediaFile: RemoveLocalMediaFileUseCase,
+    private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
 ) : ViewModel() {
 
     private val streamUrlCache = MutableStateFlow<Map<String, String>>(thumbnailUrlCache.getAll())
@@ -65,6 +81,13 @@ class TimelineViewModel @Inject constructor(
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
     private val _refreshCompleted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val refreshCompleted: SharedFlow<Unit> = _refreshCompleted.asSharedFlow()
+
+    private val _snackbarMessages = MutableSharedFlow<String>(extraBufferCapacity = 1)
+    val snackbarMessages: SharedFlow<String> = _snackbarMessages.asSharedFlow()
+
+    private val _removeFromDeviceConfirmation = MutableStateFlow(RemoveFromDeviceConfirmationState())
+    val removeFromDeviceConfirmation: StateFlow<RemoveFromDeviceConfirmationState> =
+        _removeFromDeviceConfirmation.asStateFlow()
 
     val viewMode: StateFlow<TimelineViewMode> = userPrefs.timelineViewMode
 
@@ -175,6 +198,68 @@ class TimelineViewModel @Inject constructor(
                 _isRefreshing.value = false
             }
         }
+    }
+
+    fun downloadFromGallery(item: MediaItem) {
+        if (item.contentUri.isNotBlank()) return
+        if (item.telegramFileId.isNullOrBlank()) return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { downloadCloudItem(item.id) }
+            if (result.isSuccess) {
+                _snackbarMessages.emit(context.getString(R.string.gallery_download_saved))
+            } else {
+                _snackbarMessages.emit(
+                    result.exceptionOrNull()?.message
+                        ?: context.getString(R.string.gallery_download_failed),
+                )
+            }
+        }
+    }
+
+    fun removeFromDevice(item: MediaItem) {
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { removeLocalMediaFile(item) }
+            if (result.isSuccess) {
+                when (val outcome = result.getOrNull()) {
+                    is RemoveLocalMediaOutcome.DeletedLocally ->
+                        _snackbarMessages.emit(context.getString(R.string.gallery_removed_from_device))
+                    is RemoveLocalMediaOutcome.NeedsDeleteConfirmation ->
+                        _removeFromDeviceConfirmation.value =
+                            RemoveFromDeviceConfirmationState(
+                                deleteSender = outcome.intentSender,
+                                pendingMediaItemId = outcome.mediaItemId,
+                            )
+                    null -> { }
+                }
+            } else {
+                val ex = result.exceptionOrNull()
+                val message =
+                    if (ex is SecurityException) {
+                        context.getString(R.string.gallery_remove_failed)
+                    } else {
+                        ex?.message?.takeIf { it.isNotBlank() }
+                            ?: context.getString(R.string.gallery_remove_failed)
+                    }
+                _snackbarMessages.emit(message)
+            }
+        }
+    }
+
+    fun consumeRemoveFromDeviceDeleteSender() {
+        _removeFromDeviceConfirmation.update { it.copy(deleteSender = null) }
+    }
+
+    fun onRemoveFromDeviceConfirmed() {
+        val id = _removeFromDeviceConfirmation.value.pendingMediaItemId ?: return
+        viewModelScope.launch {
+            markAsCloudOnly(listOf(id))
+            _removeFromDeviceConfirmation.value = RemoveFromDeviceConfirmationState()
+            _snackbarMessages.emit(context.getString(R.string.gallery_removed_from_device))
+        }
+    }
+
+    fun dismissRemoveFromDeviceConfirmation() {
+        _removeFromDeviceConfirmation.value = RemoveFromDeviceConfirmationState()
     }
 
     private fun groupByTimelineLabel(items: List<MediaItem>): List<TimelineGroup> {

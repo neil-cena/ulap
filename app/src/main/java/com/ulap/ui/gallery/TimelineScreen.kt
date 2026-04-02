@@ -1,11 +1,15 @@
 package com.ulap.ui.gallery
 
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +54,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -58,6 +63,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.painter.ColorPainter
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import kotlinx.coroutines.launch
 import androidx.compose.ui.res.stringResource
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.ui.text.style.TextOverflow
@@ -77,7 +83,7 @@ import com.ulap.ui.theme.ShimmerBox
 import java.util.concurrent.TimeUnit
 
 @Composable
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 fun TimelineScreen(
     onItemClick: (String) -> Unit,
     onSelectFolders: () -> Unit = {},
@@ -90,6 +96,25 @@ fun TimelineScreen(
     val isRefreshing by viewModel.isRefreshing.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    var menuItem by remember { mutableStateOf<MediaItem?>(null) }
+    var infoItem by remember { mutableStateOf<MediaItem?>(null) }
+    val removeConfirm by viewModel.removeFromDeviceConfirmation.collectAsState()
+
+    val deleteFromDeviceLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            viewModel.onRemoveFromDeviceConfirmed()
+        } else {
+            viewModel.dismissRemoveFromDeviceConfirmation()
+        }
+    }
+    LaunchedEffect(removeConfirm.deleteSender) {
+        val sender = removeConfirm.deleteSender ?: return@LaunchedEffect
+        viewModel.consumeRemoveFromDeviceDeleteSender()
+        deleteFromDeviceLauncher.launch(IntentSenderRequest.Builder(sender).build())
+    }
 
     val upToDateText = stringResource(R.string.up_to_date)
     LaunchedEffect(Unit) {
@@ -99,6 +124,12 @@ fun TimelineScreen(
             }
         } catch (_: Exception) {
             // SharedFlow collection should not throw in practice; guard defensively.
+        }
+    }
+    LaunchedEffect(Unit) {
+        try {
+            viewModel.snackbarMessages.collect { snackbarHostState.showSnackbar(it) }
+        } catch (_: Exception) {
         }
     }
 
@@ -271,7 +302,11 @@ fun TimelineScreen(
                                         )
                                     }
                                     items(group.items, key = { it.id }) { item ->
-                                        TimelineListRow(item = item, onClick = { onItemClick(item.id) })
+                                        TimelineListRow(
+                                            item = item,
+                                            onClick = { onItemClick(item.id) },
+                                            onLongClick = { menuItem = item },
+                                        )
                                     }
                                 }
                             }
@@ -290,7 +325,11 @@ fun TimelineScreen(
                                         )
                                     }
                                     items(group.items, key = { it.id }) { item ->
-                                        MediaThumbnail(item = item, onClick = { onItemClick(item.id) })
+                                        MediaThumbnail(
+                                            item = item,
+                                            onClick = { onItemClick(item.id) },
+                                            onLongClick = { menuItem = item },
+                                        )
                                     }
                                 }
                             }
@@ -298,16 +337,46 @@ fun TimelineScreen(
                     }
                 }
             }
+            GalleryItemActionsDialog(
+                item = menuItem,
+                onDismiss = { menuItem = null },
+                onInfo = {
+                    menuItem = null
+                    infoItem = it
+                },
+                onShare = {
+                    if (!GalleryShareHelper.shareMedia(context, it)) {
+                        scope.launch {
+                            snackbarHostState.showSnackbar(context.getString(R.string.gallery_share_unavailable))
+                        }
+                    }
+                    menuItem = null
+                },
+                onRemove = {
+                    viewModel.removeFromDevice(it)
+                    menuItem = null
+                },
+                onDownload = {
+                    viewModel.downloadFromGallery(it)
+                    menuItem = null
+                },
+            )
+            GalleryItemInfoDialog(item = infoItem, onDismiss = { infoItem = null })
         }
     }
 }
 
 @Composable
-private fun TimelineListRow(item: MediaItem, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+private fun TimelineListRow(
+    item: MediaItem,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -372,11 +441,22 @@ private fun TimelineListRow(item: MediaItem, onClick: () -> Unit) {
 }
 
 @Composable
-fun MediaThumbnail(item: MediaItem, onClick: () -> Unit) {
+@OptIn(ExperimentalFoundationApi::class)
+fun MediaThumbnail(
+    item: MediaItem,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     Box(
         modifier = Modifier
             .aspectRatio(1f)
-            .clickable(onClick = onClick),
+            .then(
+                if (onLongClick != null) {
+                    Modifier.combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                } else {
+                    Modifier.clickable(onClick = onClick)
+                },
+            ),
     ) {
         val imageModel = item.streamUrl ?: item.contentUri
         if (imageModel.isBlank()) {
