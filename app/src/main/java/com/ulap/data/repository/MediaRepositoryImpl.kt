@@ -9,10 +9,12 @@ import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.SyncStateEntity
+import com.ulap.domain.backup.BackupSingleFileLimitPolicy
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.repository.MediaRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -35,30 +37,33 @@ class MediaRepositoryImpl @Inject constructor(
         mediaItemDao.observeByMediaType(com.ulap.data.local.entity.MediaType.valueOf(type.name))
             .map { entities -> entities.map { it.toDomain() } }
 
-    override fun observeBackupStats(): Flow<BackupStats> =
-        mediaItemDao.observeBackupStatsGrouped().map { rows ->
-            val byStatus = rows.associateBy { it.backupStatus }
-            fun countOf(s: BackupStatus) = byStatus[s]?.count ?: 0
-            fun sizeOf(s: BackupStatus) = byStatus[s]?.totalSize ?: 0L
+    override fun observeBackupStats(): Flow<BackupStats> = combine(
+        mediaItemDao.observeBackupStatsGrouped(),
+        mediaItemDao.observeExcludedCountOverSizeLimit(BackupSingleFileLimitPolicy.MAX_SINGLE_FILE_BYTES),
+    ) { rows, excludedOverLimit ->
+        val byStatus = rows.associateBy { it.backupStatus }
+        fun countOf(s: BackupStatus) = byStatus[s]?.count ?: 0
+        fun sizeOf(s: BackupStatus) = byStatus[s]?.totalSize ?: 0L
 
-            val backedUp = countOf(BackupStatus.BACKED_UP)
-            val pending = countOf(BackupStatus.PENDING) + countOf(BackupStatus.UPLOADING)
-            val failed = countOf(BackupStatus.FAILED)
-            val excluded = countOf(BackupStatus.EXCLUDED)
-            val cloudOnly = countOf(BackupStatus.CLOUD_ONLY)
+        val backedUp = countOf(BackupStatus.BACKED_UP)
+        val pending = countOf(BackupStatus.PENDING) + countOf(BackupStatus.UPLOADING)
+        val failed = countOf(BackupStatus.FAILED)
+        val excluded = countOf(BackupStatus.EXCLUDED)
+        val cloudOnly = countOf(BackupStatus.CLOUD_ONLY)
 
-            BackupStats(
-                total = backedUp + pending + failed + excluded + cloudOnly,
-                backedUp = backedUp,
-                pending = pending,
-                failed = failed,
-                excluded = excluded,
-                cloudOnly = cloudOnly,
-                backedUpBytes = sizeOf(BackupStatus.BACKED_UP),
-                pendingBytes = sizeOf(BackupStatus.PENDING) + sizeOf(BackupStatus.UPLOADING),
-                cloudOnlyBytes = sizeOf(BackupStatus.CLOUD_ONLY),
-            )
-        }
+        BackupStats(
+            total = backedUp + pending + failed + excluded + cloudOnly,
+            backedUp = backedUp,
+            pending = pending,
+            failed = failed,
+            excluded = excluded,
+            excludedOverSingleFileLimit = excludedOverLimit,
+            cloudOnly = cloudOnly,
+            backedUpBytes = sizeOf(BackupStatus.BACKED_UP),
+            pendingBytes = sizeOf(BackupStatus.PENDING) + sizeOf(BackupStatus.UPLOADING),
+            cloudOnlyBytes = sizeOf(BackupStatus.CLOUD_ONLY),
+        )
+    }
 
     override suspend fun scanAndSync(fullScan: Boolean) {
         val syncState = syncStateDao.get() ?: SyncStateEntity()
@@ -80,9 +85,10 @@ class MediaRepositoryImpl @Inject constructor(
         val effectiveFullScan = fullScan || bucketSetChanged
 
         val since = if (effectiveFullScan) 0L else syncState.lastIncrementalScanAt ?: 0L
-        val scanned = scanner.scanMedia(enabledBuckets, since)
+        val scanOutcome = scanner.scanMedia(enabledBuckets, since)
+        val scanned = scanOutcome.items
 
-        if (scanned.isNotEmpty()) {
+        if (scanOutcome.mediaStoreQueriesSucceeded && scanned.isNotEmpty()) {
             val existingMap: Map<String, MediaItemEntity> = scanned
                 .map { it.id }
                 .chunked(ROOM_BATCH_SIZE)
@@ -134,7 +140,10 @@ class MediaRepositoryImpl @Inject constructor(
             }
         }
 
-        if (effectiveFullScan) {
+        // Bulk reconciliation compares DB rows to the scan snapshot. Only safe when both
+        // MediaStore queries succeeded — if either query returned null, an empty [scanned] list
+        // does not prove the library is empty (see [MediaScanOutcome.mediaStoreQueriesSucceeded]).
+        if (effectiveFullScan && scanOutcome.mediaStoreQueriesSucceeded) {
             // Detect locally-deleted files: BACKED_UP items in enabled buckets that are no
             // longer present in the MediaStore scan are files the user deleted from the device.
             // Mark them CLOUD_ONLY so the viewer falls through to the cloud resolution path
@@ -149,20 +158,36 @@ class MediaRepositoryImpl @Inject constructor(
                     mediaItemDao.markAsCloudOnly(batch)
                 }
             }
+
+            // Queue rows still PENDING/FAILED for media IDs not returned by the scan
+            // (e.g. user deleted files after they were enrolled) — exclude so backup stops retrying.
+            // UPLOADING is omitted so an in-flight upload is not excluded mid-transfer.
+            val staleQueueIds = mediaItemDao.getPendingOrFailedInBuckets(enabledBuckets)
+                .filter { it.id !in scannedIds }
+                .map { it.id }
+            if (staleQueueIds.isNotEmpty()) {
+                staleQueueIds.chunked(ROOM_BATCH_SIZE).forEach { batch ->
+                    mediaItemDao.markExcludedNotOnDevice(batch, "File no longer on device")
+                }
+            }
         }
 
-        val now = System.currentTimeMillis()
-        if (effectiveFullScan) {
-            syncStateDao.upsert(syncState.copy(
-                lastFullScanAt = now,
-                lastIncrementalScanAt = now,
-                lastEnabledBucketsKey = currentEnabledKey,
-            ))
-        } else {
-            syncStateDao.upsert(syncState.copy(
-                lastIncrementalScanAt = now,
-                lastEnabledBucketsKey = currentEnabledKey,
-            ))
+        // Only advance scan watermarks after a successful MediaStore census. If either query
+        // returned null, advancing lastIncrementalScanAt would skip media on the next incremental run.
+        if (scanOutcome.mediaStoreQueriesSucceeded) {
+            val now = System.currentTimeMillis()
+            if (effectiveFullScan) {
+                syncStateDao.upsert(syncState.copy(
+                    lastFullScanAt = now,
+                    lastIncrementalScanAt = now,
+                    lastEnabledBucketsKey = currentEnabledKey,
+                ))
+            } else {
+                syncStateDao.upsert(syncState.copy(
+                    lastIncrementalScanAt = now,
+                    lastEnabledBucketsKey = currentEnabledKey,
+                ))
+            }
         }
     }
 

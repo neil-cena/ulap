@@ -82,6 +82,16 @@ interface MediaItemDao {
     @Query(
         """
         UPDATE media_items
+        SET backupStatus = 'EXCLUDED', errorMessage = :message
+        WHERE id IN (:ids)
+        AND backupStatus IN ('PENDING', 'FAILED')
+        """
+    )
+    suspend fun markExcludedNotOnDevice(ids: List<String>, message: String)
+
+    @Query(
+        """
+        UPDATE media_items
         SET backupStatus = 'EXCLUDED', errorMessage = 'Folder disabled'
         WHERE backupStatus IN ('PENDING', 'FAILED', 'UPLOADING')
         AND bucketName NOT IN (:enabledBuckets)
@@ -163,6 +173,16 @@ interface MediaItemDao {
         GROUP BY backupStatus
     """)
     fun observeBackupStatsGrouped(): Flow<List<BackupStatsRow>>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM media_items
+        WHERE backupStatus = 'EXCLUDED'
+        AND size > :minSizeExclusive
+        AND size > 0
+        """,
+    )
+    fun observeExcludedCountOverSizeLimit(minSizeExclusive: Long): Flow<Int>
 
     @Query(
         """
