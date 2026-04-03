@@ -14,3 +14,4 @@ local.properties
 **/.DS_Store
 app/schemas/
 /IMPROVEMENTS.md
+/helper.txt

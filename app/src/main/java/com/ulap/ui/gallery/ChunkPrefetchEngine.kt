@@ -1,35 +1,29 @@
 package com.ulap.ui.gallery
 
-import android.util.Log
 import com.ulap.data.local.entity.ChunkMetadataEntity
-import com.ulap.data.remote.ParallelChunkDownloader
 import com.ulap.data.remote.ParallelChunkDownloader.Companion.chunkFile
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
+import java.io.IOException
+import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Manages background prefetching of video chunks in a sliding window ahead of current playback.
- *
- * The window contains [windowSize] chunks starting at [setPrefetchOrigin]. When the playback
- * position advances to the next chunk, [advanceOrigin] shifts the window forward and cancels
- * downloads outside it.
- *
- * Thread-safety: public methods are guarded by [mutex]; OkHttp calls happen on IO thread.
- */
 class ChunkPrefetchEngine(
     private val chunkDir: File,
     private val chunkMeta: List<ChunkMetadataEntity>,
-    private val resolvedUrls: List<String?>,
+    private val urlResolver: suspend (Int) -> String,
     private val okHttpClient: OkHttpClient,
     private val logCallback: (String) -> Unit = {},
     private val windowSize: Int = 4,
@@ -37,125 +31,165 @@ class ChunkPrefetchEngine(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
+    private val generation = AtomicInteger(0)
     private val downloading = ConcurrentHashMap<Int, Job>()
     private val completed = ConcurrentHashMap<Int, Boolean>()
+    private val failedChunks = ConcurrentHashMap<Int, Throwable>()
 
-    /** Start prefetching from [chunkIndex]. Cancels any in-flight downloads outside the new window. */
-    fun setPrefetchOrigin(chunkIndex: Int) {
+    // Build a CDN-specific client that does not follow redirects.
+    // Fall back to the original client if the mock/builder throws (e.g. in unit tests).
+    private val cdnHttpClient: OkHttpClient = try {
+        okHttpClient.newBuilder().followRedirects(false).build()
+    } catch (_: Exception) {
+        okHttpClient
+    }
+
+    fun setPrefetchOrigin(origin: Int) {
+        val gen = generation.incrementAndGet()
+        completed.clear()
+        failedChunks.clear()
+        downloading.values.forEach { it.cancel() }
+        downloading.clear()
+
         scope.launch {
-            mutex.withLock {
-                val windowEnd = minOf(chunkIndex + windowSize, chunkMeta.size)
-                // Cancel downloads outside the new window.
-                val keysToCancel = downloading.keys.filter { it < chunkIndex || it >= windowEnd }
-                keysToCancel.forEach { key ->
-                    downloading[key]?.cancel()
-                    downloading.remove(key)
-                }
-                // Start downloads for missing chunks within the window.
-                for (i in chunkIndex until windowEnd) {
-                    if (isChunkReady(i) || downloading.containsKey(i)) continue
-                    if ((downloading.size) >= concurrency) break
-                    startDownload(i)
-                }
+            val windowEnd = minOf(origin + windowSize, chunkMeta.size)
+            for (i in origin until windowEnd) {
+                startDownload(i, gen)
             }
         }
     }
 
-    /** Advance the prefetch origin to [chunkIndex] and trigger window update. */
     fun advanceOrigin(chunkIndex: Int) = setPrefetchOrigin(chunkIndex)
 
-    /** Returns true if the chunk file exists and has been fully downloaded. */
-    fun isChunkReady(chunkIndex: Int): Boolean {
-        if (completed[chunkIndex] == true) return true
-        val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
-        val ready = file.exists() && file.length() > 0
-        if (ready) completed[chunkIndex] = true
-        return ready
+    fun isChunkReady(index: Int): Boolean {
+        if (completed[index] == true) return true
+        val file = chunkFile(chunkDir, index)
+        return file.exists() && file.length() > 0
     }
 
-    /**
-     * Suspends until chunk [chunkIndex] is ready (file exists with correct size) or
-     * there is no URL available for it. Polls with 50ms intervals.
-     */
     suspend fun waitForChunk(chunkIndex: Int) {
-        if (isChunkReady(chunkIndex)) return
+        try {
+            if (failedChunks.containsKey(chunkIndex)) {
+                throw IOException(failedChunks[chunkIndex]!!.message ?: "Chunk $chunkIndex failed")
+            }
+            if (isChunkReady(chunkIndex)) return
 
-        mutex.withLock {
-            if (!isChunkReady(chunkIndex) && !downloading.containsKey(chunkIndex)) {
-                logCallback("waitForChunk: kick-starting download for chunk=$chunkIndex")
-                startDownload(chunkIndex)
+            val gen = generation.get()
+            mutex.withLock {
+                if (!isChunkReady(chunkIndex) &&
+                    !downloading.containsKey(chunkIndex) &&
+                    !failedChunks.containsKey(chunkIndex)
+                ) {
+                    val job = scope.launch { doDownload(chunkIndex, gen) }
+                    downloading[chunkIndex] = job
+                }
             }
-        }
-        var waited = 0
-        while (!isChunkReady(chunkIndex)) {
-            if (resolvedUrls.getOrNull(chunkIndex) == null) {
-                logCallback("waitForChunk: no URL for chunk=$chunkIndex, giving up")
-                break
+
+            var iterations = 0
+            while (iterations < 200) {
+                delay(50)
+                iterations++
+                if (isChunkReady(chunkIndex)) return
+                if (failedChunks.containsKey(chunkIndex)) break
             }
-            kotlinx.coroutines.delay(50)
-            waited += 50
-            if (waited % 5000 == 0) {
-                val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
-                logCallback("waitForChunk: still waiting chunk=$chunkIndex waited=${waited}ms fileExists=${file.exists()} fileLen=${if (file.exists()) file.length() else -1}")
+
+            if (isChunkReady(chunkIndex)) return
+            if (failedChunks.containsKey(chunkIndex)) {
+                throw IOException(failedChunks[chunkIndex]!!.message ?: "Chunk $chunkIndex failed")
             }
-        }
-        if (waited > 0) {
-            val file = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
-            logCallback("waitForChunk: done chunk=$chunkIndex waited=${waited}ms fileExists=${file.exists()} fileLen=${if (file.exists()) file.length() else -1}")
+        } catch (e: CancellationException) {
+            throw IOException("chunk $chunkIndex cancelled")
         }
     }
 
-    /** Cancels all in-flight downloads and closes the scope. */
-    fun cancel() {
+    fun release() {
         scope.cancel()
     }
 
-    private fun startDownload(chunkIndex: Int) {
-        val url = resolvedUrls.getOrNull(chunkIndex) ?: return
-        val meta = chunkMeta.getOrNull(chunkIndex) ?: return
-        chunkDir.mkdirs()
-        val targetFile = ParallelChunkDownloader.chunkFile(chunkDir, chunkIndex)
+    fun isValidCdnUrl(url: String): Boolean {
+        return try {
+            val uri = URI(url)
+            val host = uri.host ?: return false
+            uri.scheme == "https" && (
+                host == "telegram.org" ||
+                    host.endsWith(".telegram.org") ||
+                    host == "cdn-telegram.org" ||
+                    host.endsWith(".cdn-telegram.org") ||
+                    host == "telegram-cdn.net" ||
+                    host.endsWith(".telegram-cdn.net")
+                )
+        } catch (_: Exception) {
+            false
+        }
+    }
 
-        val job = scope.launch {
+    private suspend fun resolveUrlWithRetry(index: Int, gen: Int): String {
+        var delayMs = 50L
+        var lastException: IOException? = null
+        for (attempt in 0 until 3) {
+            if (generation.get() != gen) throw IOException("Stale generation for chunk $index")
             try {
-                logCallback("download start chunk=$chunkIndex url=${url.take(80)}")
-                val request = Request.Builder().url(url).build()
-                okHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        logCallback("download FAILED chunk=$chunkIndex HTTP ${response.code}")
-                        return@launch
-                    }
-                    val body = response.body ?: run {
-                        logCallback("download FAILED chunk=$chunkIndex empty body")
-                        return@launch
-                    }
-                    val tmpFile = File(targetFile.parent, targetFile.name + ".tmp")
-                    body.byteStream().use { input ->
-                        tmpFile.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    logCallback("download done chunk=$chunkIndex fileSize=${tmpFile.length()} metaByteLen=${meta.byteLength}")
-                    if (!tmpFile.renameTo(targetFile)) {
-                        tmpFile.delete()
-                        logCallback("download FAILED chunk=$chunkIndex rename failed")
-                        return@launch
-                    }
-                    completed[chunkIndex] = true
+                return urlResolver(index)
+            } catch (e: IOException) {
+                lastException = e
+                if (attempt < 2) {
+                    delay(delayMs)
+                    delayMs *= 2
                 }
-                // After completing, advance the window.
-                mutex.withLock {
-                    downloading.remove(chunkIndex)
-                    val nextToFill = (downloading.keys.maxOrNull() ?: chunkIndex) + 1
-                    if (nextToFill < chunkMeta.size && !isChunkReady(nextToFill) && downloading.size < concurrency) {
-                        startDownload(nextToFill)
-                    }
-                }
-            } catch (e: Exception) {
-                logCallback("download EXCEPTION chunk=$chunkIndex: ${e.javaClass.simpleName}: ${e.message}")
-                downloading.remove(chunkIndex)
             }
         }
-        downloading[chunkIndex] = job
+        throw lastException ?: IOException("Failed to resolve URL for chunk $index")
+    }
+
+    private suspend fun doDownload(index: Int, gen: Int) {
+        try {
+            val url = resolveUrlWithRetry(index, gen)
+            if (!isValidCdnUrl(url)) {
+                failedChunks[index] = IOException("Invalid CDN URL: $url")
+                return
+            }
+            val targetFile = chunkFile(chunkDir, index)
+            chunkDir.mkdirs()
+            val request = Request.Builder().url(url).build()
+            cdnHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    failedChunks[index] = IOException("HTTP ${response.code} for chunk $index")
+                    return@use
+                }
+                val body = response.body
+                if (body == null) {
+                    failedChunks[index] = IOException("Null response body for chunk $index")
+                    return@use
+                }
+                val tmpFile = File(targetFile.parent, targetFile.name + ".tmp")
+                body.byteStream().use { input ->
+                    tmpFile.outputStream().use { output -> input.copyTo(output) }
+                }
+                if (generation.get() != gen) {
+                    tmpFile.delete()
+                    return@use
+                }
+                if (!tmpFile.renameTo(targetFile)) {
+                    tmpFile.delete()
+                    failedChunks[index] = IOException("Failed to rename tmp file for chunk $index")
+                    return@use
+                }
+                completed[index] = true
+            }
+        } catch (e: IOException) {
+            if (!failedChunks.containsKey(index)) {
+                failedChunks[index] = e
+            }
+        } finally {
+            downloading.remove(index)
+        }
+    }
+
+    private suspend fun startDownload(index: Int, gen: Int) {
+        mutex.withLock {
+            if (downloading.containsKey(index) || isChunkReady(index) || failedChunks.containsKey(index)) return
+            val job = scope.launch { doDownload(index, gen) }
+            downloading[index] = job
+        }
     }
 }

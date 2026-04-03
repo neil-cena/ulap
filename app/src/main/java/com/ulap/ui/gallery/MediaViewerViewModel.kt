@@ -326,30 +326,16 @@ class MediaViewerViewModel @Inject constructor(
                     return@launch
                 }
 
-                val fileIds = chunks.map { it.telegramFileId }
-                debugLog.log("ChunkPrefetch", "resolving ${fileIds.size} chunk URLs for itemId=$itemId")
-                viewModelScope.launch { telegramLogger.flushNow() }
-                val urls = downloader.resolveStreamUrlsBatched(token, fileIds)
-                debugLog.log("ChunkPrefetch", "resolved URLs: total=${urls.size} nonNull=${urls.count { it != null }} for itemId=$itemId")
-
-                if (urls.all { it == null }) {
-                    debugLog.log("ChunkPrefetch", "chunk URLs all null for itemId=$itemId")
-                    viewModelScope.launch { telegramLogger.flushNow() }
-                    android.os.Handler(appContext.mainLooper).post {
-                        Toast.makeText(appContext, "ChunkPlay: All chunk URLs null for $itemId", Toast.LENGTH_LONG).show()
-                    }
-                    _streamUrlsCache.value = _streamUrlsCache.value + (
-                        itemId to StreamUrlsState.Error("Could not resolve chunk URLs")
-                    )
-                    return@launch
+                val urlResolver: suspend (Int) -> String = { index ->
+                    val fileId = chunks.getOrNull(index)?.telegramFileId
+                        ?: throw java.io.IOException("No metadata for chunk $index")
+                    downloader.resolveStreamUrl(token, fileId)
+                        ?: throw java.io.IOException("Failed to resolve URL for chunk $index")
                 }
-
-                // Inject the OkHttpClient from the existing downloader's transport.
-                // We obtain it via Hilt injection in the constructor.
                 val prefetchEngine = ChunkPrefetchEngine(
                     chunkDir = chunkDir,
                     chunkMeta = chunks,
-                    resolvedUrls = urls,
+                    urlResolver = urlResolver,
                     okHttpClient = okHttpClient,
                     logCallback = { msg -> debugLog.log("ChunkDL", msg) },
                 )

@@ -3,8 +3,10 @@ package com.ulap.ui.gallery
 import android.net.Uri
 import android.util.Log
 import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
 import androidx.media3.datasource.BaseDataSource
 import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSourceException
 import androidx.media3.datasource.DataSpec
 import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.remote.ParallelChunkDownloader
@@ -48,7 +50,11 @@ class PrefetchingVideoDataSource(
         Log.d("UlapChunkPlay", "DataSource.open pos=$globalOffset totalSize=$totalSize bytesRemaining=$bytesRemaining chunkIdx=$currentChunkIndex posInChunk=$positionInChunk totalChunks=${chunkMeta.size}")
 
         prefetchEngine.setPrefetchOrigin(currentChunkIndex)
-        runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
+        try {
+            runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
+        } catch (e: IOException) {
+            throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
+        }
         openCurrentChunk()
         if (currentRaf == null) {
             Log.w("UlapChunkPlay", "DataSource.open: chunk file STILL not found after wait for idx=$currentChunkIndex, file=${ParallelChunkDownloader.chunkFile(chunkDir, currentChunkIndex)}")
@@ -62,7 +68,11 @@ class PrefetchingVideoDataSource(
         if (currentChunkIndex >= chunkMeta.size) return C.RESULT_END_OF_INPUT
 
         val chunk = chunkMeta[currentChunkIndex]
-        runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
+        try {
+            runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
+        } catch (e: IOException) {
+            throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
+        }
 
         val raf = currentRaf ?: run {
             openCurrentChunk()
