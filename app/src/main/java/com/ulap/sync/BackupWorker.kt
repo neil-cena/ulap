@@ -28,7 +28,9 @@ class BackupWorker @AssistedInject constructor(
     override suspend fun doWork(): Result {
         if (!getCredentials.hasCredentials()) return Result.success()
         return try {
-            scanMedia(fullScan = false)
+            // Full scan reconciles the DB with MediaStore so locally deleted files are removed
+            // from the backup queue (see MediaRepositoryImpl.scanAndSync effectiveFullScan).
+            scanMedia(fullScan = true)
             syncEngine.startUpload()
             Result.success()
         } catch (e: Exception) {

@@ -176,16 +176,6 @@ interface MediaItemDao {
 
     @Query(
         """
-        SELECT COUNT(*) FROM media_items
-        WHERE backupStatus = 'EXCLUDED'
-        AND size > :minSizeExclusive
-        AND size > 0
-        """,
-    )
-    fun observeExcludedCountOverSizeLimit(minSizeExclusive: Long): Flow<Int>
-
-    @Query(
-        """
         SELECT * FROM media_items
         WHERE mediaType = :type
         ORDER BY dateTaken DESC

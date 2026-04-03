@@ -22,33 +22,57 @@ data class DeviceFolder(
     val totalCount: Int get() = imageCount + videoCount
 }
 
+/**
+ * Result of [MediaStoreScanner.scanMedia]. [mediaStoreQueriesSucceeded] is false if a
+ * [ContentResolver.query] returned null, or a row threw while parsing — do not apply [items]
+ * to the database or advance scan watermarks.
+ */
+data class MediaScanOutcome(
+    val items: List<MediaItemEntity>,
+    val mediaStoreQueriesSucceeded: Boolean,
+)
+
+/**
+ * Result of [MediaStoreScanner.scanFolders]. If [mediaStoreQueriesSucceeded] is false, do not
+ * overwrite folder rows (same contract as [MediaScanOutcome]).
+ */
+data class FolderScanOutcome(
+    val folders: List<DeviceFolder>,
+    val mediaStoreQueriesSucceeded: Boolean,
+)
+
 @Singleton
 class MediaStoreScanner @Inject constructor(
     private val contentResolver: ContentResolver,
 ) {
 
-    suspend fun scanFolders(): List<DeviceFolder> = withContext(Dispatchers.IO) {
+    suspend fun scanFolders(): FolderScanOutcome = withContext(Dispatchers.IO) {
         val folderMap = mutableMapOf<String, DeviceFolder>()
-        scanFoldersByType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaType.IMAGE, folderMap)
-        scanFoldersByType(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, MediaType.VIDEO, folderMap)
-        folderMap.values.sortedBy { it.displayName }
+        val imagesOk = scanFoldersByType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, MediaType.IMAGE, folderMap)
+        val videosOk = scanFoldersByType(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, MediaType.VIDEO, folderMap)
+        FolderScanOutcome(
+            folders = folderMap.values.sortedBy { it.displayName },
+            mediaStoreQueriesSucceeded = imagesOk && videosOk,
+        )
     }
 
+    /** @return false if [ContentResolver.query] returned null */
     private fun scanFoldersByType(
         uri: Uri,
         type: MediaType,
         folderMap: MutableMap<String, DeviceFolder>,
-    ) {
+    ): Boolean {
         val projection = arrayOf(
             MediaStore.MediaColumns.BUCKET_ID,
             MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
         )
-        contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
-            val bucketIdIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
-            val bucketNameIdx = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
-            while (cursor.moveToNext()) {
-                val bucketId = cursor.getString(bucketIdIdx) ?: continue
-                val bucketName = cursor.getString(bucketNameIdx) ?: bucketId
+        val cursor = contentResolver.query(uri, projection, null, null, null) ?: return false
+        cursor.use { c ->
+            val bucketIdIdx = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)
+            val bucketNameIdx = c.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_DISPLAY_NAME)
+            while (c.moveToNext()) {
+                val bucketId = c.getString(bucketIdIdx) ?: continue
+                val bucketName = c.getString(bucketNameIdx) ?: bucketId
                 val existing = folderMap[bucketId]
                 folderMap[bucketId] = when (type) {
                     MediaType.IMAGE -> DeviceFolder(
@@ -66,26 +90,29 @@ class MediaStoreScanner @Inject constructor(
                 }
             }
         }
+        return true
     }
 
     suspend fun scanMedia(
         enabledBuckets: List<String>,
         sinceModified: Long = 0L,
-    ): List<MediaItemEntity> = withContext(Dispatchers.IO) {
-        val results = mutableListOf<MediaItemEntity>()
-        results += scanByType(
+    ): MediaScanOutcome = withContext(Dispatchers.IO) {
+        val images = scanByType(
             uri = MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             mediaType = MediaType.IMAGE,
             enabledBuckets = enabledBuckets,
             sinceModified = sinceModified,
         )
-        results += scanByType(
+        val videos = scanByType(
             uri = MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
             mediaType = MediaType.VIDEO,
             enabledBuckets = enabledBuckets,
             sinceModified = sinceModified,
         )
-        results
+        MediaScanOutcome(
+            items = images.first + videos.first,
+            mediaStoreQueriesSucceeded = images.second && videos.second,
+        )
     }
 
     private fun scanByType(
@@ -93,8 +120,8 @@ class MediaStoreScanner @Inject constructor(
         mediaType: MediaType,
         enabledBuckets: List<String>,
         sinceModified: Long,
-    ): List<MediaItemEntity> {
-        if (enabledBuckets.isEmpty()) return emptyList()
+    ): Pair<List<MediaItemEntity>, Boolean> {
+        if (enabledBuckets.isEmpty()) return Pair(emptyList(), true)
 
         val projection = buildProjection(mediaType)
         val bucketPlaceholders = enabledBuckets.joinToString(",") { "?" }
@@ -111,12 +138,19 @@ class MediaStoreScanner @Inject constructor(
         }
 
         val results = mutableListOf<MediaItemEntity>()
-        contentResolver.query(uri, projection, selection, selectionArgs, null)?.use { cursor ->
-            while (cursor.moveToNext()) {
-                cursorToEntity(cursor, uri, mediaType)?.let { results += it }
+        val cursor = contentResolver.query(uri, projection, selection, selectionArgs, null)
+            ?: return Pair(emptyList(), false)
+        var rowParseFailed = false
+        cursor.use {
+            while (it.moveToNext()) {
+                try {
+                    cursorToEntity(it, uri, mediaType)?.let { row -> results += row }
+                } catch (_: RuntimeException) {
+                    rowParseFailed = true
+                }
             }
         }
-        return results
+        return Pair(results, !rowParseFailed)
     }
 
     private fun buildProjection(mediaType: MediaType): Array<String> {
@@ -136,38 +170,38 @@ class MediaStoreScanner @Inject constructor(
         } else base
     }
 
+    /**
+     * Returns null if required fields are missing (skip row without failing the scan).
+     * Unexpected cursor errors propagate to [scanByType] and mark the scan as failed.
+     */
     private fun cursorToEntity(cursor: Cursor, baseUri: Uri, mediaType: MediaType): MediaItemEntity? {
-        return try {
-            val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
-            val contentUri = ContentUris.withAppendedId(baseUri, id).toString()
-            val fileName = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)) ?: return null
-            val mimeType = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)) ?: return null
-            val size = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE))
-            val dateModified = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)) * 1000L
-            val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN))
-            val bucketName = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)) ?: return null
-            val path = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)) ?: contentUri
-            val durationMs = if (mediaType == MediaType.VIDEO) {
-                val col = cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION)
-                if (col != -1) cursor.getLong(col).takeIf { it > 0 } else null
-            } else null
+        val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID))
+        val contentUri = ContentUris.withAppendedId(baseUri, id).toString()
+        val fileName = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)) ?: return null
+        val mimeType = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.MIME_TYPE)) ?: return null
+        val size = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE))
+        val dateModified = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)) * 1000L
+        val dateTaken = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_TAKEN))
+        val bucketName = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.BUCKET_ID)) ?: return null
+        val path = cursor.getString(cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATA)) ?: contentUri
+        val durationMs = if (mediaType == MediaType.VIDEO) {
+            val col = cursor.getColumnIndex(MediaStore.Video.VideoColumns.DURATION)
+            if (col != -1) cursor.getLong(col).takeIf { it > 0 } else null
+        } else null
 
-            MediaItemEntity(
-                id = "${baseUri.pathSegments.last()}_$id",
-                path = path,
-                contentUri = contentUri,
-                fileName = fileName,
-                mimeType = mimeType,
-                size = size,
-                dateModified = dateModified,
-                dateTaken = dateTaken.takeIf { it > 0 } ?: dateModified,
-                bucketName = bucketName,
-                mediaType = mediaType,
-                durationMs = durationMs,
-                backupStatus = BackupStatus.PENDING,
-            )
-        } catch (e: Exception) {
-            null
-        }
+        return MediaItemEntity(
+            id = "${baseUri.pathSegments.last()}_$id",
+            path = path,
+            contentUri = contentUri,
+            fileName = fileName,
+            mimeType = mimeType,
+            size = size,
+            dateModified = dateModified,
+            dateTaken = dateTaken.takeIf { it > 0 } ?: dateModified,
+            bucketName = bucketName,
+            mediaType = mediaType,
+            durationMs = durationMs,
+            backupStatus = BackupStatus.PENDING,
+        )
     }
 }

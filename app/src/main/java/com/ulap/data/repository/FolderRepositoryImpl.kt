@@ -20,7 +20,9 @@ class FolderRepositoryImpl @Inject constructor(
         folderDao.observeAll().map { entities -> entities.map { it.toDomain() } }
 
     override suspend fun refreshFolders() {
-        val deviceFolders = scanner.scanFolders()
+        val outcome = scanner.scanFolders()
+        if (!outcome.mediaStoreQueriesSucceeded) return
+        val deviceFolders = outcome.folders
         val existing = folderDao.getEnabled().associate { it.bucketName to true }
         val entities = deviceFolders.map { folder ->
             BackupFolderEntity(

@@ -102,14 +102,6 @@ fun BackupScreen(
                             StatChip(stringResource(R.string.backup_stat_cloud, s.cloudOnly))
                         }
                     }
-                    if (s.excludedOverSingleFileLimit > 0) {
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            stringResource(R.string.backup_stat_excluded_hint, s.excludedOverSingleFileLimit),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
                 }
             }
         }

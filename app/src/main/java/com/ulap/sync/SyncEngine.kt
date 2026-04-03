@@ -574,8 +574,8 @@ class SyncEngine @Inject constructor(
         if (inputStream == null) {
             mediaItemDao.updateBackupResult(
                 id = entity.id,
-                status = BackupStatus.FAILED,
-                error = "Could not open file",
+                status = BackupStatus.EXCLUDED,
+                error = "File no longer on device",
                 syncedAt = null,
                 fileId = null,
                 messageId = null,
@@ -710,8 +710,8 @@ class SyncEngine @Inject constructor(
             if (reopened == null) {
                 mediaItemDao.updateBackupResult(
                     id = entity.id,
-                    status = BackupStatus.FAILED,
-                    error = "Could not open file",
+                    status = BackupStatus.EXCLUDED,
+                    error = "File no longer on device",
                     syncedAt = null,
                     fileId = null,
                     messageId = null,
@@ -731,9 +731,20 @@ class SyncEngine @Inject constructor(
             if (tempExif != null) FileInputStream(tempExif) else strippedInputStream
         }
 
-        val actualFileSize = when {
-            tempExif != null && tempExif.exists() -> tempExif.length()
-            else -> entity.size
+        val actualFileSize = resolveUploadByteLength(
+            tempExif = tempExif,
+            contentUri = contentUri,
+            entitySize = entity.size,
+            contentResolver = contentResolver,
+        )
+
+        if (actualFileSize != entity.size) {
+            _progress.update { prev ->
+                val entry = prev.activeUploads[entity.id] ?: return@update prev
+                prev.copy(
+                    activeUploads = prev.activeUploads + (entity.id to entry.copy(bytesTotal = actualFileSize)),
+                )
+            }
         }
 
         val resumeFromChunk = chunkMetadataDao.getUploadedCount(entity.id)

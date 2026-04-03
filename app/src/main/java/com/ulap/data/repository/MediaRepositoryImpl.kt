@@ -9,12 +9,10 @@ import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.SyncStateEntity
-import com.ulap.domain.backup.BackupSingleFileLimitPolicy
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.repository.MediaRepository
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -37,33 +35,30 @@ class MediaRepositoryImpl @Inject constructor(
         mediaItemDao.observeByMediaType(com.ulap.data.local.entity.MediaType.valueOf(type.name))
             .map { entities -> entities.map { it.toDomain() } }
 
-    override fun observeBackupStats(): Flow<BackupStats> = combine(
-        mediaItemDao.observeBackupStatsGrouped(),
-        mediaItemDao.observeExcludedCountOverSizeLimit(BackupSingleFileLimitPolicy.MAX_SINGLE_FILE_BYTES),
-    ) { rows, excludedOverLimit ->
-        val byStatus = rows.associateBy { it.backupStatus }
-        fun countOf(s: BackupStatus) = byStatus[s]?.count ?: 0
-        fun sizeOf(s: BackupStatus) = byStatus[s]?.totalSize ?: 0L
+    override fun observeBackupStats(): Flow<BackupStats> =
+        mediaItemDao.observeBackupStatsGrouped().map { rows ->
+            val byStatus = rows.associateBy { it.backupStatus }
+            fun countOf(s: BackupStatus) = byStatus[s]?.count ?: 0
+            fun sizeOf(s: BackupStatus) = byStatus[s]?.totalSize ?: 0L
 
-        val backedUp = countOf(BackupStatus.BACKED_UP)
-        val pending = countOf(BackupStatus.PENDING) + countOf(BackupStatus.UPLOADING)
-        val failed = countOf(BackupStatus.FAILED)
-        val excluded = countOf(BackupStatus.EXCLUDED)
-        val cloudOnly = countOf(BackupStatus.CLOUD_ONLY)
+            val backedUp = countOf(BackupStatus.BACKED_UP)
+            val pending = countOf(BackupStatus.PENDING) + countOf(BackupStatus.UPLOADING)
+            val failed = countOf(BackupStatus.FAILED)
+            val excluded = countOf(BackupStatus.EXCLUDED)
+            val cloudOnly = countOf(BackupStatus.CLOUD_ONLY)
 
-        BackupStats(
-            total = backedUp + pending + failed + excluded + cloudOnly,
-            backedUp = backedUp,
-            pending = pending,
-            failed = failed,
-            excluded = excluded,
-            excludedOverSingleFileLimit = excludedOverLimit,
-            cloudOnly = cloudOnly,
-            backedUpBytes = sizeOf(BackupStatus.BACKED_UP),
-            pendingBytes = sizeOf(BackupStatus.PENDING) + sizeOf(BackupStatus.UPLOADING),
-            cloudOnlyBytes = sizeOf(BackupStatus.CLOUD_ONLY),
-        )
-    }
+            BackupStats(
+                total = backedUp + pending + failed + excluded + cloudOnly,
+                backedUp = backedUp,
+                pending = pending,
+                failed = failed,
+                excluded = excluded,
+                cloudOnly = cloudOnly,
+                backedUpBytes = sizeOf(BackupStatus.BACKED_UP),
+                pendingBytes = sizeOf(BackupStatus.PENDING) + sizeOf(BackupStatus.UPLOADING),
+                cloudOnlyBytes = sizeOf(BackupStatus.CLOUD_ONLY),
+            )
+        }
 
     override suspend fun scanAndSync(fullScan: Boolean) {
         val syncState = syncStateDao.get() ?: SyncStateEntity()
