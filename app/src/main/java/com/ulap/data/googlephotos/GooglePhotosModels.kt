@@ -17,4 +17,8 @@ data class GooglePhotosMediaItem(
 
 data class GooglePhotosMediaMetadata(
     @SerializedName("creationTime") val creationTime: String?,
+    /** Pixel width; API returns a string (e.g. `"4032"`). */
+    @SerializedName("width") val width: String? = null,
+    /** Pixel height; API returns a string (e.g. `"3024"`). */
+    @SerializedName("height") val height: String? = null,
 )

@@ -115,6 +115,9 @@ class MediaRepositoryImpl @Inject constructor(
                         uploadedChunks = existing.uploadedChunks,
                         uploadedChunkCount = existing.uploadedChunkCount,
                         errorMessage = existing.errorMessage,
+                        remoteThumbnailUrl = existing.remoteThumbnailUrl,
+                        widthPx = entity.widthPx ?: existing.widthPx,
+                        heightPx = entity.heightPx ?: existing.heightPx,
                     )
                 } else {
                     // PENDING / FAILED / UPLOADING / CLOUD_ONLY: safe to REPLACE since
@@ -222,5 +225,8 @@ class MediaRepositoryImpl @Inject constructor(
         errorMessage = errorMessage,
         thumbnailFileId = thumbnailFileId,
         uploadBotIndex = uploadBotIndex,
+        remoteThumbnailUrl = remoteThumbnailUrl,
+        widthPx = widthPx,
+        heightPx = heightPx,
     )
 }

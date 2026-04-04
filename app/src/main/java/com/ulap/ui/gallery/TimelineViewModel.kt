@@ -98,7 +98,10 @@ class TimelineViewModel @Inject constructor(
         list.map { group ->
             TimelineGroup(
                 label = group.label,
-                items = group.items.map { it.copy(streamUrl = cache[it.id]) },
+                items = group.items.map { item ->
+                    val resolved = cache[item.id] ?: item.remoteThumbnailUrl
+                    item.copy(streamUrl = resolved)
+                },
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
@@ -140,7 +143,12 @@ class TimelineViewModel @Inject constructor(
                     val token = getCredentials.getToken() ?: return@transformLatest
                     var cache = streamUrlCache.value
                     val uncached = items
-                        .filter { it.backupStatus == BackupStatus.CLOUD_ONLY && (it.thumbnailFileId != null || it.telegramFileId != null) && cache[it.id] == null }
+                        .filter {
+                            it.backupStatus == BackupStatus.CLOUD_ONLY &&
+                                (it.thumbnailFileId != null || it.telegramFileId != null) &&
+                                cache[it.id] == null &&
+                                it.remoteThumbnailUrl.isNullOrBlank()
+                        }
                         .distinctBy { it.id }
                     for (batch in uncached.chunked(5)) {
                         val results = coroutineScope {

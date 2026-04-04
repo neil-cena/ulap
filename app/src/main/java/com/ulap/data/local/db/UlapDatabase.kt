@@ -92,9 +92,22 @@ val MIGRATION_9_10 = object : Migration(9, 10) {
     }
 }
 
+val MIGRATION_10_11 = object : Migration(10, 11) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE media_items ADD COLUMN remote_thumbnail_url TEXT")
+    }
+}
+
+val MIGRATION_11_12 = object : Migration(11, 12) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE media_items ADD COLUMN width_px INTEGER")
+        db.execSQL("ALTER TABLE media_items ADD COLUMN height_px INTEGER")
+    }
+}
+
 @Database(
     entities = [MediaItemEntity::class, BackupFolderEntity::class, SyncStateEntity::class, ChunkMetadataEntity::class],
-    version = 10,
+    version = 12,
     exportSchema = true,
 )
 @TypeConverters(MediaTypeConverter::class, BackupStatusConverter::class, ChunkStatusConverter::class)

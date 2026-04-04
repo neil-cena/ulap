@@ -1,12 +1,18 @@
 package com.ulap.data.repository
 
 import android.content.SharedPreferences
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import com.ulap.di.PlainPrefs
 import com.ulap.ui.gallery.TimelineViewMode
 import com.ulap.ui.theme.ThemePreference
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,9 +32,12 @@ private const val KEY_UPLOAD_SPEED_MODE = "upload_speed_mode"
 private const val KEY_TELEGRAM_LOGGING_ENABLED = "telegram_logging_enabled"
 private const val KEY_TELEGRAM_LOGGING_CHAT_ID = "telegram_logging_chat_id"
 
+private val GOOGLE_PHOTOS_NEXT_PAGE_TOKEN = stringPreferencesKey("google_photos_sync_token")
+
 @Singleton
 class UserPreferencesRepository @Inject constructor(
     @PlainPrefs private val prefs: SharedPreferences,
+    private val dataStore: DataStore<Preferences>,
 ) {
     private val _theme = MutableStateFlow(loadTheme())
     val theme: StateFlow<ThemePreference> = _theme.asStateFlow()
@@ -53,6 +62,17 @@ class UserPreferencesRepository @Inject constructor(
 
     private val _telegramLoggingChatId = MutableStateFlow(prefs.getString(KEY_TELEGRAM_LOGGING_CHAT_ID, null))
     val telegramLoggingChatId: StateFlow<String?> = _telegramLoggingChatId.asStateFlow()
+
+    val googlePhotosPageToken: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[GOOGLE_PHOTOS_NEXT_PAGE_TOKEN]
+    }
+
+    suspend fun updateGooglePhotosPageToken(token: String?) {
+        dataStore.edit { preferences ->
+            if (token == null) preferences.remove(GOOGLE_PHOTOS_NEXT_PAGE_TOKEN)
+            else preferences[GOOGLE_PHOTOS_NEXT_PAGE_TOKEN] = token
+        }
+    }
 
     fun setTheme(preference: ThemePreference) {
         prefs.edit().putString(KEY_THEME, preference.name).apply()

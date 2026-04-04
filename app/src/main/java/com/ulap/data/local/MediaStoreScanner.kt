@@ -164,6 +164,8 @@ class MediaStoreScanner @Inject constructor(
             MediaStore.MediaColumns.BUCKET_ID,
             MediaStore.MediaColumns.BUCKET_DISPLAY_NAME,
             MediaStore.MediaColumns.DATA,
+            MediaStore.MediaColumns.WIDTH,
+            MediaStore.MediaColumns.HEIGHT,
         )
         return if (mediaType == MediaType.VIDEO) {
             base + MediaStore.Video.VideoColumns.DURATION
@@ -189,6 +191,11 @@ class MediaStoreScanner @Inject constructor(
             if (col != -1) cursor.getLong(col).takeIf { it > 0 } else null
         } else null
 
+        val widthCol = cursor.getColumnIndex(MediaStore.MediaColumns.WIDTH)
+        val heightCol = cursor.getColumnIndex(MediaStore.MediaColumns.HEIGHT)
+        val widthPx = if (widthCol != -1) cursor.getInt(widthCol).takeIf { it > 0 } else null
+        val heightPx = if (heightCol != -1) cursor.getInt(heightCol).takeIf { it > 0 } else null
+
         return MediaItemEntity(
             id = "${baseUri.pathSegments.last()}_$id",
             path = path,
@@ -202,6 +209,8 @@ class MediaStoreScanner @Inject constructor(
             mediaType = mediaType,
             durationMs = durationMs,
             backupStatus = BackupStatus.PENDING,
+            widthPx = widthPx,
+            heightPx = heightPx,
         )
     }
 }

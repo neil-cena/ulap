@@ -105,6 +105,8 @@ dependencies {
     implementation(libs.room.ktx)
     ksp(libs.room.compiler)
 
+    implementation(libs.datastore.preferences)
+
     // WorkManager + Hilt integration
     implementation(libs.work.runtime.ktx)
     implementation(libs.hilt.work)

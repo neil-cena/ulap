@@ -104,4 +104,16 @@ class GooglePhotosRelayBrt {
         assertEquals("$trace telegramFileId", "test-file-id-123", entity.telegramFileId)
         assertTrue("$trace id prefix", entity.id.startsWith("gphoto_"))
     }
+
+    @Test
+    fun areaD_pixelDimensions_parsedFromApiStrings() {
+        val meta = GooglePhotosMediaMetadata(
+            creationTime = null,
+            width = "4032",
+            height = "3024",
+        )
+        val (w, h) = meta.pixelDimensions()
+        assertEquals("$trace width", 4032, w)
+        assertEquals("$trace height", 3024, h)
+    }
 }

@@ -17,9 +17,11 @@ internal object GooglePhotosImportEntityFactory {
         item: GooglePhotosMediaItem,
         telegramFileId: String,
         messageId: Long,
+        remoteThumbnailUrl: String? = null,
     ): MediaItemEntity {
         val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
         val name = item.filename ?: item.id
+        val (w, h) = item.mediaMetadata.pixelDimensions()
         return MediaItemEntity(
             id = "$GOOGLE_PHOTO_ID_PREFIX${item.id}",
             path = "",
@@ -37,6 +39,9 @@ internal object GooglePhotosImportEntityFactory {
             telegramMessageId = messageId,
             lastSyncedAt = null,
             errorMessage = null,
+            remoteThumbnailUrl = remoteThumbnailUrl,
+            widthPx = w,
+            heightPx = h,
         )
     }
 
@@ -46,9 +51,11 @@ internal object GooglePhotosImportEntityFactory {
         totalSizeBytes: Long,
         totalChunks: Int,
         lastChunkMessageId: Long,
+        remoteThumbnailUrl: String? = null,
     ): MediaItemEntity {
         val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
         val name = item.filename ?: item.id
+        val (w, h) = item.mediaMetadata.pixelDimensions()
         return MediaItemEntity(
             id = "$GOOGLE_PHOTO_ID_PREFIX${item.id}",
             path = "",
@@ -67,6 +74,41 @@ internal object GooglePhotosImportEntityFactory {
             lastSyncedAt = null,
             errorMessage = null,
             uploadedChunkCount = totalChunks,
+            remoteThumbnailUrl = remoteThumbnailUrl,
+            widthPx = w,
+            heightPx = h,
+        )
+    }
+
+    fun failedEntity(item: GooglePhotosMediaItem, errorMessage: String): MediaItemEntity {
+        val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
+        val name = item.filename ?: item.id
+        val (w, h) = item.mediaMetadata.pixelDimensions()
+        val thumb = when {
+            item.mimeType.startsWith("video/") -> GooglePhotosUrls.remoteThumbnailVideo(item.baseUrl)
+            item.mimeType.startsWith("image/") -> GooglePhotosUrls.remoteThumbnailImage(item.baseUrl)
+            else -> null
+        }
+        return MediaItemEntity(
+            id = "$GOOGLE_PHOTO_ID_PREFIX${item.id}",
+            path = "",
+            contentUri = "",
+            fileName = name,
+            mimeType = item.mimeType,
+            size = 0L,
+            dateModified = createdMs,
+            dateTaken = createdMs,
+            bucketName = BUCKET_GOOGLE_PHOTOS,
+            mediaType = if (item.mimeType.startsWith("video/")) MediaType.VIDEO else MediaType.IMAGE,
+            durationMs = null,
+            backupStatus = BackupStatus.FAILED,
+            telegramFileId = null,
+            telegramMessageId = null,
+            lastSyncedAt = null,
+            errorMessage = errorMessage,
+            remoteThumbnailUrl = thumb,
+            widthPx = w,
+            heightPx = h,
         )
     }
 

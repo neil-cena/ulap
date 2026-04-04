@@ -1,5 +1,6 @@
 package com.ulap.data.local.entity
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.Index
 import androidx.room.PrimaryKey
@@ -41,4 +42,9 @@ data class MediaItemEntity(
     val chunkMessageIds: String? = null,   // JSON array of Telegram message IDs for each chunk
     val contentHash: String? = null,       // MD5 hex of file content; null = not yet computed
     val uploadBotIndex: Int = 0,           // index into BotPool; 0 = primary bot
+    @ColumnInfo(name = "remote_thumbnail_url") val remoteThumbnailUrl: String? = null,
+    /** Intrinsic pixel width when known (MediaStore or Google Photos metadata). */
+    @ColumnInfo(name = "width_px") val widthPx: Int? = null,
+    /** Intrinsic pixel height when known (MediaStore or Google Photos metadata). */
+    @ColumnInfo(name = "height_px") val heightPx: Int? = null,
 )

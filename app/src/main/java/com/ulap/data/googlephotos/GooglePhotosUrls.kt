@@ -15,4 +15,16 @@ object GooglePhotosUrls {
         val trimmed = baseUrl.trimEnd()
         return if (trimmed.endsWith("=dv")) trimmed else "$trimmed=dv"
     }
+
+    /** Timeline thumbnail for still images (instant load without Telegram). */
+    fun remoteThumbnailImage(baseUrl: String): String {
+        val trimmed = baseUrl.trimEnd()
+        return "${trimmed}=w400-h400"
+    }
+
+    /** Timeline thumbnail for videos (poster frame). */
+    fun remoteThumbnailVideo(baseUrl: String): String {
+        val trimmed = baseUrl.trimEnd()
+        return "${trimmed}=w400-h400-p"
+    }
 }

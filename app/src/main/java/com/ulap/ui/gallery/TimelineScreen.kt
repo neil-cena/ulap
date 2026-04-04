@@ -383,14 +383,19 @@ private fun TimelineListRow(
         Box(
             modifier = Modifier.size(56.dp),
         ) {
-            val imageModel = item.streamUrl ?: item.contentUri
+            val displayUrl: String? = when {
+                item.backupStatus == BackupStatus.CLOUD_ONLY && !item.remoteThumbnailUrl.isNullOrBlank() ->
+                    item.remoteThumbnailUrl
+                else -> item.streamUrl
+            }
+            val imageModel = displayUrl ?: item.contentUri
             if (imageModel.isBlank()) {
                 ShimmerBox(Modifier.matchParentSize())
             }
             if (imageModel.isNotBlank()) {
                 val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
                 AsyncImage(
-                    model = if (item.streamUrl != null) imageModel else Uri.parse(imageModel),
+                    model = if (displayUrl != null || item.streamUrl != null) imageModel else Uri.parse(imageModel),
                     contentDescription = item.fileName,
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.matchParentSize(),
@@ -458,14 +463,19 @@ fun MediaThumbnail(
                 },
             ),
     ) {
-        val imageModel = item.streamUrl ?: item.contentUri
+        val displayUrl: String? = when {
+            item.backupStatus == BackupStatus.CLOUD_ONLY && !item.remoteThumbnailUrl.isNullOrBlank() ->
+                item.remoteThumbnailUrl
+            else -> item.streamUrl
+        }
+        val imageModel = displayUrl ?: item.contentUri
         if (imageModel.isBlank()) {
             ShimmerBox(Modifier.matchParentSize())
         }
         if (imageModel.isNotBlank()) {
             val painter = ColorPainter(MaterialTheme.colorScheme.surfaceVariant)
             AsyncImage(
-                model = if (item.streamUrl != null) imageModel else Uri.parse(imageModel),
+                model = if (displayUrl != null || item.streamUrl != null) imageModel else Uri.parse(imageModel),
                 contentDescription = item.fileName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.matchParentSize(),

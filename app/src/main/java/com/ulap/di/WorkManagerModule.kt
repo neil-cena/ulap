@@ -2,6 +2,7 @@ package com.ulap.di
 
 import android.content.Context
 import androidx.work.Configuration
+import androidx.work.WorkManager
 import androidx.hilt.work.HiltWorkerFactory
 import dagger.Module
 import dagger.Provides
@@ -13,6 +14,11 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object WorkManagerModule {
+
+    @Provides
+    @Singleton
+    fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
+        WorkManager.getInstance(context)
 
     @Provides
     @Singleton

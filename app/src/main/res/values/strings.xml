@@ -194,4 +194,8 @@
     <string name="google_photos_sign_in">Sign in with Google</string>
     <string name="google_photos_start_import">Start import</string>
     <string name="google_photos_import_progress">%1$d imported · %2$d processed</string>
+    <string name="google_photos_pause_import">Pause import</string>
+    <string name="google_photos_import_notification_channel">Google Photos import</string>
+    <string name="google_photos_import_notification_title">Google Photos import</string>
+    <string name="google_photos_import_notification_body">Importing to Telegram…</string>
 </resources>

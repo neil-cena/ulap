@@ -56,7 +56,7 @@ import com.ulap.ui.onboarding.QrScanScreen
 import com.ulap.ui.onboarding.QrShowScreen
 import com.ulap.ui.onboarding.WelcomeScreen
 import com.ulap.ui.restore.RestoreScreen
-import com.ulap.ui.googlephotos.GooglePhotosImportScreen
+import com.ulap.ui.settings.GooglePhotosImportScreen
 import com.ulap.ui.settings.SettingsScreen
 import com.ulap.ui.theme.UlapTheme
 import com.ulap.sync.StorageCleanupWorker

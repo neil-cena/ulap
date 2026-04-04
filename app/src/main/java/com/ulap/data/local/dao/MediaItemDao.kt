@@ -60,6 +60,29 @@ interface MediaItemDao {
     @Query("SELECT * FROM media_items WHERE id = :id")
     suspend fun findById(id: String): MediaItemEntity?
 
+    /**
+     * Client-side import deduplication: same display name and MIME type, and when [widthPx]/[heightPx]
+     * are non-null, same pixel dimensions (stronger than filename-only).
+     * When both dimensions are null, matches any row with the same [fileName] and [mimeType] (legacy rows).
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM media_items
+        WHERE fileName = :fileName
+        AND mimeType = :mimeType
+        AND (
+            (:widthPx IS NULL AND :heightPx IS NULL)
+            OR (width_px = :widthPx AND height_px = :heightPx)
+        )
+        """,
+    )
+    suspend fun countItemsMatchingImportFingerprint(
+        fileName: String,
+        mimeType: String,
+        widthPx: Int?,
+        heightPx: Int?,
+    ): Int
+
     @Query(
         """
         SELECT * FROM media_items

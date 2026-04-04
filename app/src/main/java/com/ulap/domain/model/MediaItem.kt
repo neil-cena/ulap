@@ -22,6 +22,10 @@ data class MediaItem(
     val uploadBotIndex: Int = 0,
     /** Resolved CDN URL for streaming (populated at runtime for CLOUD_ONLY items). */
     val streamUrl: String? = null,
+    /** Google Photos (or other) CDN thumbnail; shown immediately for CLOUD_ONLY without Telegram resolve. */
+    val remoteThumbnailUrl: String? = null,
+    val widthPx: Int? = null,
+    val heightPx: Int? = null,
 )
 
 enum class MediaType { IMAGE, VIDEO }

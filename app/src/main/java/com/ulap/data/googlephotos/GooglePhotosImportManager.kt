@@ -34,6 +34,18 @@ data class GooglePhotosImportStats(
     val videosImported: Int,
 )
 
+/** Outcome of [GooglePhotosImportManager.importGooglePhotosMediaItem] for worker progress accounting. */
+enum class GooglePhotosImportItemStatus {
+    /** Uploaded to Telegram and persisted. */
+    UPLOADED,
+
+    /** Skipped: a row with the same display file name already exists locally or from a prior backup. */
+    SKIPPED_DUPLICATE,
+
+    /** Skipped: MIME type is not handled as image or video. */
+    SKIPPED_UNSUPPORTED,
+}
+
 @Singleton
 class GooglePhotosImportManager @Inject constructor(
     private val googlePhotosApi: GooglePhotosApi,
@@ -95,6 +107,45 @@ class GooglePhotosImportManager @Inject constructor(
         )
     }
 
+    /**
+     * Imports a single library item (image via URL relay, video via in-memory chunking).
+     * Used by [com.ulap.sync.GooglePhotosImportWorker]; skips non-image/non-video MIME types without failure.
+     */
+    suspend fun importGooglePhotosMediaItem(item: GooglePhotosMediaItem): Result<GooglePhotosImportItemStatus> =
+        withContext(Dispatchers.IO) {
+            val fileName = item.filename?.takeIf { it.isNotBlank() } ?: item.id
+            val (w, h) = item.mediaMetadata.pixelDimensions()
+            val existingCount = mediaItemDao.countItemsMatchingImportFingerprint(
+                fileName = fileName,
+                mimeType = item.mimeType,
+                widthPx = w,
+                heightPx = h,
+            )
+            if (existingCount > 0) {
+                Log.d(
+                    TAG,
+                    "skip duplicate fingerprint fileName=$fileName mime=${item.mimeType} dims=${w}x${h} id=${item.id}",
+                )
+                return@withContext Result.success(GooglePhotosImportItemStatus.SKIPPED_DUPLICATE)
+            }
+            val botToken = credentialRepository.getBotToken()
+                ?: return@withContext Result.failure(IllegalStateException("Telegram bot not configured"))
+            val chatId = credentialRepository.getChatId()
+                ?: return@withContext Result.failure(IllegalStateException("Telegram chat not configured"))
+            val safeToken = sanitizeTokenForPath(botToken)
+            val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
+            when {
+                item.mimeType.startsWith("video/") ->
+                    importVideoItem(item, safeToken, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                item.mimeType.startsWith("image/") ->
+                    importImageItem(item, safeToken, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                else -> {
+                    Log.d(TAG, "skip non-media mime=${item.mimeType} id=${item.id}")
+                    Result.success(GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED)
+                }
+            }
+        }
+
     suspend fun importSingleGooglePhotoItemForTest(
         item: GooglePhotosMediaItem,
         botToken: String,
@@ -131,7 +182,12 @@ class GooglePhotosImportManager @Inject constructor(
         val message: TelegramMessage = response.result
         val fileId = message.largestPhotoFileId()
             ?: return Result.failure(IllegalStateException("no file_id in Telegram response"))
-        val entity = GooglePhotosImportEntityFactory.cloudEntityFromGooglePhoto(item, fileId, message.messageId)
+        val entity = GooglePhotosImportEntityFactory.cloudEntityFromGooglePhoto(
+            item = item,
+            telegramFileId = fileId,
+            messageId = message.messageId,
+            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailImage(item.baseUrl),
+        )
         mediaItemDao.upsert(entity)
         return Result.success(Unit)
     }
@@ -222,6 +278,7 @@ class GooglePhotosImportManager @Inject constructor(
             totalSizeBytes = totalBytes,
             totalChunks = totalChunks.size,
             lastChunkMessageId = lastMsg,
+            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailVideo(item.baseUrl),
         )
         mediaItemDao.upsert(entity)
 
