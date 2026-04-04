@@ -7,7 +7,6 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.pm.ServiceInfo
 import android.os.Build
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
 import androidx.work.CoroutineWorker
@@ -21,16 +20,15 @@ import com.ulap.data.googlephotos.GooglePhotosApi
 import com.ulap.data.googlephotos.GooglePhotosImportEntityFactory
 import com.ulap.data.googlephotos.GooglePhotosImportItemStatus
 import com.ulap.data.googlephotos.GooglePhotosImportManager
+import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
+import com.ulap.debug.DebugLogBuffer
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.repository.UserPreferencesRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
-import retrofit2.HttpException
-
 private const val TAG = "GooglePhotosImportWorker"
 private const val NOTIFICATION_ID = 1003
-private const val SESSION_EXPIRED_NOTIFICATION_ID = 1004
 private const val CHANNEL_ID = "ulap_google_photos_import"
 
 @HiltWorker
@@ -42,12 +40,13 @@ class GooglePhotosImportWorker @AssistedInject constructor(
     private val mediaItemDao: MediaItemDao,
     private val importManager: GooglePhotosImportManager,
     private val googleAuthManager: GoogleAuthManager,
+    private val debugLog: DebugLogBuffer,
 ) : CoroutineWorker(context, params) {
 
     override suspend fun doWork(): Result {
         setForeground(createForegroundInfo())
         if (googleAuthManager.getAccessToken() == null) {
-            Log.e(TAG, "No Google access token")
+            debugLog.log(TAG, "No Google access token; import aborted")
             return Result.failure()
         }
 
@@ -87,7 +86,10 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                             },
                         )
                     } catch (e: Exception) {
-                        Log.e(TAG, "item import failed id=${item.id}", e)
+                        debugLog.log(
+                            TAG,
+                            "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(e)}",
+                        )
                         processed++
                         try {
                             mediaItemDao.upsert(
@@ -97,7 +99,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                                 ),
                             )
                         } catch (db: Exception) {
-                            Log.e(TAG, "failed to persist FAILED row", db)
+                            debugLog.log(TAG, "failed to persist FAILED row: ${formatGooglePhotosDiagnostics(db)}")
                         }
                     }
                     setProgress(
@@ -112,7 +114,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 userPreferencesRepository.updateGooglePhotosPageToken(nextPageToken)
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
-            Log.e(TAG, "import loop failed", e)
+            debugLog.log(TAG, "import loop failed: ${formatGooglePhotosDiagnostics(e)}")
             googleAuthManager.refreshTokenFromLastAccount()
             return Result.retry()
         }
@@ -163,33 +165,4 @@ class GooglePhotosImportWorker @AssistedInject constructor(
         }
     }
 
-    private fun showSessionExpiredNotification() {
-        ensureChannel()
-        val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        val tapIntent = PendingIntent.getActivity(
-            applicationContext,
-            1,
-            android.content.Intent(applicationContext, MainActivity::class.java).apply {
-                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setContentTitle(applicationContext.getString(R.string.google_photos_session_expired_title))
-            .setContentText(applicationContext.getString(R.string.google_photos_session_expired_body))
-            .setSmallIcon(R.drawable.ic_notification)
-            .setAutoCancel(true)
-            .setContentIntent(tapIntent)
-            .build()
-        nm.notify(SESSION_EXPIRED_NOTIFICATION_ID, notification)
-    }
-}
-
-private fun Throwable.httpStatusCodeOrNull(): Int? {
-    var t: Throwable? = this
-    while (t != null) {
-        if (t is HttpException) return t.code()
-        t = t.cause
-    }
-    return null
 }

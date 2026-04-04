@@ -11,7 +11,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ulap.data.auth.GoogleAuthManager
+import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
 import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.debug.DebugLogBuffer
 import com.ulap.sync.GooglePhotosImportWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -30,11 +32,14 @@ data class GooglePhotosImportUiState(
     val error: String? = null,
 )
 
+private const val GOOGLE_PHOTOS_LOG_TAG = "GooglePhotosImport"
+
 @HiltViewModel
 class GooglePhotosImportViewModel @Inject constructor(
     private val googleAuthManager: GoogleAuthManager,
     private val workManager: WorkManager,
     private val userPreferencesRepository: UserPreferencesRepository,
+    private val debugLog: DebugLogBuffer,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GooglePhotosImportUiState())
@@ -62,6 +67,9 @@ class GooglePhotosImportViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
             val result = googleAuthManager.handleSignInActivityResult(data)
+            result.exceptionOrNull()?.let { err ->
+                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "sign-in failed: ${formatGooglePhotosDiagnostics(err)}")
+            }
             _uiState.update {
                 it.copy(
                     isBusy = false,
