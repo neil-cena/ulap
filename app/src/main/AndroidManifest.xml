@@ -78,6 +78,12 @@
                 tools:node="remove" />
         </provider>
 
+        <!-- WorkManager foreground worker (e.g. Google Photos import); dataSync for Android 14+ -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
     </application>
 
 </manifest>

@@ -198,4 +198,8 @@
     <string name="google_photos_import_notification_channel">Google Photos import</string>
     <string name="google_photos_import_notification_title">Google Photos import</string>
     <string name="google_photos_import_notification_body">Importing to Telegram…</string>
+    <string name="google_photos_disconnect_account">Disconnect account</string>
+    <string name="google_photos_signed_in_as">Signed in as %1$s</string>
+    <string name="google_photos_session_expired_title">Google Photos session expired</string>
+    <string name="google_photos_session_expired_body">Sign in again in Settings to continue importing.</string>
 </resources>

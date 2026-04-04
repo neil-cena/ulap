@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -88,20 +89,38 @@ fun GooglePhotosImportScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.fillMaxWidth(),
             )
-            Button(
-                onClick = { signInLauncher.launch(viewModel.getSignInIntent(activity)) },
-                enabled = !state.isBusy && !importInFlight,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Text(stringResource(R.string.google_photos_sign_in))
+            if (!state.isSignedIn) {
+                Button(
+                    onClick = { signInLauncher.launch(viewModel.getSignInIntent(activity)) },
+                    enabled = !state.isBusy && !importInFlight,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_sign_in))
+                }
+            }
+            state.signedInEmail?.takeIf { it.isNotBlank() }?.let { email ->
+                Text(
+                    text = stringResource(R.string.google_photos_signed_in_as, email),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            if (state.isSignedIn) {
+                OutlinedButton(
+                    onClick = { viewModel.signOut() },
+                    enabled = !state.isBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_disconnect_account))
+                }
             }
             if (state.isBusy) {
                 CircularProgressIndicator(modifier = Modifier.height(32.dp))
             }
-            if (showStart) {
+            if (state.isSignedIn && showStart) {
                 Button(
                     onClick = { viewModel.startOrResumeImport() },
-                    enabled = state.isSignedIn && !state.isBusy,
+                    enabled = !state.isBusy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.google_photos_start_import))

@@ -37,8 +37,8 @@ class GoogleAuthManager @Inject constructor(
         accessTokenRef.set(null)
     }
 
-    fun googleSignInClient(activity: Activity): GoogleSignInClient {
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+    private fun googleSignInOptions(): GoogleSignInOptions =
+        GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
             .requestScopes(Scope(PHOTOS_READONLY_SCOPE))
             .apply {
@@ -47,10 +47,22 @@ class GoogleAuthManager @Inject constructor(
                 }
             }
             .build()
-        return GoogleSignIn.getClient(activity, gso)
-    }
+
+    fun googleSignInClient(activity: Activity): GoogleSignInClient =
+        GoogleSignIn.getClient(activity, googleSignInOptions())
 
     fun getSignInIntent(activity: Activity): Intent = googleSignInClient(activity).signInIntent
+
+    /** Email for the last signed-in Google account, if any. */
+    fun getLastSignedInAccountEmail(): String? =
+        GoogleSignIn.getLastSignedInAccount(context)?.email
+
+    /** Clears Google Sign-In session and the in-memory OAuth access token. */
+    suspend fun signOut(): Unit = withContext(Dispatchers.IO) {
+        val client = GoogleSignIn.getClient(context, googleSignInOptions())
+        runCatching { Tasks.await(client.signOut()) }
+        accessTokenRef.set(null)
+    }
 
     suspend fun refreshTokenFromLastAccount(): Boolean = withContext(Dispatchers.IO) {
         val account = GoogleSignIn.getLastSignedInAccount(context) ?: return@withContext false

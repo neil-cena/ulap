@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ulap.data.auth.GoogleAuthManager
+import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.sync.GooglePhotosImportWorker
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.Flow
@@ -24,6 +25,7 @@ import javax.inject.Inject
 
 data class GooglePhotosImportUiState(
     val isSignedIn: Boolean = false,
+    val signedInEmail: String? = null,
     val isBusy: Boolean = false,
     val error: String? = null,
 )
@@ -32,6 +34,7 @@ data class GooglePhotosImportUiState(
 class GooglePhotosImportViewModel @Inject constructor(
     private val googleAuthManager: GoogleAuthManager,
     private val workManager: WorkManager,
+    private val userPreferencesRepository: UserPreferencesRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(GooglePhotosImportUiState())
@@ -43,7 +46,12 @@ class GooglePhotosImportViewModel @Inject constructor(
     init {
         viewModelScope.launch {
             if (googleAuthManager.refreshTokenFromLastAccount()) {
-                _uiState.update { it.copy(isSignedIn = true) }
+                _uiState.update {
+                    it.copy(
+                        isSignedIn = true,
+                        signedInEmail = googleAuthManager.getLastSignedInAccountEmail(),
+                    )
+                }
             }
         }
     }
@@ -58,6 +66,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                 it.copy(
                     isBusy = false,
                     isSignedIn = result.isSuccess && googleAuthManager.getAccessToken() != null,
+                    signedInEmail = googleAuthManager.getLastSignedInAccountEmail(),
                     error = result.exceptionOrNull()?.message,
                 )
             }
@@ -82,5 +91,16 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     fun pauseImport() {
         workManager.cancelUniqueWork("google_import")
+    }
+
+    fun signOut() {
+        viewModelScope.launch {
+            workManager.cancelUniqueWork("google_import")
+            googleAuthManager.signOut()
+            userPreferencesRepository.updateGooglePhotosPageToken(null)
+            _uiState.update {
+                it.copy(isSignedIn = false, signedInEmail = null)
+            }
+        }
     }
 }

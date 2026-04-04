@@ -26,9 +26,11 @@ import com.ulap.data.repository.UserPreferencesRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import kotlinx.coroutines.flow.first
+import retrofit2.HttpException
 
 private const val TAG = "GooglePhotosImportWorker"
 private const val NOTIFICATION_ID = 1003
+private const val SESSION_EXPIRED_NOTIFICATION_ID = 1004
 private const val CHANNEL_ID = "ulap_google_photos_import"
 
 @HiltWorker
@@ -160,4 +162,34 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             )
         }
     }
+
+    private fun showSessionExpiredNotification() {
+        ensureChannel()
+        val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        val tapIntent = PendingIntent.getActivity(
+            applicationContext,
+            1,
+            android.content.Intent(applicationContext, MainActivity::class.java).apply {
+                flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK or android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
+            .setContentTitle(applicationContext.getString(R.string.google_photos_session_expired_title))
+            .setContentText(applicationContext.getString(R.string.google_photos_session_expired_body))
+            .setSmallIcon(R.drawable.ic_notification)
+            .setAutoCancel(true)
+            .setContentIntent(tapIntent)
+            .build()
+        nm.notify(SESSION_EXPIRED_NOTIFICATION_ID, notification)
+    }
+}
+
+private fun Throwable.httpStatusCodeOrNull(): Int? {
+    var t: Throwable? = this
+    while (t != null) {
+        if (t is HttpException) return t.code()
+        t = t.cause
+    }
+    return null
 }
