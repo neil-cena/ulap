@@ -26,7 +26,7 @@ import javax.inject.Singleton
 private const val TAG = "GooglePhotosImport"
 
 /** Telegram Bot API: max document ~50 MiB; use 49 MiB payload so multipart boundaries/caption stay under the limit. */
-internal const val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = 51_380_224
+internal const val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = 51_380_224 // 49 * 1024 * 1024
 
 data class GooglePhotosImportStats(
     val itemsListed: Int,
@@ -164,7 +164,13 @@ class GooglePhotosImportManager @Inject constructor(
         safeBotToken: String,
         chatIdBody: RequestBody,
     ): Result<Unit> {
-        val photoUrl = GooglePhotosUrls.fullResolutionImageUrl(item.baseUrl)
+        if (item.baseUrl.isNullOrBlank()) {
+            return Result.failure(
+                IllegalStateException("Missing baseUrl (item likely still processing or unsupported on Google servers)"),
+            )
+        }
+        val baseUrl = item.baseUrl!!
+        val photoUrl = GooglePhotosUrls.fullResolutionImageUrl(baseUrl)
         val photoBody = photoUrl.toRequestBody("text/plain".toMediaType())
         val response = rateLimiter.withRateLimit {
             telegramBotApi.sendPhotoFromUrl(
@@ -186,7 +192,7 @@ class GooglePhotosImportManager @Inject constructor(
             item = item,
             telegramFileId = fileId,
             messageId = message.messageId,
-            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailImage(item.baseUrl),
+            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailImage(baseUrl),
         )
         mediaItemDao.upsert(entity)
         return Result.success(Unit)
@@ -197,7 +203,13 @@ class GooglePhotosImportManager @Inject constructor(
         safeBotToken: String,
         chatIdBody: RequestBody,
     ): Result<Unit> {
-        val videoUrl = GooglePhotosUrls.downloadVideoUrl(item.baseUrl)
+        if (item.baseUrl.isNullOrBlank()) {
+            return Result.failure(
+                IllegalStateException("Missing baseUrl (item likely still processing or unsupported on Google servers)"),
+            )
+        }
+        val baseUrl = item.baseUrl!!
+        val videoUrl = GooglePhotosUrls.downloadVideoUrl(baseUrl)
         val response = googlePhotosApi.streamMedia(videoUrl)
         if (!response.isSuccessful) {
             response.errorBody()?.close()
@@ -209,7 +221,7 @@ class GooglePhotosImportManager @Inject constructor(
             ?: return Result.failure(IllegalStateException("empty stream body"))
         body.use { rb ->
             rb.byteStream().use { input ->
-                return importVideoFromStream(item, safeBotToken, chatIdBody, input)
+                return importVideoFromStream(item, safeBotToken, chatIdBody, input, baseUrl)
             }
         }
     }
@@ -219,6 +231,7 @@ class GooglePhotosImportManager @Inject constructor(
         safeBotToken: String,
         chatIdBody: RequestBody,
         input: InputStream,
+        thumbnailBaseUrl: String,
     ): Result<Unit> {
         val baseName = item.filename ?: item.id
         val totalChunks = mutableListOf<UploadedVideoChunk>()
@@ -278,7 +291,7 @@ class GooglePhotosImportManager @Inject constructor(
             totalSizeBytes = totalBytes,
             totalChunks = totalChunks.size,
             lastChunkMessageId = lastMsg,
-            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailVideo(item.baseUrl),
+            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailVideo(thumbnailBaseUrl),
         )
         mediaItemDao.upsert(entity)
 

@@ -84,9 +84,11 @@ internal object GooglePhotosImportEntityFactory {
         val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
         val name = item.filename ?: item.id
         val (w, h) = item.mediaMetadata.pixelDimensions()
+        val base = item.baseUrl?.takeIf { it.isNotBlank() }
         val thumb = when {
-            item.mimeType.startsWith("video/") -> GooglePhotosUrls.remoteThumbnailVideo(item.baseUrl)
-            item.mimeType.startsWith("image/") -> GooglePhotosUrls.remoteThumbnailImage(item.baseUrl)
+            base == null -> null
+            item.mimeType.startsWith("video/") -> GooglePhotosUrls.remoteThumbnailVideo(base)
+            item.mimeType.startsWith("image/") -> GooglePhotosUrls.remoteThumbnailImage(base)
             else -> null
         }
         return MediaItemEntity(

@@ -11,7 +11,8 @@ data class GooglePhotosMediaItem(
     @SerializedName("id") val id: String,
     @SerializedName("mimeType") val mimeType: String,
     @SerializedName("filename") val filename: String?,
-    @SerializedName("baseUrl") val baseUrl: String,
+    /** Omitted or blank while Google is still processing the item. */
+    @SerializedName("baseUrl") val baseUrl: String? = null,
     @SerializedName("mediaMetadata") val mediaMetadata: GooglePhotosMediaMetadata?,
 )
 
