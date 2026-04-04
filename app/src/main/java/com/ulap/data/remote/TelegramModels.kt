@@ -23,6 +23,13 @@ data class TelegramMessage(
     @SerializedName("caption") val caption: String?,
 )
 
+/** Best-effort file id for a photo message (Telegram returns multiple sizes; largest preferred). */
+fun TelegramMessage.largestPhotoFileId(): String? {
+    val photos = photo ?: return null
+    if (photos.isEmpty()) return null
+    return photos.maxByOrNull { it.width * it.height }?.fileId ?: photos.last().fileId
+}
+
 data class TelegramDocument(
     @SerializedName("file_id") val fileId: String,
     @SerializedName("file_size") val fileSize: Long?,

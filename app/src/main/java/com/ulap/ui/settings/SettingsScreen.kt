@@ -47,11 +47,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.ulap.R
 import com.ulap.data.repository.UploadSpeedMode
 import com.ulap.ui.theme.ThemePreference
 
@@ -60,6 +62,7 @@ import com.ulap.ui.theme.ThemePreference
 fun SettingsScreen(
     onNavigateToFolderPicker: () -> Unit,
     onNavigateToQrShow: () -> Unit,
+    onNavigateToGooglePhotosImport: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -188,6 +191,11 @@ fun SettingsScreen(
                     onClick = onNavigateToFolderPicker,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Manage Backup Folders") }
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = onNavigateToGooglePhotosImport,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text(stringResource(R.string.google_photos_import_nav)) }
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(12.dp))

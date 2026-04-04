@@ -20,4 +20,5 @@ sealed class Screen(val route: String) {
         fun createRoute(bucket: String) = "folder_detail/$bucket"
     }
     object Restore : Screen("restore")
+    object GooglePhotosImport : Screen("google_photos_import")
 }

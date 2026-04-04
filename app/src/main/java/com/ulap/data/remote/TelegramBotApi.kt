@@ -30,6 +30,19 @@ interface TelegramBotApi {
         @Part("caption") caption: RequestBody? = null,
     ): TelegramResponse<TelegramMessage>
 
+    /**
+     * Sends a photo by passing a public HTTPS URL; Telegram's servers fetch the image (no local file).
+     * [photoUrl] must be `RequestBody` with the raw URL string (e.g. `text/plain`).
+     */
+    @Multipart
+    @POST("bot{token}/sendPhoto")
+    suspend fun sendPhotoFromUrl(
+        @Path(value = "token", encoded = true) token: String,
+        @Part("chat_id") chatId: RequestBody,
+        @Part("photo") photoUrl: RequestBody,
+        @Part("caption") caption: RequestBody? = null,
+    ): TelegramResponse<TelegramMessage>
+
     @Multipart
     @POST("bot{token}/sendVideo")
     suspend fun sendVideo(

@@ -20,6 +20,9 @@ exifinterface = "1.3.7"
 zxing = "3.5.2"
 camera = "1.3.1"
 mlkitBarcode = "17.2.0"
+playServicesAuth = "21.3.0"
+credentials = "1.3.0"
+googleId = "1.1.1"
 
 [libraries]
 # Compose
@@ -85,9 +88,16 @@ camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", versi
 camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camera" }
 mlkit-barcode = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcode" }
 
+# Google Sign-In / Credential Manager (Google Photos OAuth)
+play-services-auth = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
+androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+googleid = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleId" }
+
 # Testing
 junit = { group = "junit", name = "junit", version = "4.13.2" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version = "1.10.1" }
+okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

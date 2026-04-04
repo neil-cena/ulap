@@ -30,8 +30,10 @@ android {
             if (localFile.exists()) localProps.load(localFile.inputStream())
             val testToken = (localProps.getProperty("ulap.testBotToken") ?: "").trim()
             val testChatId = (localProps.getProperty("ulap.testChatId") ?: "").trim()
+            val googleWebClientId = (localProps.getProperty("ulap.googleWebClientId") ?: "").trim()
             buildConfigField("String", "TEST_BOT_TOKEN", "\"${testToken.replace("\"", "\\\"")}\"")
             buildConfigField("String", "TEST_CHAT_ID", "\"${testChatId.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+            buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
         }
         release {
             isMinifyEnabled = true
@@ -40,6 +42,11 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            val localProps = Properties()
+            val localFile = rootProject.file("local.properties")
+            if (localFile.exists()) localProps.load(localFile.inputStream())
+            val googleWebClientId = (localProps.getProperty("ulap.googleWebClientId") ?: "").trim()
+            buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
         }
     }
 
@@ -114,6 +121,12 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
 
+    // Google Sign-In / Credential Manager (Google Photos OAuth)
+    implementation(libs.play.services.auth)
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services)
+    implementation(libs.googleid)
+
     // Coil
     implementation(libs.coil.compose)
     implementation(libs.coil.video)
@@ -141,6 +154,7 @@ dependencies {
     testImplementation("org.mockito:mockito-core:5.14.2")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.4.0")
     testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation(libs.okhttp.mockwebserver)
     androidTestImplementation("androidx.test:rules:1.5.0")
     androidTestImplementation("androidx.test:runner:1.5.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

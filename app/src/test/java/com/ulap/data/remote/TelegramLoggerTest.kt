@@ -53,6 +53,14 @@ class TelegramLoggerTest {
         ): TelegramResponse<TelegramMessage> =
             throw UnsupportedOperationException("not used in TelegramLogger tests")
 
+        override suspend fun sendPhotoFromUrl(
+            token: String,
+            chatId: RequestBody,
+            photoUrl: RequestBody,
+            caption: RequestBody?,
+        ): TelegramResponse<TelegramMessage> =
+            throw UnsupportedOperationException("not used in TelegramLogger tests")
+
         override suspend fun sendVideo(
             token: String,
             chatId: RequestBody,

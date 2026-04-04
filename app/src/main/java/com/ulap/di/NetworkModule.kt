@@ -1,10 +1,13 @@
 package com.ulap.di
 
+import com.ulap.data.googlephotos.GOOGLE_PHOTOS_NO_AUTH_HEADER
+import com.ulap.data.googlephotos.GooglePhotosApi
 import com.ulap.data.remote.TelegramBotApi
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import com.ulap.data.auth.GoogleAuthManager
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -43,6 +46,40 @@ object NetworkModule {
     @Singleton
     fun provideTelegramBotApi(retrofit: Retrofit): TelegramBotApi =
         retrofit.create(TelegramBotApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideGooglePhotosApi(
+        okHttpClient: OkHttpClient,
+        googleAuthManager: GoogleAuthManager,
+    ): GooglePhotosApi {
+        val client = okHttpClient.newBuilder()
+            .addInterceptor { chain ->
+                val original = chain.request()
+                if (original.header(GOOGLE_PHOTOS_NO_AUTH_HEADER) != null) {
+                    val withoutMarker = original.newBuilder()
+                        .removeHeader(GOOGLE_PHOTOS_NO_AUTH_HEADER)
+                        .build()
+                    return@addInterceptor chain.proceed(withoutMarker)
+                }
+                val token = googleAuthManager.getAccessToken()
+                val request = if (token != null) {
+                    original.newBuilder()
+                        .header("Authorization", "Bearer $token")
+                        .build()
+                } else {
+                    original
+                }
+                chain.proceed(request)
+            }
+            .build()
+        return Retrofit.Builder()
+            .baseUrl("https://photoslibrary.googleapis.com/v1/")
+            .client(client)
+            .addConverterFactory(GsonConverterFactory.create())
+            .build()
+            .create(GooglePhotosApi::class.java)
+    }
 
     // NOTE: @UploadClient on the parameter is mandatory.
     // Without it, Hilt injects the default OkHttpClient silently — no compile error.
