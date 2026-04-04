@@ -2,6 +2,7 @@ package com.ulap.data.googlephotos
 
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.HttpException
@@ -14,6 +15,14 @@ class GooglePhotosDiagnosticsTest {
         val s = formatGooglePhotosDiagnostics(IllegalStateException("no account"))
         assertTrue(s.contains("IllegalStateException"))
         assertTrue(s.contains("no account"))
+    }
+
+    @Test
+    fun `httpStatusCodeOrNull reads nested HttpException`() {
+        val body = """{}""".toResponseBody("application/json".toMediaType())
+        val http = HttpException(Response.error<String>(401, body))
+        val wrapped = RuntimeException("wrap", http)
+        assertEquals(401, wrapped.httpStatusCodeOrNull())
     }
 
     @Test

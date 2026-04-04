@@ -1,8 +1,11 @@
 package com.ulap.ui.settings
 
 import android.app.Activity
+import android.content.Intent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +35,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.work.WorkInfo
+import com.ulap.MainActivity
 import com.ulap.R
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -42,12 +46,35 @@ fun GooglePhotosImportScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val workInfo by viewModel.workInfo.collectAsState(initial = null)
-    val activity = LocalContext.current as Activity
+    val context = LocalContext.current
+    val activity = context as Activity
+    val mainActivity = context as? MainActivity
 
     val signInLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
         viewModel.onSignInActivityResult(result.data)
+    }
+
+    val googleConsentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        viewModel.onGoogleConsentActivityResult(result.resultCode)
+    }
+
+    LaunchedEffect(state.pendingGoogleConsentIntent) {
+        val intent = state.pendingGoogleConsentIntent ?: return@LaunchedEffect
+        googleConsentLauncher.launch(intent)
+        viewModel.clearPendingConsentIntent()
+    }
+
+    DisposableEffect(mainActivity) {
+        val act = mainActivity ?: return@DisposableEffect onDispose { }
+        val cb: (Int, Intent?) -> Unit = { code, data ->
+            viewModel.onGooglePhotosScopePermissionResult(code, data)
+        }
+        act.googlePhotosScopePermissionResult = cb
+        onDispose { act.googlePhotosScopePermissionResult = null }
     }
 
     val wi = workInfo
@@ -105,6 +132,15 @@ fun GooglePhotosImportScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            if (state.needsPlayServicesPhotosScope) {
+                Button(
+                    onClick = { viewModel.requestPhotosScopePermission(activity) },
+                    enabled = !state.isBusy && !importInFlight,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_grant_library_scope))
+                }
+            }
             if (state.isSignedIn) {
                 OutlinedButton(
                     onClick = { viewModel.signOut() },
@@ -117,10 +153,10 @@ fun GooglePhotosImportScreen(
             if (state.isBusy) {
                 CircularProgressIndicator(modifier = Modifier.height(32.dp))
             }
-            if (state.isSignedIn && showStart) {
+            if (state.isSignedIn && state.hasPhotosAccessToken && showStart) {
                 Button(
                     onClick = { viewModel.startOrResumeImport() },
-                    enabled = !state.isBusy,
+                    enabled = !state.isBusy && !state.needsPlayServicesPhotosScope,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.google_photos_start_import))

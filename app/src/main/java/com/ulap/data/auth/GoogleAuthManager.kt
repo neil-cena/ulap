@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
@@ -21,6 +22,23 @@ import javax.inject.Singleton
 private const val PHOTOS_READONLY_SCOPE = "https://www.googleapis.com/auth/photoslibrary.readonly"
 private const val OAUTH2_SCOPE = "oauth2:$PHOTOS_READONLY_SCOPE"
 
+/** [Activity.onActivityResult] request code for [GoogleSignIn.requestPermissions]. */
+const val GOOGLE_PHOTOS_SCOPE_REQUEST_CODE = 99102
+
+sealed class PhotosTokenSyncResult {
+    data object Success : PhotosTokenSyncResult()
+    /**
+     * Play Services reports the Photos scope is not granted for this account.
+     * Call [requestPhotosScopePermission], then [syncPhotosAccessTokenFromLastAccount] again.
+     */
+    data object NeedsScopePermissionRequest : PhotosTokenSyncResult()
+
+    /** Start this intent (e.g. with [Activity.startActivityForResult]) and retry [syncPhotosAccessTokenFromLastAccount]. */
+    data class NeedsUserConsentDialog(val consentIntent: Intent) : PhotosTokenSyncResult()
+
+    data class Error(val throwable: Throwable) : PhotosTokenSyncResult()
+}
+
 @Singleton
 class GoogleAuthManager @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -36,6 +54,9 @@ class GoogleAuthManager @Inject constructor(
     fun clearAccessToken() {
         accessTokenRef.set(null)
     }
+
+    fun getLastSignedInAccount(): GoogleSignInAccount? =
+        GoogleSignIn.getLastSignedInAccount(context)
 
     private fun googleSignInOptions(): GoogleSignInOptions =
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
@@ -57,6 +78,16 @@ class GoogleAuthManager @Inject constructor(
     fun getLastSignedInAccountEmail(): String? =
         GoogleSignIn.getLastSignedInAccount(context)?.email
 
+    /** Triggers the Play Services scope dialog; result must be delivered via [GOOGLE_PHOTOS_SCOPE_REQUEST_CODE]. */
+    fun requestPhotosScopePermission(activity: Activity, account: GoogleSignInAccount) {
+        GoogleSignIn.requestPermissions(
+            activity,
+            GOOGLE_PHOTOS_SCOPE_REQUEST_CODE,
+            account,
+            Scope(PHOTOS_READONLY_SCOPE),
+        )
+    }
+
     /** Clears Google Sign-In session and the in-memory OAuth access token. */
     suspend fun signOut(): Unit = withContext(Dispatchers.IO) {
         val client = GoogleSignIn.getClient(context, googleSignInOptions())
@@ -64,24 +95,66 @@ class GoogleAuthManager @Inject constructor(
         accessTokenRef.set(null)
     }
 
-    suspend fun refreshTokenFromLastAccount(): Boolean = withContext(Dispatchers.IO) {
-        val account = GoogleSignIn.getLastSignedInAccount(context) ?: return@withContext false
-        runCatching {
-            val token = GoogleAuthUtil.getToken(context, account.account!!, OAUTH2_SCOPE)
-            accessTokenRef.set(token)
-        }.isSuccess
+    /**
+     * Obtains a Photos Library access token for [account], or explains what UI step is missing.
+     * Call after sign-in, after [requestPhotosScopePermission], or after a consent [Intent] result.
+     */
+    suspend fun syncPhotosAccessTokenForAccount(account: GoogleSignInAccount): PhotosTokenSyncResult =
+        withContext(Dispatchers.IO) {
+            if (!GoogleSignIn.hasPermissions(account, Scope(PHOTOS_READONLY_SCOPE))) {
+                return@withContext PhotosTokenSyncResult.NeedsScopePermissionRequest
+            }
+            fetchAccessTokenAfterScopeGranted(account)
+        }
+
+    suspend fun syncPhotosAccessTokenFromLastAccount(): PhotosTokenSyncResult {
+        val account = GoogleSignIn.getLastSignedInAccount(context)
+            ?: return PhotosTokenSyncResult.Error(IllegalStateException("no Google account"))
+        return syncPhotosAccessTokenForAccount(account)
     }
 
-    suspend fun handleSignInActivityResult(data: Intent?): Result<Unit> = withContext(Dispatchers.IO) {
-        if (data == null) return@withContext Result.failure(IllegalStateException("no result data"))
+    private suspend fun fetchAccessTokenAfterScopeGranted(account: GoogleSignInAccount): PhotosTokenSyncResult {
+        return try {
+            invalidateCachedAccessTokenIfPresent()
+            val token = GoogleAuthUtil.getToken(context, account.account!!, OAUTH2_SCOPE)
+            if (token.isNullOrBlank()) {
+                PhotosTokenSyncResult.Error(IllegalStateException("empty access token"))
+            } else {
+                accessTokenRef.set(token)
+                PhotosTokenSyncResult.Success
+            }
+        } catch (e: UserRecoverableAuthException) {
+            val consent = e.intent
+            if (consent == null) {
+                PhotosTokenSyncResult.Error(IllegalStateException("UserRecoverableAuthException without intent", e))
+            } else {
+                PhotosTokenSyncResult.NeedsUserConsentDialog(consent)
+            }
+        } catch (e: Exception) {
+            PhotosTokenSyncResult.Error(e)
+        }
+    }
+
+    /**
+     * Refreshes the Photos OAuth access token for the last signed-in account.
+     * Invalidates any previously cached token first so new consent/scopes from the server are applied.
+     */
+    suspend fun refreshTokenFromLastAccount(): Boolean =
+        syncPhotosAccessTokenFromLastAccount() is PhotosTokenSyncResult.Success
+
+    suspend fun handleSignInActivityResult(data: Intent?): PhotosTokenSyncResult = withContext(Dispatchers.IO) {
+        if (data == null) return@withContext PhotosTokenSyncResult.Error(IllegalStateException("no result data"))
         try {
             val task = GoogleSignIn.getSignedInAccountFromIntent(data)
             val account: GoogleSignInAccount = Tasks.await(task)
-            val token = GoogleAuthUtil.getToken(context, account.account!!, OAUTH2_SCOPE)
-            accessTokenRef.set(token)
-            Result.success(Unit)
+            syncPhotosAccessTokenForAccount(account)
         } catch (e: Exception) {
-            Result.failure(e)
+            PhotosTokenSyncResult.Error(e)
         }
+    }
+
+    private fun invalidateCachedAccessTokenIfPresent() {
+        val previous = accessTokenRef.get()?.takeIf { it.isNotBlank() } ?: return
+        runCatching { GoogleAuthUtil.clearToken(context, previous) }
     }
 }

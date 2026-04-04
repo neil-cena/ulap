@@ -11,6 +11,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.ulap.data.auth.GoogleAuthManager
+import com.ulap.data.auth.PhotosTokenSyncResult
 import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
@@ -26,10 +27,16 @@ import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 data class GooglePhotosImportUiState(
+    /** Google account is selected (may still need Photos scope or token). */
     val isSignedIn: Boolean = false,
     val signedInEmail: String? = null,
     val isBusy: Boolean = false,
     val error: String? = null,
+    /** Play Services says [com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions] is false — tap [grant scope]. */
+    val needsPlayServicesPhotosScope: Boolean = false,
+    /** One-shot consent from [com.google.android.gms.auth.UserRecoverableAuthException] (launched by UI). */
+    val pendingGoogleConsentIntent: Intent? = null,
+    val hasPhotosAccessToken: Boolean = false,
 )
 
 private const val GOOGLE_PHOTOS_LOG_TAG = "GooglePhotosImport"
@@ -50,14 +57,7 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            if (googleAuthManager.refreshTokenFromLastAccount()) {
-                _uiState.update {
-                    it.copy(
-                        isSignedIn = true,
-                        signedInEmail = googleAuthManager.getLastSignedInAccountEmail(),
-                    )
-                }
-            }
+            applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = false)
         }
     }
 
@@ -66,19 +66,39 @@ class GooglePhotosImportViewModel @Inject constructor(
     fun onSignInActivityResult(data: Intent?) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
-            val result = googleAuthManager.handleSignInActivityResult(data)
-            result.exceptionOrNull()?.let { err ->
-                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "sign-in failed: ${formatGooglePhotosDiagnostics(err)}")
-            }
-            _uiState.update {
-                it.copy(
-                    isBusy = false,
-                    isSignedIn = result.isSuccess && googleAuthManager.getAccessToken() != null,
-                    signedInEmail = googleAuthManager.getLastSignedInAccountEmail(),
-                    error = result.exceptionOrNull()?.message,
-                )
-            }
+            val sync = googleAuthManager.handleSignInActivityResult(data)
+            applySyncResult(sync, fromUserAction = true)
+            _uiState.update { it.copy(isBusy = false) }
         }
+    }
+
+    /** After [GoogleAuthManager.requestPhotosScopePermission] + [MainActivity.onActivityResult]. */
+    fun onGooglePhotosScopePermissionResult(resultCode: Int, data: Intent?) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, error = null) }
+            applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = true)
+            _uiState.update { it.copy(isBusy = false) }
+        }
+    }
+
+    /** After launching [GooglePhotosImportUiState.pendingGoogleConsentIntent]. */
+    fun onGoogleConsentActivityResult(resultCode: Int) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, error = null, pendingGoogleConsentIntent = null) }
+            if (resultCode == Activity.RESULT_OK) {
+                applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = true)
+            }
+            _uiState.update { it.copy(isBusy = false) }
+        }
+    }
+
+    fun clearPendingConsentIntent() {
+        _uiState.update { it.copy(pendingGoogleConsentIntent = null) }
+    }
+
+    fun requestPhotosScopePermission(activity: Activity) {
+        val account = googleAuthManager.getLastSignedInAccount() ?: return
+        googleAuthManager.requestPhotosScopePermission(activity, account)
     }
 
     fun startOrResumeImport() {
@@ -107,7 +127,72 @@ class GooglePhotosImportViewModel @Inject constructor(
             googleAuthManager.signOut()
             userPreferencesRepository.updateGooglePhotosPageToken(null)
             _uiState.update {
-                it.copy(isSignedIn = false, signedInEmail = null)
+                GooglePhotosImportUiState()
+            }
+        }
+    }
+
+    private fun applySyncResult(result: PhotosTokenSyncResult, fromUserAction: Boolean) {
+        val account = googleAuthManager.getLastSignedInAccount()
+        val email = googleAuthManager.getLastSignedInAccountEmail()
+        val token = googleAuthManager.getAccessToken()
+        when (result) {
+            is PhotosTokenSyncResult.Success -> {
+                _uiState.update {
+                    it.copy(
+                        isSignedIn = account != null,
+                        signedInEmail = email,
+                        error = null,
+                        needsPlayServicesPhotosScope = false,
+                        pendingGoogleConsentIntent = null,
+                        hasPhotosAccessToken = !token.isNullOrBlank(),
+                    )
+                }
+            }
+            is PhotosTokenSyncResult.NeedsScopePermissionRequest -> {
+                debugLog.log(
+                    GOOGLE_PHOTOS_LOG_TAG,
+                    "Photos scope not granted in Play Services — user must tap Grant library access",
+                )
+                _uiState.update {
+                    it.copy(
+                        isSignedIn = account != null,
+                        signedInEmail = email,
+                        needsPlayServicesPhotosScope = true,
+                        pendingGoogleConsentIntent = null,
+                        hasPhotosAccessToken = false,
+                        error = if (fromUserAction) null else it.error,
+                    )
+                }
+            }
+            is PhotosTokenSyncResult.NeedsUserConsentDialog -> {
+                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "Google account consent required for Photos token")
+                _uiState.update {
+                    it.copy(
+                        isSignedIn = account != null,
+                        signedInEmail = email,
+                        needsPlayServicesPhotosScope = false,
+                        pendingGoogleConsentIntent = result.consentIntent,
+                        hasPhotosAccessToken = false,
+                        error = null,
+                    )
+                }
+            }
+            is PhotosTokenSyncResult.Error -> {
+                val msg = result.throwable.message
+                result.throwable.let { err ->
+                    debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "token sync failed: ${formatGooglePhotosDiagnostics(err)}")
+                }
+                _uiState.update {
+                    it.copy(
+                        isSignedIn = account != null,
+                        signedInEmail = email,
+                        needsPlayServicesPhotosScope = false,
+                        pendingGoogleConsentIntent = null,
+                        hasPhotosAccessToken = !token.isNullOrBlank(),
+                        error = if (fromUserAction || account != null) msg else null,
+                    )
+                }
             }
         }
     }

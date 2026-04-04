@@ -21,6 +21,7 @@ import com.ulap.data.googlephotos.GooglePhotosImportEntityFactory
 import com.ulap.data.googlephotos.GooglePhotosImportItemStatus
 import com.ulap.data.googlephotos.GooglePhotosImportManager
 import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
+import com.ulap.data.googlephotos.httpStatusCodeOrNull
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.repository.UserPreferencesRepository
@@ -45,8 +46,11 @@ class GooglePhotosImportWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         setForeground(createForegroundInfo())
-        if (googleAuthManager.getAccessToken() == null) {
-            debugLog.log(TAG, "No Google access token; import aborted")
+        if (!googleAuthManager.refreshTokenFromLastAccount()) {
+            debugLog.log(
+                TAG,
+                "No Google access token for Photos import (sign in again or check OAuth client / scopes)",
+            )
             return Result.failure()
         }
 
@@ -115,8 +119,16 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
             debugLog.log(TAG, "import loop failed: ${formatGooglePhotosDiagnostics(e)}")
-            googleAuthManager.refreshTokenFromLastAccount()
-            return Result.retry()
+            when (e.httpStatusCodeOrNull()) {
+                401, 403 -> {
+                    googleAuthManager.clearAccessToken()
+                    return Result.failure()
+                }
+                else -> {
+                    googleAuthManager.refreshTokenFromLastAccount()
+                    return Result.retry()
+                }
+            }
         }
 
         return Result.success()
