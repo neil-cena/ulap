@@ -25,8 +25,8 @@ import javax.inject.Singleton
 
 private const val TAG = "GooglePhotosImport"
 
-/** Telegram Bot API: max document ~50 MiB. */
-internal const val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = 52_428_800
+/** Telegram Bot API: max document ~50 MiB; use 49 MiB payload so multipart boundaries/caption stay under the limit. */
+internal const val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = 51_380_224
 
 data class GooglePhotosImportStats(
     val itemsListed: Int,

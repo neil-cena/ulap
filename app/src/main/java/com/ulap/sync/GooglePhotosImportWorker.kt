@@ -111,6 +111,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
             Log.e(TAG, "import loop failed", e)
+            googleAuthManager.refreshTokenFromLastAccount()
             return Result.retry()
         }
 
