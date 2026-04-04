@@ -110,9 +110,9 @@ class MediaViewerViewModel @Inject constructor(
                 combine(allItems, _currentPage) { items, currentPage ->
                     if (items.isEmpty()) null
                     else {
-                        val start = (currentPage - 1).coerceAtLeast(0)
-                        val end = (currentPage + 1).coerceAtMost(items.size - 1)
-                        val windowIds = (start..end).mapNotNull { idx -> items.getOrNull(idx)?.id }
+                        // Only the active page: avoid prefetching / URL resolution for adjacent items.
+                        val idx = currentPage.coerceIn(0, items.lastIndex)
+                        val windowIds = listOf(items[idx].id)
                         Triple(items, windowIds, _streamUrlsCache.value)
                     }
                 }.collect { value ->

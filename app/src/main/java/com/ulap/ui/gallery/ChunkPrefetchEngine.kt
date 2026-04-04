@@ -30,6 +30,8 @@ class ChunkPrefetchEngine(
     private val concurrency: Int = 3,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /** Serializes Telegram `getFile` / CDN URL resolution to avoid HTTP 429 from parallel calls. */
+    private val urlMutex = Mutex()
     private val mutex = Mutex()
     private val generation = AtomicInteger(0)
     private val downloading = ConcurrentHashMap<Int, Job>()
@@ -129,7 +131,9 @@ class ChunkPrefetchEngine(
         for (attempt in 0 until 3) {
             if (generation.get() != gen) throw IOException("Stale generation for chunk $index")
             try {
-                return urlResolver(index)
+                return urlMutex.withLock {
+                    urlResolver(index)
+                }
             } catch (e: IOException) {
                 lastException = e
                 if (attempt < 2) {

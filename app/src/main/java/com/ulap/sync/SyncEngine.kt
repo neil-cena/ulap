@@ -700,10 +700,11 @@ class SyncEngine @Inject constructor(
             }
         }
 
-        // For large videos, use StreamingFastStartReader: reorders moov/mdat in-flight with zero
-        // extra disk usage by seeking the FileChannel rather than copying the full file to temp storage.
+        // For all videos, use StreamingFastStartReader when possible: reorders moov/mdat in-flight
+        // (large files) or returns a plain stream when already fast-start — so ExoPlayer clients
+        // never pay moov-at-the-end seek cost on newly uploaded MP4s.
         // Falls back to strippedInputStream if the URI is not seekable or parsing fails.
-        val uploadStream = if (isVideo && willChunk) {
+        val uploadStream = if (isVideo) {
             strippedInputStream.close()
             val reopened = StreamingFastStartReader.open(contentResolver, contentUri)
                 ?: contentResolver.openInputStream(contentUri)
