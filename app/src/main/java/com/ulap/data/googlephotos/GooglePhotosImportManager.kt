@@ -5,11 +5,15 @@ import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.local.entity.ChunkStatus
+import com.ulap.data.remote.BotPool
 import com.ulap.data.remote.CHUNK_UPLOAD_SIZE
 import com.ulap.data.remote.TelegramBotApi
 import com.ulap.data.remote.TelegramRateLimiter
+import com.ulap.data.remote.TelegramRateLimitException
+import com.ulap.data.remote.TelegramResponse
 import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.di.UploadClient
+import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -23,6 +27,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "GooglePhotosImport"
+
+/** Retries across bots when a bot returns HTTP 429 during image upload. */
+private const val MAX_UPLOAD_BOT_ATTEMPTS = 12
 
 /** Telegram Bot API: max chunk size is capped at 19 MB to stay under the 20 MB getFile() streaming limit. */
 internal val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = CHUNK_UPLOAD_SIZE.toInt() // 19 * 1024 * 1024
@@ -47,6 +54,7 @@ class GooglePhotosImportManager @Inject constructor(
     private val chunkMetadataDao: ChunkMetadataDao,
     private val rateLimiter: TelegramRateLimiter,
     private val credentialRepository: CredentialRepository,
+    private val botPool: BotPool,
 ) {
 
     /**
@@ -70,17 +78,20 @@ class GooglePhotosImportManager @Inject constructor(
                 )
                 return@withContext Result.success(GooglePhotosImportItemStatus.SKIPPED_DUPLICATE)
             }
-            val botToken = credentialRepository.getBotToken()
-                ?: return@withContext Result.failure(IllegalStateException("Telegram bot not configured"))
+            if (credentialRepository.getBotToken() == null) {
+                return@withContext Result.failure(IllegalStateException("Telegram bot not configured"))
+            }
             val chatId = credentialRepository.getChatId()
                 ?: return@withContext Result.failure(IllegalStateException("Telegram chat not configured"))
-            val safeToken = sanitizeTokenForPath(botToken)
             val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
             when {
-                item.mimeType.startsWith("video/") ->
-                    importVideoItem(item, safeToken, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                item.mimeType.startsWith("video/") -> {
+                    val bot = botPool.selectForUpload()
+                        ?: return@withContext Result.failure(IllegalStateException("No Telegram bot available for upload"))
+                    importVideoItem(item, bot, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                }
                 item.mimeType.startsWith("image/") ->
-                    importImageItem(item, safeToken, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importImageItemWithBotRetries(item, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
                 else -> {
                     Log.d(TAG, "skip non-media mime=${item.mimeType} id=${item.id}")
                     Result.success(GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED)
@@ -89,13 +100,37 @@ class GooglePhotosImportManager @Inject constructor(
         }
 
     /**
+     * Picks a bot via [botPool] on each attempt; on HTTP 429 marks that bot cooldown and retries
+     * with [botPool.selectForUpload] (same pattern as [com.ulap.sync.SyncEngine] multi-bot handoff).
+     */
+    private suspend fun importImageItemWithBotRetries(
+        item: GooglePhotosMediaItem,
+        chatIdBody: RequestBody,
+    ): Result<Unit> {
+        var lastError: Exception? = null
+        repeat(MAX_UPLOAD_BOT_ATTEMPTS) {
+            val bot = botPool.selectForUpload()
+                ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
+            try {
+                return importImageItem(item, bot, chatIdBody)
+            } catch (e: TelegramRateLimitException) {
+                botPool.markRateLimited(bot.index, e.retryAfterMs)
+                lastError = e
+            }
+        }
+        return Result.failure(
+            lastError ?: IllegalStateException("Image upload failed after $MAX_UPLOAD_BOT_ATTEMPTS bot attempts"),
+        )
+    }
+
+    /**
      * Downloads the image bytes from the authenticated Picker API base URL and uploads to
      * Telegram as a document. Using sendDocument preserves original quality and avoids
      * Telegram's 10 MB sendPhoto limit.
      */
     private suspend fun importImageItem(
         item: GooglePhotosMediaItem,
-        safeBotToken: String,
+        bot: BotCredential,
         chatIdBody: RequestBody,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
@@ -118,6 +153,7 @@ class GooglePhotosImportManager @Inject constructor(
         val fileName = item.filename?.takeIf { it.isNotBlank() } ?: "${item.id}.jpg"
         val mediaType = item.mimeType.toMediaTypeOrNull() ?: "image/jpeg".toMediaType()
         val part = MultipartBody.Part.createFormData("document", fileName, bytes.toRequestBody(mediaType))
+        val safeBotToken = sanitizeTokenForPath(bot.token)
         val response = rateLimiter.withRateLimit {
             uploadTelegramBotApi.sendDocument(
                 token = safeBotToken,
@@ -126,6 +162,7 @@ class GooglePhotosImportManager @Inject constructor(
                 caption = null,
             )
         }
+        throwIfTelegramRateLimited(response)
         if (!response.ok || response.result?.document == null) {
             if (!response.ok) rateLimiter.recordFailure()
             return Result.failure(
@@ -138,6 +175,7 @@ class GooglePhotosImportManager @Inject constructor(
             telegramFileId = message.document.fileId,
             messageId = message.messageId,
             thumbnailFileId = message.document.thumbnail?.fileId,
+            uploadBotIndex = bot.index,
         )
         mediaItemDao.upsert(entity)
         return Result.success(Unit)
@@ -145,7 +183,7 @@ class GooglePhotosImportManager @Inject constructor(
 
     private suspend fun importVideoItem(
         item: GooglePhotosMediaItem,
-        safeBotToken: String,
+        bot: BotCredential,
         chatIdBody: RequestBody,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
@@ -172,15 +210,22 @@ class GooglePhotosImportManager @Inject constructor(
         }
         val body = response.body()
             ?: return Result.failure(IllegalStateException("empty stream body"))
-        body.use { rb ->
-            rb.byteStream().use { input ->
-                return importVideoFromStream(item, safeBotToken, chatIdBody, input, posterFrameBytes)
+        val safeBotToken = sanitizeTokenForPath(bot.token)
+        return try {
+            body.use { rb ->
+                rb.byteStream().use { input ->
+                    importVideoFromStream(item, bot, safeBotToken, chatIdBody, input, posterFrameBytes)
+                }
             }
+        } catch (e: TelegramRateLimitException) {
+            botPool.markRateLimited(bot.index, e.retryAfterMs)
+            Result.failure(e)
         }
     }
 
     private suspend fun importVideoFromStream(
         item: GooglePhotosMediaItem,
+        bot: BotCredential,
         safeBotToken: String,
         chatIdBody: RequestBody,
         input: InputStream,
@@ -253,6 +298,7 @@ class GooglePhotosImportManager @Inject constructor(
             totalChunks = totalChunks.size,
             lastChunkMessageId = lastMsg,
             thumbnailFileId = totalChunks.first().thumbnailFileId,
+            uploadBotIndex = bot.index,
         )
         mediaItemDao.upsert(entity)
 
@@ -295,6 +341,7 @@ class GooglePhotosImportManager @Inject constructor(
                 thumbnail = thumbnail,
             )
         }
+        throwIfTelegramRateLimited(response)
         if (!response.ok || response.result?.document == null) {
             rateLimiter.recordFailure()
             return null
@@ -318,6 +365,14 @@ class GooglePhotosImportManager @Inject constructor(
         val byteLength: Int,
         val thumbnailFileId: String? = null,
     )
+
+    /** Same as [com.ulap.data.remote.TelegramUploader]: 429 → exception so [TelegramRateLimiter] and callers can react. */
+    private fun throwIfTelegramRateLimited(response: TelegramResponse<*>) {
+        if (response.errorCode == 429) {
+            val retryAfterMs = (response.parameters?.retryAfter ?: 30) * 1000L
+            throw TelegramRateLimitException(retryAfterMs)
+        }
+    }
 
     /**
      * Reads up to [buf].size bytes into [buf], or returns -1 at EOF before any byte read.

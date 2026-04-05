@@ -51,6 +51,8 @@ class GooglePhotosImportWorker @AssistedInject constructor(
 
     companion object {
         const val KEY_SESSION_ID = "picker_session_id"
+        /** Total items in the picker session (from [listMediaItems] count before enqueue). */
+        const val KEY_SELECTED_TOTAL = "selected_total"
         private val EMPTY_JSON_BODY = "{}".toRequestBody("application/json".toMediaType())
     }
 
@@ -62,6 +64,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             debugLog.log(TAG, "No picker session ID provided — cannot start import")
             return Result.failure()
         }
+        val selectedTotal = inputData.getInt(KEY_SELECTED_TOTAL, 0)
 
         if (!googleAuthManager.refreshTokenFromLastAccount()) {
             debugLog.log(
@@ -71,9 +74,20 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             return Result.failure()
         }
 
+        setProgress(
+            buildGooglePhotosImportProgressData(
+                imported = 0,
+                processed = 0,
+                selectedTotal = selectedTotal,
+            ),
+        )
+
         var nextPageToken: String? = null
         var imported = 0
         var processed = 0
+        var skippedDuplicate = 0
+        var skippedUnsupported = 0
+        var failed = 0
 
         try {
             do {
@@ -95,13 +109,13 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                                 processed++
                                 when (status) {
                                     GooglePhotosImportItemStatus.UPLOADED -> imported++
-                                    GooglePhotosImportItemStatus.SKIPPED_DUPLICATE,
-                                    GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED,
-                                    -> Unit
+                                    GooglePhotosImportItemStatus.SKIPPED_DUPLICATE -> skippedDuplicate++
+                                    GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED -> skippedUnsupported++
                                 }
                             },
                             onFailure = { err ->
                                 processed++
+                                failed++
                                 mediaItemDao.upsert(
                                     GooglePhotosImportEntityFactory.failedEntity(
                                         item,
@@ -116,6 +130,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                             "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(e)}",
                         )
                         processed++
+                        failed++
                         try {
                             mediaItemDao.upsert(
                                 GooglePhotosImportEntityFactory.failedEntity(
@@ -128,9 +143,10 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                         }
                     }
                     setProgress(
-                        workDataOf(
-                            "progress" to imported,
-                            "total" to processed,
+                        buildGooglePhotosImportProgressData(
+                            imported = imported,
+                            processed = processed,
+                            selectedTotal = selectedTotal,
                         ),
                     )
                 }
@@ -169,7 +185,16 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             }
         }
 
-        return Result.success()
+        return Result.success(
+            buildGooglePhotosImportSuccessOutput(
+                processed = processed,
+                imported = imported,
+                skippedDuplicate = skippedDuplicate,
+                skippedUnsupported = skippedUnsupported,
+                failed = failed,
+                stoppedEarly = isStopped,
+            ),
+        )
     }
 
     private fun createForegroundInfo(): ForegroundInfo {

@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -38,6 +39,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.work.WorkInfo
 import com.ulap.MainActivity
 import com.ulap.R
+import com.ulap.sync.GooglePhotosImportProgress
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,6 +48,7 @@ fun GooglePhotosImportScreen(
     viewModel: GooglePhotosImportViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
+    val selectedCount = state.selectedMediaCount
     val workInfo by viewModel.workInfo.collectAsState(initial = null)
     val context = LocalContext.current
     val activity = context as Activity
@@ -80,20 +83,40 @@ fun GooglePhotosImportScreen(
 
     val wi = workInfo
     val running = wi?.state == WorkInfo.State.RUNNING
-    val showStart = (wi == null ||
+    val workSettled = wi == null ||
         wi.state == WorkInfo.State.CANCELLED ||
         wi.state == WorkInfo.State.SUCCEEDED ||
-        wi.state == WorkInfo.State.FAILED) &&
-        state.pickerSessionId != null &&
-        !state.isWaitingForPicker
+        wi.state == WorkInfo.State.FAILED
     val importInFlight = wi != null && !(
         wi.state == WorkInfo.State.CANCELLED ||
             wi.state == WorkInfo.State.SUCCEEDED ||
             wi.state == WorkInfo.State.FAILED
         )
+    val sessionReadyForImport = state.pickerSessionId != null &&
+        !state.isWaitingForPicker &&
+        workSettled &&
+        !importInFlight
+    val showStart = sessionReadyForImport &&
+        !state.isCountingSelection &&
+        selectedCount != null &&
+        selectedCount > 0
 
-    val progressImported = wi?.progress?.getInt("progress", 0) ?: 0
-    val progressTotal = wi?.progress?.getInt("total", 0) ?: 0
+    val progressImported = wi?.progress?.getInt(GooglePhotosImportProgress.KEY_IMPORTED, 0) ?: 0
+    val progressProcessed = run {
+        val p = wi?.progress?.getInt(GooglePhotosImportProgress.KEY_PROCESSED, -1) ?: -1
+        if (p >= 0) p else wi?.progress?.getInt("total", 0) ?: 0
+    }
+    val progressSelectedFromWork = wi?.progress?.getInt(GooglePhotosImportProgress.KEY_SELECTED_TOTAL, 0) ?: 0
+    val progressSelectedTotal = when {
+        progressSelectedFromWork > 0 -> progressSelectedFromWork
+        selectedCount != null && selectedCount > 0 -> selectedCount
+        else -> 0
+    }
+    val barFraction = if (progressSelectedTotal > 0) {
+        (progressImported.toFloat() / progressSelectedTotal).coerceIn(0f, 1f)
+    } else {
+        0f
+    }
 
     Scaffold(
         topBar = {
@@ -123,6 +146,14 @@ fun GooglePhotosImportScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.fillMaxWidth(),
             )
+
+            state.importSuccessSummary?.let { summary ->
+                GooglePhotosImportSuccessCard(
+                    summary = summary,
+                    onDismiss = { viewModel.dismissImportSuccess() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
 
             if (!state.isSignedIn) {
                 Button(
@@ -207,21 +238,63 @@ fun GooglePhotosImportScreen(
                 }
             }
 
-            // Step 3: selection done, ready to import
-            if (showStart) {
-                Button(
-                    onClick = { viewModel.startOrResumeImport() },
-                    enabled = !state.isBusy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.google_photos_start_import))
-                }
-                OutlinedButton(
-                    onClick = { viewModel.cancelPickerSession() },
-                    enabled = !state.isBusy,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.google_photos_cancel_selection))
+            // Step 3: selection done — count items, then offer import or empty state
+            if (sessionReadyForImport) {
+                when {
+                    state.isCountingSelection -> {
+                        Text(
+                            text = stringResource(R.string.google_photos_counting_selection),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        CircularProgressIndicator()
+                    }
+                    selectedCount == 0 -> {
+                        Text(
+                            text = stringResource(R.string.google_photos_no_items_selected),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedButton(
+                            onClick = { viewModel.cancelPickerSession() },
+                            enabled = !state.isBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.google_photos_cancel_selection))
+                        }
+                    }
+                    selectedCount != null && selectedCount > 0 -> {
+                        Text(
+                            text = stringResource(R.string.google_photos_selected_count, selectedCount),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        if (showStart) {
+                            Button(
+                                onClick = { viewModel.startOrResumeImport() },
+                                enabled = !state.isBusy,
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text(stringResource(R.string.google_photos_start_import))
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { viewModel.cancelPickerSession() },
+                            enabled = !state.isBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.google_photos_cancel_selection))
+                        }
+                    }
+                    else -> {
+                        OutlinedButton(
+                            onClick = { viewModel.cancelPickerSession() },
+                            enabled = !state.isBusy,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(stringResource(R.string.google_photos_cancel_selection))
+                        }
+                    }
                 }
             }
 
@@ -235,19 +308,29 @@ fun GooglePhotosImportScreen(
                 }
             }
 
-            if (importInFlight || progressTotal > 0) {
+            if (state.importSuccessSummary == null &&
+                (importInFlight || progressProcessed > 0 || progressImported > 0)
+            ) {
                 Text(
                     text = stringResource(
                         R.string.google_photos_import_progress,
                         progressImported,
-                        progressTotal,
+                        progressProcessed,
+                        progressSelectedTotal,
                     ),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
 
             if (importInFlight) {
-                CircularProgressIndicator()
+                if (progressSelectedTotal > 0) {
+                    LinearProgressIndicator(
+                        progress = { barFraction },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                } else {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
             }
 
             state.error?.let { err ->

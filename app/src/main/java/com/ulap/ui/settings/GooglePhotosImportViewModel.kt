@@ -52,6 +52,12 @@ data class GooglePhotosImportUiState(    /** Google account is selected (may sti
     val pickerUri: String? = null,
     /** True while waiting for the user to finish selecting items in Google Photos. */
     val isWaitingForPicker: Boolean = false,
+    /** Total media items in the picker session (after [listMediaItems] count). Null until counted. */
+    val selectedMediaCount: Int? = null,
+    /** True while paginating the Picker API to count selected items. */
+    val isCountingSelection: Boolean = false,
+    /** Shown after the import worker finishes successfully; cleared by [dismissImportSuccess]. */
+    val importSuccessSummary: GooglePhotosImportSummary? = null,
 )
 
 private const val GOOGLE_PHOTOS_LOG_TAG = "GooglePhotosImport"
@@ -81,18 +87,41 @@ class GooglePhotosImportViewModel @Inject constructor(
         }
         viewModelScope.launch {
             workInfo.collect { wi ->
-                val terminal = wi?.state == WorkInfo.State.SUCCEEDED ||
-                    wi?.state == WorkInfo.State.FAILED ||
-                    wi?.state == WorkInfo.State.CANCELLED
-                if (terminal && _uiState.value.pickerSessionId != null) {
-                    userPreferencesRepository.setPickerSessionId(null)
-                    _uiState.update {
-                        it.copy(
-                            pickerSessionId = null,
-                            pickerUri = null,
-                            isWaitingForPicker = false,
-                        )
+                when (wi?.state) {
+                    WorkInfo.State.SUCCEEDED -> {
+                        if (_uiState.value.pickerSessionId != null) {
+                            val summary = wi.outputData.parseGooglePhotosImportSummary()
+                            userPreferencesRepository.setPickerSessionId(null)
+                            _uiState.update {
+                                it.copy(
+                                    pickerSessionId = null,
+                                    pickerUri = null,
+                                    isWaitingForPicker = false,
+                                    selectedMediaCount = null,
+                                    isCountingSelection = false,
+                                    importSuccessSummary = summary,
+                                    error = null,
+                                )
+                            }
+                        }
                     }
+                    WorkInfo.State.FAILED,
+                    WorkInfo.State.CANCELLED,
+                    -> {
+                        if (_uiState.value.pickerSessionId != null) {
+                            userPreferencesRepository.setPickerSessionId(null)
+                            _uiState.update {
+                                it.copy(
+                                    pickerSessionId = null,
+                                    pickerUri = null,
+                                    isWaitingForPicker = false,
+                                    selectedMediaCount = null,
+                                    isCountingSelection = false,
+                                )
+                            }
+                        }
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -154,6 +183,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                         pickerUri = session.pickerUri,
                         isWaitingForPicker = true,
                         isBusy = false,
+                        importSuccessSummary = null,
                     )
                 }
                 launchUri(session.pickerUri)
@@ -175,6 +205,9 @@ class GooglePhotosImportViewModel @Inject constructor(
                 pickerSessionId = null,
                 pickerUri = null,
                 isWaitingForPicker = false,
+                selectedMediaCount = null,
+                isCountingSelection = false,
+                importSuccessSummary = null,
                 error = null,
             )
         }
@@ -188,13 +221,20 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     fun startOrResumeImport() {
         val sessionId = _uiState.value.pickerSessionId ?: return
+        val selectedTotal = _uiState.value.selectedMediaCount ?: return
+        if (selectedTotal <= 0) return
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.UNMETERED)
             .build()
 
         val request = OneTimeWorkRequestBuilder<GooglePhotosImportWorker>()
             .setConstraints(constraints)
-            .setInputData(workDataOf(GooglePhotosImportWorker.KEY_SESSION_ID to sessionId))
+            .setInputData(
+                workDataOf(
+                    GooglePhotosImportWorker.KEY_SESSION_ID to sessionId,
+                    GooglePhotosImportWorker.KEY_SELECTED_TOTAL to selectedTotal,
+                ),
+            )
             .build()
 
         workManager.enqueueUniqueWork(
@@ -206,6 +246,10 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     fun pauseImport() {
         workManager.cancelUniqueWork("google_import")
+    }
+
+    fun dismissImportSuccess() {
+        _uiState.update { it.copy(importSuccessSummary = null) }
     }
 
     fun signOut() {
@@ -232,6 +276,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                         isWaitingForPicker = false,
                     )
                 }
+                refreshSelectionCount(savedSessionId)
             } else {
                 _uiState.update {
                     it.copy(
@@ -260,6 +305,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                     val session = pickerApi.getSession(sessionId)
                     if (session.mediaItemsSet) {
                         _uiState.update { it.copy(isWaitingForPicker = false) }
+                        refreshSelectionCount(sessionId)
                         break
                     }
                     if (System.currentTimeMillis() - startTime > timeoutMs) {
@@ -290,6 +336,48 @@ class GooglePhotosImportViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    private fun refreshSelectionCount(sessionId: String) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isCountingSelection = true, error = null) }
+            try {
+                val n = countMediaItemsInSession(sessionId)
+                _uiState.update {
+                    it.copy(
+                        selectedMediaCount = n,
+                        isCountingSelection = false,
+                    )
+                }
+            } catch (e: Exception) {
+                debugLog.log(
+                    GOOGLE_PHOTOS_LOG_TAG,
+                    "countMediaItemsInSession failed: ${formatGooglePhotosDiagnostics(e)}",
+                )
+                _uiState.update {
+                    it.copy(
+                        isCountingSelection = false,
+                        selectedMediaCount = null,
+                        error = "Could not count selected photos: ${e.message}",
+                    )
+                }
+            }
+        }
+    }
+
+    private suspend fun countMediaItemsInSession(sessionId: String): Int {
+        var total = 0
+        var pageToken: String? = null
+        do {
+            val response = pickerApi.listMediaItems(
+                sessionId = sessionId,
+                pageSize = 100,
+                pageToken = pageToken,
+            )
+            total += response.mediaItems.orEmpty().size
+            pageToken = response.nextPageToken
+        } while (!pageToken.isNullOrBlank())
+        return total
     }
 
     private fun applySyncResult(result: PhotosTokenSyncResult, fromUserAction: Boolean) {

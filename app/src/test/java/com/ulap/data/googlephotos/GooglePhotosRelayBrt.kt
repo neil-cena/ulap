@@ -79,6 +79,7 @@ class GooglePhotosRelayBrt {
             assertEquals("$trace POST", "POST", req.method)
             assertTrue("$trace path sendPhoto", req.path.orEmpty().contains("sendPhoto"))
             val body = req.body!!.readUtf8()
+            assertTrue("$trace multipart field photo (xb-brt-forge tdd/task_1_red_spec.md)", body.contains("name=\"photo\""))
             assertTrue("$trace multipart contains photo URL", body.contains(photoUrl))
         } finally {
             server.shutdown()

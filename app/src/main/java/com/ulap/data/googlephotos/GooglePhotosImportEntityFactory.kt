@@ -19,6 +19,7 @@ internal object GooglePhotosImportEntityFactory {
         messageId: Long,
         thumbnailFileId: String? = null,
         remoteThumbnailUrl: String? = null,
+        uploadBotIndex: Int = 0,
     ): MediaItemEntity {
         val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
         val name = item.filename ?: item.id
@@ -42,6 +43,7 @@ internal object GooglePhotosImportEntityFactory {
             errorMessage = null,
             thumbnailFileId = thumbnailFileId,
             remoteThumbnailUrl = remoteThumbnailUrl,
+            uploadBotIndex = uploadBotIndex,
             widthPx = w,
             heightPx = h,
         )
@@ -55,6 +57,7 @@ internal object GooglePhotosImportEntityFactory {
         lastChunkMessageId: Long,
         thumbnailFileId: String? = null,
         remoteThumbnailUrl: String? = null,
+        uploadBotIndex: Int = 0,
     ): MediaItemEntity {
         val createdMs = parseCreationTime(item.mediaMetadata?.creationTime)
         val name = item.filename ?: item.id
@@ -79,6 +82,7 @@ internal object GooglePhotosImportEntityFactory {
             uploadedChunkCount = totalChunks,
             thumbnailFileId = thumbnailFileId,
             remoteThumbnailUrl = remoteThumbnailUrl,
+            uploadBotIndex = uploadBotIndex,
             widthPx = w,
             heightPx = h,
         )

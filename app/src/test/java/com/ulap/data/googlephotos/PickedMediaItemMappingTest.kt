@@ -23,7 +23,12 @@ class PickedMediaItemMappingTest {
             mimeType = mimeType,
             filename = filename,
             mediaFileMetadata = if (width != null || height != null) {
-                PickedMediaFileMetadata(width = width, height = height)
+                PickedMediaFileMetadata(
+                    width = width,
+                    height = height,
+                    cameraMake = null,
+                    cameraModel = null,
+                )
             } else {
                 null
             },
