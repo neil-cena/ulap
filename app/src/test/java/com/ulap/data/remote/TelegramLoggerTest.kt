@@ -75,6 +75,7 @@ class TelegramLoggerTest {
             chatId: RequestBody,
             document: MultipartBody.Part,
             caption: RequestBody?,
+            thumbnail: MultipartBody.Part?,
         ): TelegramResponse<TelegramMessage> =
             throw UnsupportedOperationException("not used in TelegramLogger tests")
 

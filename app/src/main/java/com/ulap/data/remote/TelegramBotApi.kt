@@ -60,6 +60,7 @@ interface TelegramBotApi {
         @Part("chat_id") chatId: RequestBody,
         @Part document: MultipartBody.Part,
         @Part("caption") caption: RequestBody? = null,
+        @Part thumbnail: MultipartBody.Part? = null,
     ): TelegramResponse<TelegramMessage>
 
     @GET("bot{token}/getFile")
