@@ -9,10 +9,12 @@ import com.ulap.data.local.db.ROOM_BATCH_SIZE
 import com.ulap.data.local.entity.BackupStatus
 import com.ulap.data.local.entity.MediaItemEntity
 import com.ulap.data.local.entity.SyncStateEntity
+import com.ulap.domain.gallery.isVisibleInGalleryGrid
 import com.ulap.domain.model.BackupStats
 import com.ulap.domain.model.MediaItem
 import com.ulap.domain.repository.MediaRepository
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,14 +28,47 @@ class MediaRepositoryImpl @Inject constructor(
 ) : MediaRepository {
 
     override fun observeTimeline(): Flow<List<MediaItem>> =
-        mediaItemDao.observeAll().map { entities -> entities.map { it.toDomain() } }
+        combine(
+            folderDao.observeAll(),
+            mediaItemDao.observeAll(),
+        ) { folders, entities ->
+            val enabled = folders.filter { it.isEnabled }.map { it.bucketName }.toSet()
+            val managed = folders.map { it.bucketName }.toSet()
+            entities
+                .filter { e ->
+                    isVisibleInGalleryGrid(
+                        backupStatus = com.ulap.domain.model.BackupStatus.valueOf(e.backupStatus.name),
+                        bucketName = e.bucketName,
+                        enabledBucketNames = enabled,
+                        allManagedBucketNames = managed,
+                    )
+                }
+                .map { it.toDomain() }
+        }
 
     override fun observeByFolder(bucketName: String): Flow<List<MediaItem>> =
         mediaItemDao.observeByBuckets(listOf(bucketName)).map { entities -> entities.map { it.toDomain() } }
 
-    override fun observeByMediaType(type: com.ulap.domain.model.MediaType): Flow<List<MediaItem>> =
-        mediaItemDao.observeByMediaType(com.ulap.data.local.entity.MediaType.valueOf(type.name))
-            .map { entities -> entities.map { it.toDomain() } }
+    override fun observeByMediaType(type: com.ulap.domain.model.MediaType): Flow<List<MediaItem>> {
+        val entityType = com.ulap.data.local.entity.MediaType.valueOf(type.name)
+        return combine(
+            folderDao.observeAll(),
+            mediaItemDao.observeByMediaType(entityType),
+        ) { folders, entities ->
+            val enabled = folders.filter { it.isEnabled }.map { it.bucketName }.toSet()
+            val managed = folders.map { it.bucketName }.toSet()
+            entities
+                .filter { e ->
+                    isVisibleInGalleryGrid(
+                        backupStatus = com.ulap.domain.model.BackupStatus.valueOf(e.backupStatus.name),
+                        bucketName = e.bucketName,
+                        enabledBucketNames = enabled,
+                        allManagedBucketNames = managed,
+                    )
+                }
+                .map { it.toDomain() }
+        }
+    }
 
     override fun observeBackupStats(): Flow<BackupStats> =
         mediaItemDao.observeBackupStatsGrouped().map { rows ->
