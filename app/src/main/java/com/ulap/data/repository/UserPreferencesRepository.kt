@@ -33,6 +33,7 @@ private const val KEY_TELEGRAM_LOGGING_ENABLED = "telegram_logging_enabled"
 private const val KEY_TELEGRAM_LOGGING_CHAT_ID = "telegram_logging_chat_id"
 
 private val GOOGLE_PHOTOS_NEXT_PAGE_TOKEN = stringPreferencesKey("google_photos_sync_token")
+private val GOOGLE_PHOTOS_PICKER_SESSION_ID = stringPreferencesKey("google_photos_picker_session_id")
 
 @Singleton
 class UserPreferencesRepository @Inject constructor(
@@ -71,6 +72,17 @@ class UserPreferencesRepository @Inject constructor(
         dataStore.edit { preferences ->
             if (token == null) preferences.remove(GOOGLE_PHOTOS_NEXT_PAGE_TOKEN)
             else preferences[GOOGLE_PHOTOS_NEXT_PAGE_TOKEN] = token
+        }
+    }
+
+    val pickerSessionId: Flow<String?> = dataStore.data.map { preferences ->
+        preferences[GOOGLE_PHOTOS_PICKER_SESSION_ID]
+    }
+
+    suspend fun setPickerSessionId(sessionId: String?) {
+        dataStore.edit { preferences ->
+            if (sessionId == null) preferences.remove(GOOGLE_PHOTOS_PICKER_SESSION_ID)
+            else preferences[GOOGLE_PHOTOS_PICKER_SESSION_ID] = sessionId
         }
     }
 

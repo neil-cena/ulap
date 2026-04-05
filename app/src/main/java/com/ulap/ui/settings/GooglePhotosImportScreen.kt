@@ -2,6 +2,7 @@ package com.ulap.ui.settings
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.DisposableEffect
@@ -79,11 +80,17 @@ fun GooglePhotosImportScreen(
 
     val wi = workInfo
     val running = wi?.state == WorkInfo.State.RUNNING
-    val showStart = wi == null ||
+    val showStart = (wi == null ||
         wi.state == WorkInfo.State.CANCELLED ||
         wi.state == WorkInfo.State.SUCCEEDED ||
-        wi.state == WorkInfo.State.FAILED
-    val importInFlight = wi != null && !showStart
+        wi.state == WorkInfo.State.FAILED) &&
+        state.pickerSessionId != null &&
+        !state.isWaitingForPicker
+    val importInFlight = wi != null && !(
+        wi.state == WorkInfo.State.CANCELLED ||
+            wi.state == WorkInfo.State.SUCCEEDED ||
+            wi.state == WorkInfo.State.FAILED
+        )
 
     val progressImported = wi?.progress?.getInt("progress", 0) ?: 0
     val progressTotal = wi?.progress?.getInt("total", 0) ?: 0
@@ -116,6 +123,7 @@ fun GooglePhotosImportScreen(
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.fillMaxWidth(),
             )
+
             if (!state.isSignedIn) {
                 Button(
                     onClick = { signInLauncher.launch(viewModel.getSignInIntent(activity)) },
@@ -125,6 +133,7 @@ fun GooglePhotosImportScreen(
                     Text(stringResource(R.string.google_photos_sign_in))
                 }
             }
+
             state.signedInEmail?.takeIf { it.isNotBlank() }?.let { email ->
                 Text(
                     text = stringResource(R.string.google_photos_signed_in_as, email),
@@ -132,6 +141,7 @@ fun GooglePhotosImportScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+
             if (state.needsPlayServicesPhotosScope) {
                 Button(
                     onClick = { viewModel.requestPhotosScopePermission(activity) },
@@ -141,6 +151,7 @@ fun GooglePhotosImportScreen(
                     Text(stringResource(R.string.google_photos_grant_library_scope))
                 }
             }
+
             if (state.isSignedIn) {
                 OutlinedButton(
                     onClick = { viewModel.signOut() },
@@ -150,18 +161,70 @@ fun GooglePhotosImportScreen(
                     Text(stringResource(R.string.google_photos_disconnect_account))
                 }
             }
+
             if (state.isBusy) {
                 CircularProgressIndicator(modifier = Modifier.height(32.dp))
             }
-            if (state.isSignedIn && state.hasPhotosAccessToken && showStart) {
+
+            // Step 1: user is ready to pick — show the "Select from Google Photos" button
+            if (state.isSignedIn && state.hasPhotosAccessToken &&
+                !state.isWaitingForPicker && state.pickerSessionId == null && !importInFlight
+            ) {
+                Button(
+                    onClick = {
+                        viewModel.createPickerSession { uri ->
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
+                        }
+                    },
+                    enabled = !state.isBusy && !state.needsPlayServicesPhotosScope,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_select_photos))
+                }
+            }
+
+            // Step 2: session open, waiting for user to finish selecting in Google Photos
+            if (state.isWaitingForPicker) {
+                Text(
+                    text = stringResource(R.string.google_photos_waiting_for_selection),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                CircularProgressIndicator()
+                state.pickerUri?.let { uri ->
+                    OutlinedButton(
+                        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri))) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.google_photos_open_picker))
+                    }
+                }
+                OutlinedButton(
+                    onClick = { viewModel.cancelPickerSession() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_cancel_selection))
+                }
+            }
+
+            // Step 3: selection done, ready to import
+            if (showStart) {
                 Button(
                     onClick = { viewModel.startOrResumeImport() },
-                    enabled = !state.isBusy && !state.needsPlayServicesPhotosScope,
+                    enabled = !state.isBusy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.google_photos_start_import))
                 }
+                OutlinedButton(
+                    onClick = { viewModel.cancelPickerSession() },
+                    enabled = !state.isBusy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.google_photos_cancel_selection))
+                }
             }
+
             if (running) {
                 Button(
                     onClick = { viewModel.pauseImport() },
@@ -171,6 +234,7 @@ fun GooglePhotosImportScreen(
                     Text(stringResource(R.string.google_photos_pause_import))
                 }
             }
+
             if (importInFlight || progressTotal > 0) {
                 Text(
                     text = stringResource(
@@ -181,9 +245,11 @@ fun GooglePhotosImportScreen(
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
+
             if (importInFlight) {
                 CircularProgressIndicator()
             }
+
             state.error?.let { err ->
                 Text(
                     text = err,
@@ -191,6 +257,7 @@ fun GooglePhotosImportScreen(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+
             Spacer(modifier = Modifier.weight(1f, fill = false))
         }
     }

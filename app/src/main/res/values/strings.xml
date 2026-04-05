@@ -187,12 +187,16 @@
     <string name="bot_pool_empty_hint">No secondary bots. Uploads use the primary bot only.</string>
     <string name="bot_pool_hint_in_setup">You can add extra bots later in Settings → Bot Pool to spread uploads and reduce rate-limit risk.</string>
 
-    <!-- Google Photos → Telegram import (Phase 1) -->
+    <!-- Google Photos → Telegram import (Picker API) -->
     <string name="google_photos_import_nav">Import from Google Photos</string>
     <string name="google_photos_import_title">Google Photos import</string>
-    <string name="google_photos_import_body">Sign in with Google, then import images from your library to Telegram. Telegram downloads each photo from Google directly — nothing is written to this device\'s storage.</string>
+    <string name="google_photos_import_body">Sign in with Google, then select photos and videos from your Google Photos library to import to Telegram. Nothing is written to this device\'s storage.</string>
     <string name="google_photos_sign_in">Sign in with Google</string>
-    <string name="google_photos_grant_library_scope">Allow Google Photos library access</string>
+    <string name="google_photos_grant_library_scope">Allow Google Photos access</string>
+    <string name="google_photos_select_photos">Select from Google Photos</string>
+    <string name="google_photos_waiting_for_selection">Waiting for you to finish selecting photos in Google Photos…</string>
+    <string name="google_photos_open_picker">Open Google Photos</string>
+    <string name="google_photos_cancel_selection">Cancel selection</string>
     <string name="google_photos_start_import">Start import</string>
     <string name="google_photos_import_progress">%1$d imported · %2$d processed</string>
     <string name="google_photos_pause_import">Pause import</string>

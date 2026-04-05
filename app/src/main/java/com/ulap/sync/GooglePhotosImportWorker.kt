@@ -16,18 +16,22 @@ import androidx.work.workDataOf
 import com.ulap.MainActivity
 import com.ulap.R
 import com.ulap.data.auth.GoogleAuthManager
-import com.ulap.data.googlephotos.GooglePhotosApi
 import com.ulap.data.googlephotos.GooglePhotosImportEntityFactory
 import com.ulap.data.googlephotos.GooglePhotosImportItemStatus
 import com.ulap.data.googlephotos.GooglePhotosImportManager
+import com.ulap.data.googlephotos.GooglePhotosPickerApi
 import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
 import com.ulap.data.googlephotos.httpStatusCodeOrNull
+import com.ulap.data.googlephotos.toGooglePhotosMediaItem
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.data.local.dao.MediaItemDao
-import com.ulap.data.repository.UserPreferencesRepository
+import com.ulap.data.remote.BackupIndexManager
+import com.ulap.domain.repository.CredentialRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
-import kotlinx.coroutines.flow.first
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
+
 private const val TAG = "GooglePhotosImportWorker"
 private const val NOTIFICATION_ID = 1003
 private const val CHANNEL_ID = "ulap_google_photos_import"
@@ -36,16 +40,29 @@ private const val CHANNEL_ID = "ulap_google_photos_import"
 class GooglePhotosImportWorker @AssistedInject constructor(
     @Assisted context: Context,
     @Assisted params: WorkerParameters,
-    private val googlePhotosApi: GooglePhotosApi,
-    private val userPreferencesRepository: UserPreferencesRepository,
+    private val pickerApi: GooglePhotosPickerApi,
     private val mediaItemDao: MediaItemDao,
     private val importManager: GooglePhotosImportManager,
     private val googleAuthManager: GoogleAuthManager,
+    private val backupIndexManager: BackupIndexManager,
+    private val credentialRepository: CredentialRepository,
     private val debugLog: DebugLogBuffer,
 ) : CoroutineWorker(context, params) {
 
+    companion object {
+        const val KEY_SESSION_ID = "picker_session_id"
+        private val EMPTY_JSON_BODY = "{}".toRequestBody("application/json".toMediaType())
+    }
+
     override suspend fun doWork(): Result {
         setForeground(createForegroundInfo())
+
+        val sessionId = inputData.getString(KEY_SESSION_ID)
+        if (sessionId.isNullOrBlank()) {
+            debugLog.log(TAG, "No picker session ID provided — cannot start import")
+            return Result.failure()
+        }
+
         if (!googleAuthManager.refreshTokenFromLastAccount()) {
             debugLog.log(
                 TAG,
@@ -54,19 +71,23 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             return Result.failure()
         }
 
-        var nextPageToken: String? = userPreferencesRepository.googlePhotosPageToken.first()
+        var nextPageToken: String? = null
         var imported = 0
-        /** Items evaluated this run (uploaded, skipped duplicate, skipped unsupported, or failed attempt). */
         var processed = 0
 
         try {
             do {
                 if (isStopped) break
-                val response = googlePhotosApi.listMediaItems(pageSize = 100, pageToken = nextPageToken)
+                val response = pickerApi.listMediaItems(
+                    sessionId = sessionId,
+                    pageSize = 100,
+                    pageToken = nextPageToken,
+                )
                 val items = response.mediaItems.orEmpty()
 
-                for (item in items) {
+                for (pickedItem in items) {
                     if (isStopped) break
+                    val item = pickedItem.toGooglePhotosMediaItem()
                     try {
                         val result = importManager.importGooglePhotosMediaItem(item)
                         result.fold(
@@ -115,7 +136,6 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 }
 
                 nextPageToken = response.nextPageToken
-                userPreferencesRepository.updateGooglePhotosPageToken(nextPageToken)
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
             debugLog.log(TAG, "import loop failed: ${formatGooglePhotosDiagnostics(e)}")
@@ -128,6 +148,24 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                     googleAuthManager.refreshTokenFromLastAccount()
                     return Result.retry()
                 }
+            }
+        }
+
+        // Clean up the session after a successful (or fully-stopped) run
+        if (!isStopped) {
+            runCatching { pickerApi.deleteSession(sessionId) }
+                .onFailure { debugLog.log(TAG, "deleteSession failed (non-critical): ${it.message}") }
+
+            val token = credentialRepository.getBotToken()
+            val chatId = credentialRepository.getChatId()
+            if (token != null && chatId != null) {
+                runCatching { backupIndexManager.exportAndUpload(token, chatId) }
+                    .onFailure { debugLog.log(TAG, "index export failed (non-critical): ${it.message}") }
+                    .onSuccess { result ->
+                        result.onFailure { debugLog.log(TAG, "index export returned failure (non-critical): ${it.message}") }
+                    }
+            } else {
+                debugLog.log(TAG, "index export skipped — no Telegram credentials configured")
             }
         }
 
@@ -176,5 +214,4 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             )
         }
     }
-
 }

@@ -1,7 +1,6 @@
 package com.ulap.di
 
-import com.ulap.data.googlephotos.GOOGLE_PHOTOS_NO_AUTH_HEADER
-import com.ulap.data.googlephotos.GooglePhotosApi
+import com.ulap.data.googlephotos.GooglePhotosPickerApi
 import com.ulap.data.remote.TelegramBotApi
 import dagger.Module
 import dagger.Provides
@@ -49,36 +48,29 @@ object NetworkModule {
 
     @Provides
     @Singleton
-    fun provideGooglePhotosApi(
+    fun provideGooglePhotosPickerApi(
         okHttpClient: OkHttpClient,
         googleAuthManager: GoogleAuthManager,
-    ): GooglePhotosApi {
+    ): GooglePhotosPickerApi {
         val client = okHttpClient.newBuilder()
             .addInterceptor { chain ->
-                val original = chain.request()
-                if (original.header(GOOGLE_PHOTOS_NO_AUTH_HEADER) != null) {
-                    val withoutMarker = original.newBuilder()
-                        .removeHeader(GOOGLE_PHOTOS_NO_AUTH_HEADER)
-                        .build()
-                    return@addInterceptor chain.proceed(withoutMarker)
-                }
                 val token = googleAuthManager.getAccessToken()
                 val request = if (token != null) {
-                    original.newBuilder()
+                    chain.request().newBuilder()
                         .header("Authorization", "Bearer $token")
                         .build()
                 } else {
-                    original
+                    chain.request()
                 }
                 chain.proceed(request)
             }
             .build()
         return Retrofit.Builder()
-            .baseUrl("https://photoslibrary.googleapis.com/v1/")
+            .baseUrl("https://photospicker.googleapis.com/v1/")
             .client(client)
             .addConverterFactory(GsonConverterFactory.create())
             .build()
-            .create(GooglePhotosApi::class.java)
+            .create(GooglePhotosPickerApi::class.java)
     }
 
     // NOTE: @UploadClient on the parameter is mandatory.

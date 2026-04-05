@@ -5,10 +5,9 @@ import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.local.entity.ChunkMetadataEntity
 import com.ulap.data.local.entity.ChunkStatus
+import com.ulap.data.remote.CHUNK_UPLOAD_SIZE
 import com.ulap.data.remote.TelegramBotApi
-import com.ulap.data.remote.TelegramMessage
 import com.ulap.data.remote.TelegramRateLimiter
-import com.ulap.data.remote.largestPhotoFileId
 import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.di.UploadClient
 import com.ulap.domain.repository.CredentialRepository
@@ -25,14 +24,8 @@ import javax.inject.Singleton
 
 private const val TAG = "GooglePhotosImport"
 
-/** Telegram Bot API: max document ~50 MiB; use 49 MiB payload so multipart boundaries/caption stay under the limit. */
-internal const val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = 51_380_224 // 49 * 1024 * 1024
-
-data class GooglePhotosImportStats(
-    val itemsListed: Int,
-    val imagesImported: Int,
-    val videosImported: Int,
-)
+/** Telegram Bot API: max chunk size is capped at 19 MB to stay under the 20 MB getFile() streaming limit. */
+internal val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = CHUNK_UPLOAD_SIZE.toInt() // 19 * 1024 * 1024
 
 /** Outcome of [GooglePhotosImportManager.importGooglePhotosMediaItem] for worker progress accounting. */
 enum class GooglePhotosImportItemStatus {
@@ -48,7 +41,7 @@ enum class GooglePhotosImportItemStatus {
 
 @Singleton
 class GooglePhotosImportManager @Inject constructor(
-    private val googlePhotosApi: GooglePhotosApi,
+    private val pickerApi: GooglePhotosPickerApi,
     private val telegramBotApi: TelegramBotApi,
     @UploadClient private val uploadTelegramBotApi: TelegramBotApi,
     private val mediaItemDao: MediaItemDao,
@@ -57,59 +50,9 @@ class GooglePhotosImportManager @Inject constructor(
     private val credentialRepository: CredentialRepository,
 ) {
 
-    suspend fun importGooglePhotosLibrary(
-        onProgress: (processed: Int, imported: Int) -> Unit = { _, _ -> },
-    ): Result<GooglePhotosImportStats> = withContext(Dispatchers.IO) {
-        val botToken = credentialRepository.getBotToken()
-            ?: return@withContext Result.failure(IllegalStateException("Telegram bot not configured"))
-        val chatId = credentialRepository.getChatId()
-            ?: return@withContext Result.failure(IllegalStateException("Telegram chat not configured"))
-        val safeToken = sanitizeTokenForPath(botToken)
-        val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
-
-        var pageToken: String? = null
-        var itemsListed = 0
-        var imagesImported = 0
-        var videosImported = 0
-        var processed = 0
-
-        do {
-            val page = googlePhotosApi.listMediaItems(pageToken = pageToken)
-            val items = page.mediaItems.orEmpty()
-            itemsListed += items.size
-            pageToken = page.nextPageToken
-
-            for (item in items) {
-                processed++
-                when {
-                    item.mimeType.startsWith("video/") -> {
-                        val result = importVideoItem(item, safeToken, chatIdBody)
-                        if (result.isSuccess) videosImported++
-                    }
-                    !item.mimeType.startsWith("image/") -> {
-                        Log.d(TAG, "skip non-image mime=${item.mimeType} id=${item.id}")
-                    }
-                    else -> {
-                        val result = importImageItem(item, safeToken, chatIdBody)
-                        if (result.isSuccess) imagesImported++
-                    }
-                }
-                onProgress(processed, imagesImported + videosImported)
-            }
-        } while (pageToken != null)
-
-        Result.success(
-            GooglePhotosImportStats(
-                itemsListed = itemsListed,
-                imagesImported = imagesImported,
-                videosImported = videosImported,
-            ),
-        )
-    }
-
     /**
-     * Imports a single library item (image via URL relay, video via in-memory chunking).
-     * Used by [com.ulap.sync.GooglePhotosImportWorker]; skips non-image/non-video MIME types without failure.
+     * Imports a single media item (image via authenticated download, video via in-memory chunking).
+     * Used by [com.ulap.sync.GooglePhotosImportWorker]; skips non-image/non-video MIME types.
      */
     suspend fun importGooglePhotosMediaItem(item: GooglePhotosMediaItem): Result<GooglePhotosImportItemStatus> =
         withContext(Dispatchers.IO) {
@@ -146,19 +89,11 @@ class GooglePhotosImportManager @Inject constructor(
             }
         }
 
-    suspend fun importSingleGooglePhotoItemForTest(
-        item: GooglePhotosMediaItem,
-        botToken: String,
-        chatId: String,
-    ): Result<Unit> = withContext(Dispatchers.IO) {
-        if (!item.mimeType.startsWith("image/")) {
-            return@withContext Result.failure(IllegalArgumentException("not an image"))
-        }
-        val safeToken = sanitizeTokenForPath(botToken)
-        val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
-        importImageItem(item, safeToken, chatIdBody)
-    }
-
+    /**
+     * Downloads the image bytes from the authenticated Picker API base URL and uploads to
+     * Telegram as a document. Using sendDocument preserves original quality and avoids
+     * Telegram's 10 MB sendPhoto limit.
+     */
     private suspend fun importImageItem(
         item: GooglePhotosMediaItem,
         safeBotToken: String,
@@ -170,29 +105,41 @@ class GooglePhotosImportManager @Inject constructor(
             )
         }
         val baseUrl = item.baseUrl!!
-        val photoUrl = GooglePhotosUrls.fullResolutionImageUrl(baseUrl)
-        val photoBody = photoUrl.toRequestBody("text/plain".toMediaType())
+        val downloadUrl = GooglePhotosUrls.fullResolutionImageUrl(baseUrl)
+        val streamResponse = pickerApi.streamMedia(downloadUrl)
+        if (!streamResponse.isSuccessful) {
+            streamResponse.errorBody()?.close()
+            return Result.failure(
+                IllegalStateException("Google stream failed: HTTP ${streamResponse.code()}"),
+            )
+        }
+        val body = streamResponse.body()
+            ?: return Result.failure(IllegalStateException("empty stream body from Google Photos"))
+        val bytes = body.use { it.bytes() }
+        val fileName = item.filename?.takeIf { it.isNotBlank() } ?: "${item.id}.jpg"
+        val mediaType = item.mimeType.toMediaTypeOrNull() ?: "image/jpeg".toMediaType()
+        val part = MultipartBody.Part.createFormData("document", fileName, bytes.toRequestBody(mediaType))
         val response = rateLimiter.withRateLimit {
-            telegramBotApi.sendPhotoFromUrl(
+            uploadTelegramBotApi.sendDocument(
                 token = safeBotToken,
                 chatId = chatIdBody,
-                photoUrl = photoBody,
+                document = part,
                 caption = null,
             )
         }
-        if (!response.ok || response.result == null) {
+        if (!response.ok || response.result?.document == null) {
+            if (!response.ok) rateLimiter.recordFailure()
             return Result.failure(
-                IllegalStateException(response.description ?: "sendPhoto failed"),
+                IllegalStateException(response.description ?: "sendDocument failed for image"),
             )
         }
-        val message: TelegramMessage = response.result
-        val fileId = message.largestPhotoFileId()
-            ?: return Result.failure(IllegalStateException("no file_id in Telegram response"))
+        val message = response.result
+        val thumbUrl = resolveThumbUrl(safeBotToken, message.document.thumbnail?.fileId)
         val entity = GooglePhotosImportEntityFactory.cloudEntityFromGooglePhoto(
             item = item,
-            telegramFileId = fileId,
+            telegramFileId = message.document.fileId,
             messageId = message.messageId,
-            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailImage(baseUrl),
+            remoteThumbnailUrl = thumbUrl,
         )
         mediaItemDao.upsert(entity)
         return Result.success(Unit)
@@ -210,7 +157,7 @@ class GooglePhotosImportManager @Inject constructor(
         }
         val baseUrl = item.baseUrl!!
         val videoUrl = GooglePhotosUrls.downloadVideoUrl(baseUrl)
-        val response = googlePhotosApi.streamMedia(videoUrl)
+        val response = pickerApi.streamMedia(videoUrl)
         if (!response.isSuccessful) {
             response.errorBody()?.close()
             return Result.failure(
@@ -221,7 +168,7 @@ class GooglePhotosImportManager @Inject constructor(
             ?: return Result.failure(IllegalStateException("empty stream body"))
         body.use { rb ->
             rb.byteStream().use { input ->
-                return importVideoFromStream(item, safeBotToken, chatIdBody, input, baseUrl)
+                return importVideoFromStream(item, safeBotToken, chatIdBody, input)
             }
         }
     }
@@ -231,7 +178,6 @@ class GooglePhotosImportManager @Inject constructor(
         safeBotToken: String,
         chatIdBody: RequestBody,
         input: InputStream,
-        thumbnailBaseUrl: String,
     ): Result<Unit> {
         val baseName = item.filename ?: item.id
         val totalChunks = mutableListOf<UploadedVideoChunk>()
@@ -265,16 +211,17 @@ class GooglePhotosImportManager @Inject constructor(
             )
             toUpload.fill(0)
 
-            val (fileId, messageId) = uploadResult
+            val uploaded = uploadResult
                 ?: return Result.failure(IllegalStateException("sendDocument failed for chunk $chunkIndex"))
 
             totalChunks.add(
                 UploadedVideoChunk(
                     chunkIndex = chunkIndex,
-                    fileId = fileId,
-                    messageId = messageId,
+                    fileId = uploaded.fileId,
+                    messageId = uploaded.messageId,
                     byteOffset = totalBytes,
                     byteLength = read,
+                    thumbnailFileId = uploaded.thumbnailFileId,
                 ),
             )
             totalBytes += read
@@ -286,12 +233,13 @@ class GooglePhotosImportManager @Inject constructor(
         }
 
         val lastMsg = totalChunks.last().messageId
+        val thumbUrl = resolveThumbUrl(safeBotToken, totalChunks.first().thumbnailFileId)
         val entity = GooglePhotosImportEntityFactory.cloudVideoEntityChunked(
             item = item,
             totalSizeBytes = totalBytes,
             totalChunks = totalChunks.size,
             lastChunkMessageId = lastMsg,
-            remoteThumbnailUrl = GooglePhotosUrls.remoteThumbnailVideo(thumbnailBaseUrl),
+            remoteThumbnailUrl = thumbUrl,
         )
         mediaItemDao.upsert(entity)
 
@@ -319,7 +267,7 @@ class GooglePhotosImportManager @Inject constructor(
         fileName: String,
         mimeType: String,
         caption: String,
-    ): Pair<String, Long>? {
+    ): UploadedVideoChunk? {
         val captionBody = caption.toRequestBody("text/plain".toMediaType())
         val mediaType = mimeType.toMediaTypeOrNull() ?: "application/octet-stream".toMediaType()
         val body = chunkData.toRequestBody(mediaType)
@@ -336,7 +284,15 @@ class GooglePhotosImportManager @Inject constructor(
             rateLimiter.recordFailure()
             return null
         }
-        return Pair(response.result.document.fileId, response.result.messageId)
+        val msg = response.result
+        return UploadedVideoChunk(
+            chunkIndex = 0,
+            fileId = msg.document.fileId,
+            messageId = msg.messageId,
+            byteOffset = 0,
+            byteLength = chunkData.size,
+            thumbnailFileId = msg.document.thumbnail?.fileId,
+        )
     }
 
     private data class UploadedVideoChunk(
@@ -345,7 +301,21 @@ class GooglePhotosImportManager @Inject constructor(
         val messageId: Long,
         val byteOffset: Long,
         val byteLength: Int,
+        val thumbnailFileId: String? = null,
     )
+
+    /**
+     * Resolves a Telegram thumbnail [fileId] to a stable HTTPS URL by calling getFile.
+     * Returns null if [fileId] is null, the API call fails, or the file path is absent.
+     */
+    private suspend fun resolveThumbUrl(safeBotToken: String, fileId: String?): String? {
+        if (fileId == null) return null
+        return runCatching {
+            val resp = telegramBotApi.getFile(safeBotToken, fileId)
+            val path = resp.result?.filePath ?: return null
+            "https://api.telegram.org/file/bot${safeBotToken.replace("%3A", ":")}/$path"
+        }.getOrNull()
+    }
 
     /**
      * Reads up to [buf].size bytes into [buf], or returns -1 at EOF before any byte read.

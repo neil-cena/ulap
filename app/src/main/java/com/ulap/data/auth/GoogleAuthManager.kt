@@ -19,8 +19,8 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.inject.Inject
 import javax.inject.Singleton
 
-private const val PHOTOS_READONLY_SCOPE = "https://www.googleapis.com/auth/photoslibrary.readonly"
-private const val OAUTH2_SCOPE = "oauth2:$PHOTOS_READONLY_SCOPE"
+private const val PHOTOS_PICKER_SCOPE = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly"
+private const val OAUTH2_SCOPE = "oauth2:$PHOTOS_PICKER_SCOPE"
 
 /** [Activity.onActivityResult] request code for [GoogleSignIn.requestPermissions]. */
 const val GOOGLE_PHOTOS_SCOPE_REQUEST_CODE = 99102
@@ -61,7 +61,7 @@ class GoogleAuthManager @Inject constructor(
     private fun googleSignInOptions(): GoogleSignInOptions =
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
-            .requestScopes(Scope(PHOTOS_READONLY_SCOPE))
+            .requestScopes(Scope(PHOTOS_PICKER_SCOPE))
             .apply {
                 if (BuildConfig.GOOGLE_WEB_CLIENT_ID.isNotBlank()) {
                     requestIdToken(BuildConfig.GOOGLE_WEB_CLIENT_ID)
@@ -84,7 +84,7 @@ class GoogleAuthManager @Inject constructor(
             activity,
             GOOGLE_PHOTOS_SCOPE_REQUEST_CODE,
             account,
-            Scope(PHOTOS_READONLY_SCOPE),
+            Scope(PHOTOS_PICKER_SCOPE),
         )
     }
 
@@ -101,7 +101,7 @@ class GoogleAuthManager @Inject constructor(
      */
     suspend fun syncPhotosAccessTokenForAccount(account: GoogleSignInAccount): PhotosTokenSyncResult =
         withContext(Dispatchers.IO) {
-            if (!GoogleSignIn.hasPermissions(account, Scope(PHOTOS_READONLY_SCOPE))) {
+            if (!GoogleSignIn.hasPermissions(account, Scope(PHOTOS_PICKER_SCOPE))) {
                 return@withContext PhotosTokenSyncResult.NeedsScopePermissionRequest
             }
             fetchAccessTokenAfterScopeGranted(account)
@@ -119,6 +119,15 @@ class GoogleAuthManager @Inject constructor(
             val token = GoogleAuthUtil.getToken(context, account.account!!, OAUTH2_SCOPE)
             if (token.isNullOrBlank()) {
                 PhotosTokenSyncResult.Error(IllegalStateException("empty access token"))
+            } else if (!accessTokenIncludesPickerScope(token)) {
+                val hint = describeAccessTokenScopesForLogs(token)
+                accessTokenRef.set(null)
+                runCatching { GoogleAuthUtil.clearToken(context, token) }
+                PhotosTokenSyncResult.Error(
+                    IllegalStateException(
+                        "Access token failed tokeninfo check (needs photospicker.mediaitems.readonly). $hint",
+                    ),
+                )
             } else {
                 accessTokenRef.set(token)
                 PhotosTokenSyncResult.Success
