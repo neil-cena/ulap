@@ -23,6 +23,7 @@ import javax.inject.Singleton
 @Singleton
 class BotPool @Inject constructor(
     private val credentialRepository: CredentialRepository,
+    private val botBanStore: BotBanStore,
 ) {
     private val roundRobinCounter = AtomicInteger(0)
 
@@ -31,6 +32,11 @@ class BotPool @Inject constructor(
 
     /** Set of bot indices that are permanently banned and must never be selected for upload. */
     private val permanentBans = ConcurrentHashMap.newKeySet<Int>()
+
+    init {
+        // Restore persisted bans so banned bots are not retried after app restart.
+        botBanStore.loadBans().keys.forEach { permanentBans.add(it) }
+    }
 
     /**
      * Returns all configured bots: index 0 = primary, followed by additional bots in order.
@@ -112,8 +118,9 @@ class BotPool @Inject constructor(
      * Permanently bans [botIndex] from being selected for uploads. This is tracked separately
      * from temporary cooldowns and persists until [clearCooldowns] is called.
      */
-    fun markPermanentlyBanned(botIndex: Int) {
+    fun markPermanentlyBanned(botIndex: Int, reason: String = "Permanent API error") {
         permanentBans.add(botIndex)
+        botBanStore.addBan(botIndex, reason)
     }
 
     /** Returns true if [botIndex] has been permanently banned. */
@@ -167,5 +174,6 @@ class BotPool @Inject constructor(
     fun clearCooldowns() {
         cooldowns.clear()
         permanentBans.clear()
+        botBanStore.clearAll()
     }
 }

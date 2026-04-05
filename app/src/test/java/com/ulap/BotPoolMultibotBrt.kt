@@ -1,5 +1,6 @@
 package com.ulap
 
+import com.ulap.data.remote.BotBanStore
 import com.ulap.data.remote.BotPool
 import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
@@ -65,7 +66,7 @@ class BotPoolMultibotBrt {
 
     @Before
     fun setUp() {
-        pool = BotPool(FakeCredentialRepository(primaryToken, additionalBots))
+        pool = BotPool(FakeCredentialRepository(primaryToken, additionalBots), BotBanStore.noOpForTest())
     }
 
     // -------------------------------------------------------------------------

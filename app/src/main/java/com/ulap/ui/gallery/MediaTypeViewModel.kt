@@ -93,7 +93,7 @@ class MediaTypeViewModel @Inject constructor(
             try {
                 _selectedType.flatMapLatest { type ->
                     getMediaByType(type).transformLatest<List<MediaItem>, Unit> { items ->
-                        val token = getCredentials.getToken() ?: return@transformLatest
+                        val primaryToken = getCredentials.getToken() ?: return@transformLatest
                         var cache = streamUrlCache.value
                         val uncached = items
                             .filter {
@@ -105,6 +105,9 @@ class MediaTypeViewModel @Inject constructor(
                         for (batch in uncached.chunked(5)) {
                             batch.forEach { item ->
                                 val fileId = item.thumbnailFileId ?: item.telegramFileId ?: return@forEach
+                                // Use the bot that uploaded this item; fall back to primary.
+                                val token = getCredentials.getTokenForBot(item.uploadBotIndex)
+                                    ?: primaryToken
                                 val url = try {
                                     withContext(Dispatchers.IO) {
                                         downloader.resolveStreamUrls(token, fileId).firstOrNull()

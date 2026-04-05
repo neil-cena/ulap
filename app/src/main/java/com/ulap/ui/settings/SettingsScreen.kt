@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +19,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
@@ -29,12 +31,14 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,7 +58,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.R
+import com.ulap.data.remote.RepairPhase
+import com.ulap.data.remote.RepairProgress
 import com.ulap.data.repository.UploadSpeedMode
+import com.ulap.domain.health.BotHealthStatus
 import com.ulap.ui.theme.ThemePreference
 
 @Composable
@@ -175,9 +182,14 @@ fun SettingsScreen(
             entries = state.botPool,
             isAddingBot = state.isAddingBot,
             addBotResult = state.addBotResult,
+            repairProgress = state.repairProgress,
+            repairResult = state.repairResult,
             onAddBot = { token, label -> viewModel.addBot(token, label) },
             onRemoveBot = { index -> botToRemove = index },
             onDismissResult = viewModel::dismissAddBotResult,
+            onRepair = { index -> viewModel.startRepair(index) },
+            onPromotePrimary = { viewModel.promotePrimaryBot() },
+            onDismissRepairResult = viewModel::dismissRepairResult,
             showAddDialog = showAddBotDialog,
             onShowAddDialog = { showAddBotDialog = true },
             onDismissAddDialog = { showAddBotDialog = false },
@@ -369,7 +381,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = { showFreeSpaceWarning = true },
                             modifier = Modifier.fillMaxWidth(),
-                            colors = androidx.compose.material3.ButtonDefaults.outlinedButtonColors(
+                            colors = ButtonDefaults.outlinedButtonColors(
                                 contentColor = MaterialTheme.colorScheme.error,
                             ),
                         ) {
@@ -575,13 +587,25 @@ private fun BotPoolCard(
     entries: List<BotPoolEntry>,
     isAddingBot: Boolean,
     addBotResult: String?,
+    repairProgress: RepairProgress?,
+    repairResult: String?,
     onAddBot: (token: String, label: String) -> Unit,
     onRemoveBot: (Int) -> Unit,
     onDismissResult: () -> Unit,
+    onRepair: (bannedBotIndex: Int) -> Unit,
+    onPromotePrimary: () -> Unit,
+    onDismissRepairResult: () -> Unit,
     showAddDialog: Boolean,
     onShowAddDialog: () -> Unit,
     onDismissAddDialog: () -> Unit,
 ) {
+    val primaryEntry = entries.firstOrNull()
+    val primaryBanned = primaryEntry?.healthStatus == BotHealthStatus.BANNED
+    val bannedAlts = entries.drop(1).filter {
+        it.healthStatus == BotHealthStatus.BANNED
+    }
+    val isRepairing = repairProgress?.phase == RepairPhase.RUNNING
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -591,6 +615,42 @@ private fun BotPoolCard(
             )
             Spacer(Modifier.height(12.dp))
 
+            // ── Primary bot ban critical alert ─────────────────────────────
+            if (primaryBanned) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Primary bot is banned",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Files uploaded by this bot are inaccessible. Promote a healthy secondary bot to restore access.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Button(
+                            onClick = onPromotePrimary,
+                            enabled = !isRepairing,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) {
+                            Text(if (isRepairing) "Repairing…" else "Promote & Repair")
+                        }
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+
+            // ── Bot list ───────────────────────────────────────────────────
             if (entries.size <= 1) {
                 Text(
                     "No secondary bots. Uploads use the primary bot only.",
@@ -605,24 +665,121 @@ private fun BotPoolCard(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
+                        val dotColor = when (entry.healthStatus) {
+                            BotHealthStatus.HEALTHY -> Color(0xFF4CAF50)
+                            BotHealthStatus.BANNED -> MaterialTheme.colorScheme.error
+                            BotHealthStatus.UNREACHABLE -> Color(0xFFFFC107)
+                            BotHealthStatus.UNKNOWN -> MaterialTheme.colorScheme.outline
+                        }
                         Column(modifier = Modifier.weight(1f)) {
                             val displayLabel = entry.label.ifBlank { "Bot ${entry.index}" }
-                            Text(displayLabel, style = MaterialTheme.typography.bodyMedium)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Spacer(
+                                    modifier = Modifier
+                                        .then(
+                                            Modifier
+                                                .height(10.dp)
+                                                .then(Modifier.fillMaxWidth(0.04f))
+                                        )
+                                        .background(dotColor, shape = CircleShape),
+                                )
+                                Text(displayLabel, style = MaterialTheme.typography.bodyMedium)
+                            }
                             Text(
                                 entry.maskedToken,
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
+                            if (entry.healthStatus == BotHealthStatus.BANNED) {
+                                Text(
+                                    "Banned — files inaccessible",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            } else if (entry.healthStatus == BotHealthStatus.UNREACHABLE) {
+                                Text(
+                                    "Unreachable",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFFFC107),
+                                )
+                            }
                         }
-                        IconButton(onClick = { onRemoveBot(entry.index) }) {
-                            Icon(
-                                imageVector = Icons.Default.Delete,
-                                contentDescription = "Remove bot",
-                                tint = MaterialTheme.colorScheme.error,
-                            )
+                        Row {
+                            if (entry.healthStatus == BotHealthStatus.BANNED) {
+                                TextButton(
+                                    onClick = { onRepair(entry.index) },
+                                    enabled = !isRepairing,
+                                ) { Text("Repair") }
+                            }
+                            IconButton(onClick = { onRemoveBot(entry.index) }) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Remove bot",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
                         }
                     }
                 }
+            }
+
+            // ── Banned alt bots warning banner ─────────────────────────────
+            if (bannedAlts.isNotEmpty() && !primaryBanned) {
+                Spacer(Modifier.height(8.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = MaterialTheme.shapes.small,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "${bannedAlts.size} bot(s) banned. Tap Repair next to each to restore file access.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
+            }
+
+            // ── Repair progress ────────────────────────────────────────────
+            repairProgress?.let { progress ->
+                if (progress.phase == RepairPhase.RUNNING) {
+                    Spacer(Modifier.height(8.dp))
+                    if (progress.totalItems > 0) {
+                        val fraction = progress.repairedItems.toFloat() / progress.totalItems
+                        LinearProgressIndicator(
+                            progress = { fraction },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(
+                            "Repairing ${progress.repairedItems}/${progress.totalItems}" +
+                                progress.currentItemName?.let { " — $it" }.orEmpty(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        Text(
+                            "Preparing repair…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
+            // ── Repair result ──────────────────────────────────────────────
+            repairResult?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    msg,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                TextButton(onClick = onDismissRepairResult) { Text("Dismiss") }
             }
 
             addBotResult?.let { msg ->

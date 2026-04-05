@@ -47,4 +47,11 @@ interface ChunkMetadataDao {
     /** Returns true if any chunk rows exist for this media item (used to detect new vs legacy items). */
     @Query("SELECT COUNT(*) FROM chunk_metadata WHERE mediaItemId = :mediaItemId LIMIT 1")
     suspend fun hasChunks(mediaItemId: String): Int
+
+    /**
+     * Updates the [telegramFileId] for a single chunk row after a re-forward repair.
+     * Identified by the chunk's primary key [id].
+     */
+    @Query("UPDATE chunk_metadata SET telegramFileId = :newFileId WHERE id = :id")
+    suspend fun updateChunkFileId(id: Long, newFileId: String)
 }

@@ -336,6 +336,71 @@ interface MediaItemDao {
     @Query("DELETE FROM media_items WHERE backupStatus = 'CLOUD_ONLY'")
     suspend fun deleteCloudOnlyItems()
 
+    // ── Bot repair queries ────────────────────────────────────────────────────
+
+    /**
+     * Returns all backed-up or cloud-only items that were uploaded by the given [botIndex].
+     * Used to enumerate which items need re-forwarding when that bot is banned.
+     */
+    @Query("""
+        SELECT * FROM media_items
+        WHERE uploadBotIndex = :botIndex
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND telegramFileId IS NOT NULL
+        ORDER BY dateTaken DESC
+    """)
+    suspend fun getBackedUpItemsByBotIndex(botIndex: Int): List<MediaItemEntity>
+
+    /**
+     * Updates [telegramFileId], [thumbnailFileId], and [uploadBotIndex] for a repaired item.
+     * Only touches repair-relevant columns to avoid clobbering other fields.
+     */
+    @Query("""
+        UPDATE media_items
+        SET telegramFileId = :telegramFileId,
+            thumbnailFileId = :thumbnailFileId,
+            uploadBotIndex = :uploadBotIndex
+        WHERE id = :id
+    """)
+    suspend fun updateRepairResult(
+        id: String,
+        telegramFileId: String,
+        thumbnailFileId: String?,
+        uploadBotIndex: Int,
+    )
+
+    /**
+     * Remaps [uploadBotIndex] values after a bot promotion:
+     *  - Items belonging to the promoted alt bot → index 0 (new primary).
+     *  - Items belonging to the banned primary   → -1 (sentinel: needs repair via re-forward).
+     *  - Items belonging to bots with index > [promotedAltIndex] → decremented by 1 (index compaction).
+     *
+     * [bannedPrimaryIndex] is always 0 in the current promotion flow; kept explicit for clarity.
+     */
+    @Query("""
+        UPDATE media_items
+        SET uploadBotIndex = CASE
+            WHEN uploadBotIndex = :promotedAltIndex THEN 0
+            WHEN uploadBotIndex = :bannedPrimaryIndex THEN -1
+            WHEN uploadBotIndex > :promotedAltIndex THEN uploadBotIndex - 1
+            ELSE uploadBotIndex
+        END
+        WHERE uploadBotIndex IN (:affectedIndices)
+    """)
+    suspend fun remapBotIndices(
+        bannedPrimaryIndex: Int,
+        promotedAltIndex: Int,
+        affectedIndices: List<Int>,
+    )
+
+    /**
+     * Records that a repair attempt could not restore this item (original message missing or
+     * chunk metadata absent). Annotates the errorMessage without changing backupStatus or
+     * file references so the item remains visible in the gallery.
+     */
+    @Query("UPDATE media_items SET errorMessage = :reason WHERE id = :id")
+    suspend fun markRepairItemNeedsReupload(id: String, reason: String)
+
     /**
      * Marks corrupt chunked items (backed-up but with no chunk_metadata rows) as FAILED so
      * the next sync pipeline re-uploads them and recreates the chunk_metadata rows.

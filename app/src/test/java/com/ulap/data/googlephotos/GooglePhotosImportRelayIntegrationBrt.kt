@@ -93,7 +93,7 @@ class GooglePhotosImportRelayIntegrationBrt {
             whenever(creds.getChatId()).thenReturn("99")
             whenever(creds.getAdditionalBotTokens()).thenReturn(emptyList())
 
-            val botPool = BotPool(creds)
+            val botPool = BotPool(creds, com.ulap.data.remote.BotBanStore.noOpForTest())
             val rateLimiter = mock<TelegramRateLimiter> { rl ->
                 onBlocking {
                     rl.withRateLimit(any<suspend () -> TelegramResponse<TelegramMessage>>())

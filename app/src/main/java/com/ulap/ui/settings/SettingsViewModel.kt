@@ -25,6 +25,16 @@ import com.ulap.domain.usecase.MarkCorruptChunkedItemsForReuploadUseCase
 import com.ulap.domain.usecase.ObserveCorruptChunkedBackupCountUseCase
 import com.ulap.domain.usecase.RemoveSecondaryBotUseCase
 import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
+import com.ulap.data.remote.RepairPhase
+import com.ulap.data.remote.RepairProgress
+import com.ulap.domain.health.BotHealthStatus
+import com.ulap.domain.usecase.CheckBotHealthUseCase
+import com.ulap.domain.usecase.GetBotHealthStateUseCase
+import com.ulap.domain.usecase.HandlePrimaryBanResult
+import com.ulap.domain.usecase.HandlePrimaryBotBannedUseCase
+import com.ulap.domain.usecase.RefreshBotHealthAsyncUseCase
+import com.ulap.domain.usecase.RepairBannedBotFilesUseCase
+import com.ulap.domain.usecase.RepairResult
 import com.ulap.domain.usecase.VerifyBotCredentialsUseCase
 import com.ulap.domain.usecase.VerifyResult
 import com.ulap.sync.DeleteAllBackupsResult
@@ -47,6 +57,7 @@ data class BotPoolEntry(
     val maskedToken: String,
     val label: String,
     val isPrimary: Boolean,
+    val healthStatus: BotHealthStatus = BotHealthStatus.UNKNOWN,
 )
 
 data class SettingsUiState(
@@ -62,6 +73,9 @@ data class SettingsUiState(
     val botPool: List<BotPoolEntry> = emptyList(),
     val isAddingBot: Boolean = false,
     val addBotResult: String? = null,
+    val repairProgress: RepairProgress? = null,
+    val repairResult: String? = null,
+    val showPromotionDialog: Boolean = false,
 )
 
 sealed class DeleteBackupsUiResult {
@@ -95,6 +109,11 @@ class SettingsViewModel @Inject constructor(
     private val getBotPool: GetBotPoolUseCase,
     private val addSecondaryBot: AddSecondaryBotUseCase,
     private val removeSecondaryBot: RemoveSecondaryBotUseCase,
+    private val checkBotHealth: CheckBotHealthUseCase,
+    private val getBotHealthState: GetBotHealthStateUseCase,
+    private val refreshBotHealthAsync: RefreshBotHealthAsyncUseCase,
+    private val repairBannedBotFiles: RepairBannedBotFilesUseCase,
+    private val handlePrimaryBotBanned: HandlePrimaryBotBannedUseCase,
     @ApplicationContext private val context: Context,
 ) : ViewModel() {
 
@@ -139,6 +158,20 @@ class SettingsViewModel @Inject constructor(
 
     init {
         loadState()
+        // Observe health changes and refresh bot pool entries with updated status.
+        viewModelScope.launch {
+            getBotHealthState().collect { health ->
+                _uiState.update { state ->
+                    state.copy(
+                        botPool = state.botPool.map { entry ->
+                            entry.copy(healthStatus = health[entry.index] ?: BotHealthStatus.UNKNOWN)
+                        },
+                    )
+                }
+            }
+        }
+        // Kick off an initial async health check.
+        refreshBotHealthAsync()
     }
 
     private fun loadState() {
@@ -338,5 +371,85 @@ class SettingsViewModel @Inject constructor(
 
     fun consumeFreeSpaceDeleteSender() {
         _freeSpace.update { it.copy(deleteSender = null) }
+    }
+
+    // ── Bot health and repair ─────────────────────────────────────────────────
+
+    /** Re-runs getMe for all bots and updates the health indicators. */
+    fun refreshBotHealth() {
+        viewModelScope.launch {
+            checkBotHealth()
+        }
+    }
+
+    /** Dismisses the promotion dialog without taking action. */
+    fun dismissPromotionDialog() = _uiState.update { it.copy(showPromotionDialog = false) }
+
+    /** Dismisses the repair result snackbar. */
+    fun dismissRepairResult() = _uiState.update { it.copy(repairResult = null) }
+
+    /**
+     * Starts a repair run for a banned secondary (non-primary) bot identified by [bannedBotIndex].
+     * Re-forwards all affected files through the best available healthy bot.
+     */
+    fun startRepair(bannedBotIndex: Int) {
+        if (_uiState.value.repairProgress?.phase == RepairPhase.RUNNING) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(repairProgress = RepairProgress(phase = RepairPhase.RUNNING)) }
+            // Stream live progress from the use case's shared StateFlow.
+            val progressJob = launch {
+                repairBannedBotFiles.repairProgress.collect { progress ->
+                    _uiState.update { it.copy(repairProgress = progress) }
+                }
+            }
+            val result = repairBannedBotFiles(bannedBotIndex)
+            progressJob.cancel()
+            val message = when (result) {
+                is RepairResult.Done -> buildRepairResultMessage(
+                    result.repairedCount, result.failedCount, result.needsReuploadCount,
+                )
+                RepairResult.NoCredentials -> "No credentials configured."
+                RepairResult.NoHealthyBot -> "No healthy bot available to perform repair. Add a working bot first."
+            }
+            _uiState.update { it.copy(repairResult = message) }
+            loadState()
+        }
+    }
+
+    /**
+     * Promotes the first healthy secondary bot to primary, then repairs files that belonged to
+     * the banned primary bot. Called when the user confirms the promotion dialog.
+     */
+    fun promotePrimaryBot() {
+        _uiState.update { it.copy(showPromotionDialog = false) }
+        if (_uiState.value.repairProgress?.phase == RepairPhase.RUNNING) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(repairProgress = RepairProgress(phase = RepairPhase.RUNNING)) }
+            val progressJob = launch {
+                handlePrimaryBotBanned.repairProgress.collect { progress ->
+                    _uiState.update { it.copy(repairProgress = progress) }
+                }
+            }
+            val result = handlePrimaryBotBanned()
+            progressJob.cancel()
+            val message = when (result) {
+                is HandlePrimaryBanResult.Done -> "Primary bot promoted. " + buildRepairResultMessage(
+                    result.repairedCount, result.failedCount, result.needsReuploadCount,
+                )
+                HandlePrimaryBanResult.NoCredentials -> "No credentials configured."
+                HandlePrimaryBanResult.NoHealthyAlt -> "No healthy secondary bot to promote. Add a working bot first."
+            }
+            _uiState.update { it.copy(repairResult = message) }
+            loadState()
+        }
+    }
+
+    private fun buildRepairResultMessage(repaired: Int, failed: Int, needsReupload: Int): String {
+        val parts = buildList {
+            if (repaired > 0) add("$repaired file(s) repaired")
+            if (failed > 0) add("$failed failed (will retry next run)")
+            if (needsReupload > 0) add("$needsReupload need re-upload (original messages deleted)")
+        }
+        return if (parts.isEmpty()) "Repair complete. No items needed repair." else parts.joinToString(", ") + "."
     }
 }

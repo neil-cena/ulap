@@ -140,7 +140,7 @@ class TimelineViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 getTimeline().transformLatest<List<MediaItem>, Unit> { items ->
-                    val token = getCredentials.getToken() ?: return@transformLatest
+                    val primaryToken = getCredentials.getToken() ?: return@transformLatest
                     var cache = streamUrlCache.value
                     val uncached = items
                         .filter {
@@ -155,6 +155,9 @@ class TimelineViewModel @Inject constructor(
                             batch.map { item ->
                                 async(Dispatchers.IO) {
                                     val fileId = item.thumbnailFileId ?: item.telegramFileId ?: return@async null
+                                    // Use the bot that uploaded this item; fall back to primary.
+                                    val token = getCredentials.getTokenForBot(item.uploadBotIndex)
+                                        ?: primaryToken
                                     val url = try {
                                         downloader.resolveStreamUrls(token, fileId).firstOrNull()
                                     } catch (_: Exception) { null }

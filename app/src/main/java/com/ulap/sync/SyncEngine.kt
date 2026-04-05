@@ -63,6 +63,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.security.MessageDigest
 import androidx.exifinterface.media.ExifInterface
+import com.ulap.domain.health.BotHealthMonitor
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -72,7 +73,6 @@ private const val DOWNLOAD_CONCURRENCY = 3
 private const val CHUNKED_THRESHOLD = 20L * 1024 * 1024 // matches Telegram Bot API getFile() download limit
 private const val MAX_BOT_COOLDOWN_WAIT_MS = 30 * 60 * 1000L
 
-@Singleton
 class SyncEngine @Inject constructor(
     private val mediaItemDao: MediaItemDao,
     private val chunkMetadataDao: ChunkMetadataDao,
@@ -88,6 +88,7 @@ class SyncEngine @Inject constructor(
     private val rateLimiter: TelegramRateLimiter,
     private val userPrefs: UserPreferencesRepository,
     private val botPool: BotPool,
+    private val botHealthMonitor: BotHealthMonitor,
 ) {
     private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var activeJob: Job? = null
@@ -469,6 +470,9 @@ class SyncEngine @Inject constructor(
         } catch (e: TelegramApiException) {
             if (e.isPermanent) {
                 botPool.markPermanentlyBanned(selectedBot.index)
+                // Trigger a background health-check for this bot so the UI reflects the ban
+                // and auto-promotion logic can fire if it was the primary.
+                engineScope.launch { botHealthMonitor.checkSingle(selectedBot.index) }
                 if (bots.size > 1 && !botPool.isAllPermanentlyBanned()) {
                     // Other bots remain — clear chunks and re-queue for handoff.
                     chunkMetadataDao.deleteChunksForMedia(entity.id)
