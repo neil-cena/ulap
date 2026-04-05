@@ -155,6 +155,11 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
             debugLog.log(TAG, "import loop failed: ${formatGooglePhotosDiagnostics(e)}")
+            // Export the index for any items that were successfully imported before the failure,
+            // so they are accessible even though the run did not complete fully.
+            if (imported > 0) {
+                exportIndexSafely(imported)
+            }
             when (e.httpStatusCodeOrNull()) {
                 401, 403 -> {
                     googleAuthManager.clearAccessToken()
@@ -167,22 +172,19 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             }
         }
 
-        // Clean up the session after a successful (or fully-stopped) run
+        // Session cleanup: only delete the session when the run completed without being
+        // stopped externally (so a cancelled run can be re-attempted later).
         if (!isStopped) {
             runCatching { pickerApi.deleteSession(sessionId) }
                 .onFailure { debugLog.log(TAG, "deleteSession failed (non-critical): ${it.message}") }
+        }
 
-            val token = credentialRepository.getBotToken()
-            val chatId = credentialRepository.getChatId()
-            if (token != null && chatId != null) {
-                runCatching { backupIndexManager.exportAndUpload(token, chatId) }
-                    .onFailure { debugLog.log(TAG, "index export failed (non-critical): ${it.message}") }
-                    .onSuccess { result ->
-                        result.onFailure { debugLog.log(TAG, "index export returned failure (non-critical): ${it.message}") }
-                    }
-            } else {
-                debugLog.log(TAG, "index export skipped — no Telegram credentials configured")
-            }
+        // Always export the index when items were imported — including when isStopped is true
+        // (e.g. rate limits caused WorkManager to time out after some items succeeded).
+        if (imported > 0) {
+            exportIndexSafely(imported)
+        } else if (!isStopped) {
+            debugLog.log(TAG, "index export skipped — no new items were imported")
         }
 
         return Result.success(
@@ -195,6 +197,26 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 stoppedEarly = isStopped,
             ),
         )
+    }
+
+    /**
+     * Exports the backup index to Telegram so that newly imported items are visible across devices.
+     * Called after any run that imported at least one item, whether the run completed fully or was
+     * cut short by a stop signal or an exception. Failures are non-fatal and only logged.
+     */
+    private suspend fun exportIndexSafely(importedCount: Int) {
+        val token = credentialRepository.getBotToken()
+        val chatId = credentialRepository.getChatId()
+        if (token == null || chatId == null) {
+            debugLog.log(TAG, "index export skipped — no Telegram credentials configured")
+            return
+        }
+        debugLog.log(TAG, "exporting index after importing $importedCount item(s)…")
+        runCatching { backupIndexManager.exportAndUpload(token, chatId) }
+            .onFailure { debugLog.log(TAG, "index export failed (non-critical): ${it.message}") }
+            .onSuccess { result ->
+                result.onFailure { debugLog.log(TAG, "index export returned failure (non-critical): ${it.message}") }
+            }
     }
 
     private fun createForegroundInfo(): ForegroundInfo {
