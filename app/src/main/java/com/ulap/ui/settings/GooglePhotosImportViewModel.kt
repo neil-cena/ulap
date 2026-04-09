@@ -257,10 +257,17 @@ class GooglePhotosImportViewModel @Inject constructor(
             pollingJob?.cancel()
             pollingJob = null
             workManager.cancelUniqueWork("google_import")
-            googleAuthManager.signOut()
-            userPreferencesRepository.updateGooglePhotosPageToken(null)
-            userPreferencesRepository.setPickerSessionId(null)
-            _uiState.update { GooglePhotosImportUiState() }
+            var signOutError: String? = null
+            try {
+                googleAuthManager.signOut()
+            } catch (e: Exception) {
+                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "signOut failed: ${e.message}")
+                signOutError = "Sign-out failed — please try again"
+            } finally {
+                userPreferencesRepository.updateGooglePhotosPageToken(null)
+                userPreferencesRepository.setPickerSessionId(null)
+                _uiState.update { GooglePhotosImportUiState().copy(error = signOutError) }
+            }
         }
     }
 

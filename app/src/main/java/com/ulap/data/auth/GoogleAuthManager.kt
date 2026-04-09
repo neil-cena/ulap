@@ -94,9 +94,12 @@ class GoogleAuthManager @Inject constructor(
 
     /** Clears Google Sign-In session and the in-memory OAuth access token. */
     suspend fun signOut(): Unit = withContext(Dispatchers.IO) {
-        val client = GoogleSignIn.getClient(context, googleSignInOptions())
-        runCatching { Tasks.await(client.signOut()) }
-        accessTokenRef.set(null)
+        val client = GoogleSignIn.getClient(context, GoogleSignInOptions.DEFAULT_SIGN_IN)
+        try {
+            Tasks.await(client.signOut())
+        } finally {
+            accessTokenRef.set(null)
+        }
     }
 
     /**
