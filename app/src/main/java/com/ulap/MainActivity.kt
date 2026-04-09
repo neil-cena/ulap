@@ -241,7 +241,7 @@ private fun UlapNavHost(
                         pauseOnLowBattery = userPrefs.pauseOnLowBattery.value,
                     )
                     navController.navigate(Screen.Timeline.route) {
-                        popUpTo(0) { inclusive = true }
+                        popUpTo(Screen.Onboarding.route) { inclusive = true }
                     }
                 })
             }
@@ -260,7 +260,7 @@ private fun UlapNavHost(
                         if (fromOnboarding) {
                             BackupForegroundService.startBackup(context)
                             navController.navigate(Screen.Timeline.route) {
-                                popUpTo(0) { inclusive = true }
+                                popUpTo(Screen.FolderPicker.route) { inclusive = true }
                             }
                         } else {
                             navController.popBackStack()

@@ -190,7 +190,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                 startPolling(session.id, session)
             } catch (e: Exception) {
                 debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "createPickerSession failed: ${formatGooglePhotosDiagnostics(e)}")
-                _uiState.update { it.copy(isBusy = false, error = "Could not start Google Photos session: ${e.message}") }
+                _uiState.update { it.copy(isBusy = false, error = "Could not start Google Photos session: ${e.message ?: formatGooglePhotosDiagnostics(e)}") }
             }
         }
     }
@@ -358,7 +358,7 @@ class GooglePhotosImportViewModel @Inject constructor(
                     it.copy(
                         isCountingSelection = false,
                         selectedMediaCount = null,
-                        error = "Could not count selected photos: ${e.message}",
+                        error = "Could not count selected photos: ${e.message ?: formatGooglePhotosDiagnostics(e)}",
                     )
                 }
             }

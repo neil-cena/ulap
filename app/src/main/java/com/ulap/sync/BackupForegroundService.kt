@@ -7,6 +7,8 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import com.ulap.MainActivity
@@ -40,8 +42,12 @@ class BackupForegroundService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannels()
-        // Placeholder title; replaced in onStartCommand once the action is known.
-        startForeground(NOTIFICATION_ID, buildProgressNotification(getString(R.string.notification_backup_title)))
+        val notification = buildProgressNotification(getString(R.string.notification_backup_title))
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
         observeProgress()
     }
 

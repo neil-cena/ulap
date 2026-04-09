@@ -27,6 +27,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -40,7 +42,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -72,6 +73,7 @@ fun GooglePhotosSetupScreen(
     val fieldBringIntoView = remember { BringIntoViewRequester() }
 
     var clientIdInput by remember(savedClientId) { mutableStateOf(savedClientId ?: "") }
+    var showDisableDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -215,32 +217,27 @@ fun GooglePhotosSetupScreen(
             // Step 5
             SetupStepCard(number = "5", title = "Configure the OAuth consent screen") {
                 Text(
-                    "Go to APIs & Services → OAuth consent screen. " +
-                        "Choose External (or Internal if you use Google Workspace). " +
-                        "Fill in the required app name and contact fields.",
+                    "Go to APIs & Services → OAuth consent screen. Choose External. " +
+                        "Fill in the required app name and support email fields.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(Modifier.height(8.dp))
-                Text(
-                    "Under Scopes, add:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                CopyableChip(
-                    value = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
-                    label = "Required scope",
-                    context = context,
-                )
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Under Test users, add your own Google account email. " +
-                        "This allows sign-in while the consent screen is in Testing mode — " +
-                        "you do not need to publish it.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer,
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        "Keep publishing status as Testing — do not publish. " +
+                            "Google blocks the Photos Picker scope for published or unverified apps, " +
+                            "so Testing mode is required. Under Test users, add your own Google account email.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        modifier = Modifier.padding(10.dp),
+                    )
+                }
                 Spacer(Modifier.height(12.dp))
                 OutlinedButton(
                     onClick = {
@@ -253,6 +250,33 @@ fun GooglePhotosSetupScreen(
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Open Consent Screen") }
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Then open the Scopes page and click \"Add or remove scopes\". " +
+                        "Search for and add the following scope:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                CopyableChip(
+                    value = "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+                    label = "Required scope",
+                    context = context,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse("https://console.cloud.google.com/auth/scopes"),
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open Scopes Page") }
             }
 
             Spacer(Modifier.height(24.dp))
@@ -288,16 +312,45 @@ fun GooglePhotosSetupScreen(
 
             if (savedClientId != null) {
                 Spacer(Modifier.height(8.dp))
-                TextButton(
-                    onClick = {
-                        viewModel.clearClientId()
-                        clientIdInput = ""
-                    },
-                    colors = ButtonDefaults.textButtonColors(
+                OutlinedButton(
+                    onClick = { showDisableDialog = true },
+                    colors = ButtonDefaults.outlinedButtonColors(
                         contentColor = MaterialTheme.colorScheme.error,
                     ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Remove credentials and disable Google Photos import") }
+            }
+
+            if (showDisableDialog) {
+                AlertDialog(
+                    onDismissRequest = { showDisableDialog = false },
+                    title = { Text("Disable Google Photos import?") },
+                    text = {
+                        Text(
+                            "This will remove your Web Client ID. " +
+                                "You will need to paste it again to re-enable Google Photos import.",
+                        )
+                    },
+                    confirmButton = {
+                        Button(
+                            onClick = {
+                                viewModel.clearClientId()
+                                clientIdInput = ""
+                                showDisableDialog = false
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = MaterialTheme.colorScheme.error,
+                                contentColor = MaterialTheme.colorScheme.onError,
+                            ),
+                        ) { Text("Disable") }
+                    },
+                    dismissButton = {
+                        OutlinedButton(onClick = { showDisableDialog = false }) {
+                            Text("Cancel")
+                        }
+                    },
+                )
             }
 
             val imeBottom = WindowInsets.ime.asPaddingValues().calculateBottomPadding()

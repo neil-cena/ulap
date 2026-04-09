@@ -9,8 +9,10 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Tasks
+import java.util.concurrent.ExecutionException
 import com.ulap.data.repository.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -160,7 +162,20 @@ class GoogleAuthManager @Inject constructor(
             val account: GoogleSignInAccount = Tasks.await(task)
             syncPhotosAccessTokenForAccount(account)
         } catch (e: Exception) {
-            PhotosTokenSyncResult.Error(e)
+            val cause = (e as? ExecutionException)?.cause ?: e
+            val friendly = (cause as? ApiException)?.let { friendlyApiExceptionMessage(it) }
+            PhotosTokenSyncResult.Error(if (friendly != null) Exception(friendly, cause) else cause)
+        }
+    }
+
+    companion object {
+        internal fun friendlyApiExceptionMessage(e: ApiException): String = when (e.statusCode) {
+            10 -> "Google Sign-In configuration error (DEVELOPER_ERROR). " +
+                "Verify your Web Client ID and SHA-1 fingerprint match your Google Cloud project."
+            7 -> "Network error. Check your connection and try again."
+            12500 -> "Sign-in failed. Please try again."
+            12501 -> "Sign-in cancelled."
+            else -> "Google Sign-In failed (error ${e.statusCode})."
         }
     }
 
