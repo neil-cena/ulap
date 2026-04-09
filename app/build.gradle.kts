@@ -9,6 +9,10 @@ plugins {
     alias(libs.plugins.room)
 }
 
+// Avoid Windows failing packageRelease when app/build/outputs/apk/release/app-release.apk is
+// locked (Explorer preview, antivirus, etc.). Gradle then uses app/build-out/ instead.
+layout.buildDirectory.set(layout.projectDirectory.dir("build-out"))
+
 val localProps = Properties().also { props ->
     val f = rootProject.file("local.properties")
     if (f.exists()) props.load(f.inputStream())

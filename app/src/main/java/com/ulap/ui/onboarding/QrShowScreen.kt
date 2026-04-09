@@ -37,8 +37,11 @@ fun QrShowScreen(
     token: String,
     chatId: String,
     additionalBots: List<BotCredential> = emptyList(),
+    telegramLoggingEnabled: Boolean = false,
+    telegramLoggingChatId: String? = null,
+    googlePhotosWebClientId: String? = null,
 ) {
-    val payload = remember(token, chatId, additionalBots) {
+    val payload = remember(token, chatId, additionalBots, telegramLoggingEnabled, telegramLoggingChatId, googlePhotosWebClientId) {
         val json = JSONObject().put("t", token).put("c", chatId)
         if (additionalBots.isNotEmpty()) {
             val arr = JSONArray()
@@ -47,6 +50,9 @@ fun QrShowScreen(
             }
             json.put("b", arr)
         }
+        if (telegramLoggingEnabled) json.put("le", true)
+        if (!telegramLoggingChatId.isNullOrBlank()) json.put("lc", telegramLoggingChatId)
+        if (!googlePhotosWebClientId.isNullOrBlank()) json.put("gp", googlePhotosWebClientId)
         json.toString()
     }
 
@@ -80,7 +86,19 @@ fun QrShowScreen(
         }
         Spacer(Modifier.height(24.dp))
         Text(
-            "This code contains your bot token, chat ID${if (additionalBots.isNotEmpty()) ", and ${additionalBots.size} additional bot${if (additionalBots.size == 1) "" else "s"}" else ""}.\nOnly share it with devices you own.",
+            buildString {
+                append("This code contains your bot token, chat ID")
+                if (additionalBots.isNotEmpty()) {
+                    append(", and ${additionalBots.size} additional bot${if (additionalBots.size == 1) "" else "s"}")
+                }
+                if (telegramLoggingEnabled && !telegramLoggingChatId.isNullOrBlank()) {
+                    append(", Telegram log settings")
+                }
+                if (!googlePhotosWebClientId.isNullOrBlank()) {
+                    append(", Google Photos credentials")
+                }
+                append(".\nOnly share it with devices you own.")
+            },
             style = MaterialTheme.typography.bodySmall,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -235,6 +235,13 @@ private fun UlapNavHost(
                         credentialRepository.saveAdditionalBotTokens(additional)
                         botPool.clearCooldowns()
                     }
+                    if (creds.telegramLoggingEnabled && !creds.telegramLoggingChatId.isNullOrBlank()) {
+                        userPrefs.setTelegramLoggingEnabled(true)
+                        userPrefs.setTelegramLoggingChatId(creds.telegramLoggingChatId)
+                    }
+                    if (!creds.googlePhotosWebClientId.isNullOrBlank()) {
+                        userPrefs.setGooglePhotosWebClientId(creds.googlePhotosWebClientId)
+                    }
                     SyncWorker.schedule(
                         context.applicationContext,
                         wifiOnly = userPrefs.wifiOnly.value,
@@ -250,6 +257,9 @@ private fun UlapNavHost(
                     token = getCredentials.getToken() ?: "",
                     chatId = getCredentials.getChatId() ?: "",
                     additionalBots = getBotPool().drop(1),
+                    telegramLoggingEnabled = userPrefs.telegramLoggingEnabled.value,
+                    telegramLoggingChatId = userPrefs.telegramLoggingChatId.value,
+                    googlePhotosWebClientId = userPrefs.googlePhotosWebClientId.value,
                 )
             }
             composable(Screen.FolderPicker.route) { backStack ->
