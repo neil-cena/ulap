@@ -157,7 +157,11 @@ fun GooglePhotosImportScreen(
 
             if (!state.isSignedIn) {
                 Button(
-                    onClick = { signInLauncher.launch(viewModel.getSignInIntent(activity)) },
+                    onClick = {
+                        viewModel.prepareAndLaunchSignIn(activity) { intent ->
+                            signInLauncher.launch(intent)
+                        }
+                    },
                     enabled = !state.isBusy && !importInFlight,
                     modifier = Modifier.fillMaxWidth(),
                 ) {

@@ -65,18 +65,23 @@ class GoogleAuthManager @Inject constructor(
         GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
             .requestEmail()
             .requestScopes(Scope(PHOTOS_PICKER_SCOPE))
-            .apply {
-                val clientId = userPrefs.googlePhotosWebClientId.value
-                if (!clientId.isNullOrBlank()) {
-                    requestIdToken(clientId)
-                }
-            }
             .build()
 
     fun googleSignInClient(activity: Activity): GoogleSignInClient =
         GoogleSignIn.getClient(activity, googleSignInOptions())
 
     fun getSignInIntent(activity: Activity): Intent = googleSignInClient(activity).signInIntent
+
+    /**
+     * Best-effort revoke + sign-out to clear any stale Play Services session state.
+     * Called before launching a fresh sign-in so cached scope grants cannot interfere.
+     */
+    suspend fun ensureSignedOut(): Unit = withContext(Dispatchers.IO) {
+        val client = GoogleSignIn.getClient(context, googleSignInOptions())
+        runCatching { Tasks.await(client.revokeAccess()) }
+        runCatching { Tasks.await(client.signOut()) }
+        accessTokenRef.set(null)
+    }
 
     /** Email for the last signed-in Google account, if any. */
     fun getLastSignedInAccountEmail(): String? =
@@ -94,8 +99,9 @@ class GoogleAuthManager @Inject constructor(
 
     /** Clears Google Sign-In session and the in-memory OAuth access token. */
     suspend fun signOut(): Unit = withContext(Dispatchers.IO) {
-        val client = GoogleSignIn.getClient(context, GoogleSignInOptions.DEFAULT_SIGN_IN)
+        val client = GoogleSignIn.getClient(context, googleSignInOptions())
         try {
+            runCatching { Tasks.await(client.revokeAccess()) }
             Tasks.await(client.signOut())
         } finally {
             accessTokenRef.set(null)

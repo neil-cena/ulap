@@ -129,6 +129,20 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     fun getSignInIntent(activity: Activity): Intent = googleAuthManager.getSignInIntent(activity)
 
+    /**
+     * Revokes any stale Play Services session, then returns the sign-in intent.
+     * Ensures a completely fresh sign-in even if a previous session was not fully cleared.
+     */
+    fun prepareAndLaunchSignIn(activity: Activity, launcher: (Intent) -> Unit) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isBusy = true, error = null) }
+            googleAuthManager.ensureSignedOut()
+            val intent = googleAuthManager.getSignInIntent(activity)
+            _uiState.update { it.copy(isBusy = false) }
+            launcher(intent)
+        }
+    }
+
     fun onSignInActivityResult(data: Intent?) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
