@@ -9,6 +9,11 @@ plugins {
     alias(libs.plugins.room)
 }
 
+val localProps = Properties().also { props ->
+    val f = rootProject.file("local.properties")
+    if (f.exists()) props.load(f.inputStream())
+}
+
 android {
     namespace = "com.ulap"
     compileSdk = 35
@@ -22,12 +27,21 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        create("release") {
+            val storeFilePath = localProps.getProperty("ulap.storeFile")
+            if (!storeFilePath.isNullOrBlank()) {
+                storeFile = file(storeFilePath)
+                storePassword = localProps.getProperty("ulap.storePassword") ?: ""
+                keyAlias = localProps.getProperty("ulap.keyAlias") ?: ""
+                keyPassword = localProps.getProperty("ulap.keyPassword") ?: ""
+            }
+        }
+    }
+
     buildTypes {
         debug {
             isMinifyEnabled = false
-            val localProps = Properties()
-            val localFile = rootProject.file("local.properties")
-            if (localFile.exists()) localProps.load(localFile.inputStream())
             val testToken = (localProps.getProperty("ulap.testBotToken") ?: "").trim()
             val testChatId = (localProps.getProperty("ulap.testChatId") ?: "").trim()
             buildConfigField("String", "TEST_BOT_TOKEN", "\"${testToken.replace("\"", "\\\"")}\"")
@@ -36,10 +50,13 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            buildConfigField("String", "TEST_BOT_TOKEN", "\"\"")
+            buildConfigField("String", "TEST_CHAT_ID", "\"\"")
         }
     }
 

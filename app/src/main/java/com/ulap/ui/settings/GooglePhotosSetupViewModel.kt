@@ -40,7 +40,7 @@ private fun readSigningFingerprint(context: Context): String {
                 context.packageName,
                 PackageManager.GET_SIGNING_CERTIFICATES,
             )
-            val signers = info.signingInfo
+            val signers = info.signingInfo ?: return "unavailable"
             if (signers.hasMultipleSigners()) {
                 signers.apkContentsSigners.firstOrNull()?.toByteArray()
             } else {

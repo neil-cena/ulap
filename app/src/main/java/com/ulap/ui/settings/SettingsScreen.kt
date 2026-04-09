@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.ulap.BuildConfig
 import com.ulap.R
 import com.ulap.data.remote.RepairPhase
 import com.ulap.data.remote.RepairProgress
@@ -406,7 +407,7 @@ fun SettingsScreen(
         SectionTitle("About")
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(modifier = Modifier.padding(16.dp)) {
-                SettingRow("Version", "1.0.0")
+                SettingRow("Version", BuildConfig.VERSION_NAME)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                 Text(
                     "Ulap backs up your media directly to your Telegram account. No servers, no subscriptions.",
