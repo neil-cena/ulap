@@ -21,4 +21,5 @@ sealed class Screen(val route: String) {
     }
     object Restore : Screen("restore")
     object GooglePhotosImport : Screen("google_photos_import")
+    object GooglePhotosSetup : Screen("google_photos_setup")
 }

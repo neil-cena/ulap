@@ -4,7 +4,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,11 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -53,9 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.ulap.R
 import com.ulap.data.remote.RepairPhase
@@ -70,6 +64,7 @@ fun SettingsScreen(
     onNavigateToFolderPicker: () -> Unit,
     onNavigateToQrShow: () -> Unit,
     onNavigateToGooglePhotosImport: () -> Unit = {},
+    onNavigateToGooglePhotosSetup: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -83,6 +78,8 @@ fun SettingsScreen(
     val isFixingCorruptBackups by viewModel.isFixingCorruptBackups.collectAsState()
     val fixCorruptBackupsResult by viewModel.fixCorruptBackupsResult.collectAsState()
     val freeSpace by viewModel.freeSpace.collectAsState()
+
+    val googlePhotosWebClientId by viewModel.googlePhotosWebClientId.collectAsState()
 
     var showFreeSpaceWarning by remember { mutableStateOf(false) }
     var showFreeSpaceConfirm by remember { mutableStateOf(false) }
@@ -203,11 +200,6 @@ fun SettingsScreen(
                     onClick = onNavigateToFolderPicker,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Manage Backup Folders") }
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = onNavigateToGooglePhotosImport,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text(stringResource(R.string.google_photos_import_nav)) }
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(12.dp))
@@ -424,11 +416,50 @@ fun SettingsScreen(
             }
         }
 
-        // ── DEV ONLY ─────────────────────────────────────────────────────────
+        // ── Advanced ──────────────────────────────────────────────────────────
         Spacer(Modifier.height(24.dp))
-        DiagnosticsSection(viewModel)
+        SectionTitle("Advanced")
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    "Google Photos Import",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(4.dp))
+                if (googlePhotosWebClientId != null) {
+                    Text(
+                        "Import from Google Photos is enabled with your own credentials.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onNavigateToGooglePhotosImport,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text(stringResource(R.string.google_photos_import_nav)) }
+                    Spacer(Modifier.height(4.dp))
+                    TextButton(
+                        onClick = onNavigateToGooglePhotosSetup,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Change credentials") }
+                } else {
+                    Text(
+                        "Import media from your Google Photos library. " +
+                            "Requires registering your own Google Cloud project.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedButton(
+                        onClick = onNavigateToGooglePhotosSetup,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Set up Google Photos import") }
+                }
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                DiagnosticsSection(viewModel)
+            }
+        }
         Spacer(Modifier.height(24.dp))
-        DebugLogPanel(viewModel)
         // ─────────────────────────────────────────────────────────────────────
     }
 
@@ -861,53 +892,4 @@ private fun AddBotDialog(
             TextButton(onClick = onDismiss) { Text("Cancel") }
         },
     )
-}
-
-// ── DEV ONLY — remove before release ──────────────────────────────────────────
-
-@Composable
-private fun DebugLogPanel(viewModel: SettingsViewModel) {
-    val entries by viewModel.debugEntries.collectAsState()
-    val listState = rememberLazyListState()
-
-    LaunchedEffect(entries.size) {
-        if (entries.isNotEmpty()) listState.animateScrollToItem(entries.size - 1)
-    }
-
-    SectionTitle("Debug Log (dev only)")
-    Card(modifier = Modifier.fillMaxWidth()) {
-        Column(modifier = Modifier.padding(8.dp)) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "${entries.size} entries",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = viewModel::clearDebugLog) { Text("Clear") }
-            }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 80.dp, max = 320.dp)
-                    .background(Color(0xFF1E1E1E)),
-            ) {
-                items(entries) { line ->
-                    Text(
-                        text = line,
-                        fontFamily = FontFamily.Monospace,
-                        fontSize = 10.sp,
-                        color = Color(0xFFD4D4D4),
-                        modifier = Modifier
-                            .padding(horizontal = 6.dp, vertical = 1.dp)
-                            .horizontalScroll(rememberScrollState()),
-                    )
-                }
-            }
-        }
-    }
 }

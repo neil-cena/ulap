@@ -3,7 +3,6 @@ package com.ulap.ui.gallery
 import android.content.Context
 import android.net.Uri
 import android.util.Log
-import android.widget.Toast
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -267,9 +266,6 @@ class MediaViewerViewModel @Inject constructor(
             debugLog.log("VideoPlayer", "Chunked playback failed id=${item.id} code=${error.errorCodeName}")
             viewModelScope.launch {
                 telegramLogger.flushNow()
-                android.os.Handler(appContext.mainLooper).post {
-                    Toast.makeText(appContext, "ChunkPlay: $msg", Toast.LENGTH_LONG).show()
-                }
             }
             return
         }
@@ -317,9 +313,6 @@ class MediaViewerViewModel @Inject constructor(
                 if (chunks.isEmpty()) {
                     debugLog.log("ChunkPrefetch", "chunk metadata empty for itemId=$itemId")
                     viewModelScope.launch { telegramLogger.flushNow() }
-                    android.os.Handler(appContext.mainLooper).post {
-                        Toast.makeText(appContext, "ChunkPlay: No chunk metadata for $itemId", Toast.LENGTH_LONG).show()
-                    }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
                         itemId to streamErrorForMissingChunkMetadata()
                     )
@@ -356,9 +349,6 @@ class MediaViewerViewModel @Inject constructor(
                 Log.e("UlapChunkPlay", "prefetch setup failed for itemId=$itemId", e)
                 debugLog.log("ChunkPrefetch", "EXCEPTION for itemId=$itemId: ${e.javaClass.simpleName}: ${e.message}")
                 viewModelScope.launch { telegramLogger.flushNow() }
-                android.os.Handler(appContext.mainLooper).post {
-                    Toast.makeText(appContext, "ChunkPlay: ${e.javaClass.simpleName}: ${e.message?.take(80)}", Toast.LENGTH_LONG).show()
-                }
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.Error("Video could not be prepared. Please try again.")
                 )

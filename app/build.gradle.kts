@@ -30,10 +30,8 @@ android {
             if (localFile.exists()) localProps.load(localFile.inputStream())
             val testToken = (localProps.getProperty("ulap.testBotToken") ?: "").trim()
             val testChatId = (localProps.getProperty("ulap.testChatId") ?: "").trim()
-            val googleWebClientId = (localProps.getProperty("ulap.googleWebClientId") ?: "").trim()
             buildConfigField("String", "TEST_BOT_TOKEN", "\"${testToken.replace("\"", "\\\"")}\"")
             buildConfigField("String", "TEST_CHAT_ID", "\"${testChatId.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-            buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
         }
         release {
             isMinifyEnabled = true
@@ -42,11 +40,6 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            val localProps = Properties()
-            val localFile = rootProject.file("local.properties")
-            if (localFile.exists()) localProps.load(localFile.inputStream())
-            val googleWebClientId = (localProps.getProperty("ulap.googleWebClientId") ?: "").trim()
-            buildConfigField("String", "GOOGLE_WEB_CLIENT_ID", "\"${googleWebClientId.replace("\"", "\\\"")}\"")
         }
     }
 

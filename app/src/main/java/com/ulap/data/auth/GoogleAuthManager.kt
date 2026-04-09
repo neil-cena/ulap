@@ -11,7 +11,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Tasks
-import com.ulap.BuildConfig
+import com.ulap.data.repository.UserPreferencesRepository
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -42,6 +42,7 @@ sealed class PhotosTokenSyncResult {
 @Singleton
 class GoogleAuthManager @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val userPrefs: UserPreferencesRepository,
 ) {
     private val accessTokenRef = AtomicReference<String?>(null)
 
@@ -63,8 +64,9 @@ class GoogleAuthManager @Inject constructor(
             .requestEmail()
             .requestScopes(Scope(PHOTOS_PICKER_SCOPE))
             .apply {
-                if (BuildConfig.GOOGLE_WEB_CLIENT_ID.isNotBlank()) {
-                    requestIdToken(BuildConfig.GOOGLE_WEB_CLIENT_ID)
+                val clientId = userPrefs.googlePhotosWebClientId.value
+                if (!clientId.isNullOrBlank()) {
+                    requestIdToken(clientId)
                 }
             }
             .build()

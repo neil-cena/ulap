@@ -144,6 +144,9 @@ class SettingsViewModel @Inject constructor(
     val telegramLoggingChatId: StateFlow<String?> = userPrefs.telegramLoggingChatId
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    val googlePhotosWebClientId: StateFlow<String?> = userPrefs.googlePhotosWebClientId
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     val backupStats: StateFlow<BackupStats?> = getBackupStats()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
@@ -256,6 +259,8 @@ class SettingsViewModel @Inject constructor(
     fun setTelegramLoggingEnabled(enabled: Boolean) = userPrefs.setTelegramLoggingEnabled(enabled)
 
     fun setTelegramLoggingChatId(chatId: String?) = userPrefs.setTelegramLoggingChatId(chatId)
+
+    fun setGooglePhotosWebClientId(clientId: String?) = userPrefs.setGooglePhotosWebClientId(clientId)
 
     fun requestClear() = _uiState.update { it.copy(showClearConfirm = true) }
     fun dismissClear() = _uiState.update { it.copy(showClearConfirm = false) }
