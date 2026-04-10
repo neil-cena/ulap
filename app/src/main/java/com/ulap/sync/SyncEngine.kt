@@ -658,6 +658,45 @@ class SyncEngine @Inject constructor(
 
         val isVideo = entity.mimeType.startsWith("video/")
         val willChunk = entity.size > CHUNKED_THRESHOLD
+
+        // Cross-source dedup: catch files already imported via Google Photos (or vice versa).
+        // Runs after hash dedup so content-identical matches are preferred over filename matches.
+        val fingerprintMatch = mediaItemDao.findBackedUpByImportFingerprint(
+            fileName = entity.fileName,
+            mimeType = entity.mimeType,
+            widthPx = entity.widthPx,
+            heightPx = entity.heightPx,
+            excludeId = entity.id,
+        )
+        if (fingerprintMatch != null && fingerprintMatch.telegramFileId != null) {
+            val matchFileId = fingerprintMatch.telegramFileId
+            val isChunkedMatch = matchFileId.startsWith(CHUNKED_FILE_ID_PREFIX)
+            if (!isChunkedMatch || chunkMetadataDao.hasChunks(fingerprintMatch.id) > 0) {
+                inputStream.close()
+                mediaItemDao.updateBackupResult(
+                    id = entity.id,
+                    status = BackupStatus.BACKED_UP,
+                    error = null,
+                    syncedAt = System.currentTimeMillis(),
+                    fileId = matchFileId,
+                    messageId = fingerprintMatch.telegramMessageId,
+                    thumbnailFileId = fingerprintMatch.thumbnailFileId,
+                    contentHash = contentHash,
+                    uploadBotIndex = fingerprintMatch.uploadBotIndex,
+                )
+                if (isChunkedMatch) {
+                    copyChunkMetadataForDedup(fromMediaId = fingerprintMatch.id, toMediaId = entity.id)
+                }
+                _progress.update { prev ->
+                    prev.copy(
+                        itemsDone = prev.itemsDone + 1,
+                        activeUploads = prev.activeUploads - entity.id,
+                    )
+                }
+                return
+            }
+        }
+
         var tempExif: File? = null
 
         // Strip GPS EXIF from JPEG images when the user has opted in.

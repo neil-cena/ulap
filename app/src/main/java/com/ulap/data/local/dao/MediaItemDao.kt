@@ -63,7 +63,7 @@ interface MediaItemDao {
     /**
      * Client-side import deduplication: same display name and MIME type, and when [widthPx]/[heightPx]
      * are non-null, same pixel dimensions (stronger than filename-only).
-     * When both dimensions are null, matches any row with the same [fileName] and [mimeType] (legacy rows).
+     * Matches when either side has NULL dimensions (treat unknown as wildcard) or both match exactly.
      */
     @Query(
         """
@@ -72,6 +72,7 @@ interface MediaItemDao {
         AND mimeType = :mimeType
         AND (
             (:widthPx IS NULL AND :heightPx IS NULL)
+            OR (width_px IS NULL AND height_px IS NULL)
             OR (width_px = :widthPx AND height_px = :heightPx)
         )
         """,
@@ -82,6 +83,35 @@ interface MediaItemDao {
         widthPx: Int?,
         heightPx: Int?,
     ): Int
+
+    /**
+     * Returns an already backed-up item with the same filename+mimeType fingerprint, for
+     * cross-source dedup (e.g. device backup finding a Google Photos import, or vice versa).
+     * Same NULL-dimension wildcard logic as [countItemsMatchingImportFingerprint].
+     */
+    @Query(
+        """
+        SELECT * FROM media_items
+        WHERE fileName = :fileName
+        AND mimeType = :mimeType
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
+        AND telegramFileId IS NOT NULL
+        AND id != :excludeId
+        AND (
+            (:widthPx IS NULL AND :heightPx IS NULL)
+            OR (width_px IS NULL AND height_px IS NULL)
+            OR (width_px = :widthPx AND height_px = :heightPx)
+        )
+        LIMIT 1
+        """,
+    )
+    suspend fun findBackedUpByImportFingerprint(
+        fileName: String,
+        mimeType: String,
+        widthPx: Int?,
+        heightPx: Int?,
+        excludeId: String,
+    ): MediaItemEntity?
 
     @Query(
         """
