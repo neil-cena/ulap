@@ -1,51 +1,121 @@
 # Ulap
 
-Private media backup to Telegram.
+Android app for private media backup to Telegram.
 
-Back up your photos and videos directly to your Telegram account — no servers, no subscriptions, no cost.
+Back up photos and videos from device folders (and optionally from Google Photos) to your own Telegram chat — no separate backend, no subscription tied to Ulap itself.
 
 ## Features
 
-- **Folder-based backup**: Choose which folders to back up automatically
-- **Photo & video support**: Images and videos up to 2GB
-- **Streaming uploads**: Memory-efficient, no full-file buffering
-- **Rate-limit aware**: Respects Telegram Bot API limits with exponential backoff
-- **Restore**: Download backed-up media back to device
-- **Private**: All data stays between your device and your Telegram account
+- **Folder-based backup**: Choose which storage buckets to include; incremental scans keep the local catalog in sync
+- **Large files**: Streams uploads; files above ~20MB are split into ~19MB Telegram document parts and reassembled for viewing and restore (aligned with Bot API `getFile` limits)
+- **Rate-limit aware**: Handles HTTP 429 with backoff; optional **multiple bot tokens** to spread upload load (round-robin, per-bot cooldowns)
+- **Restore**: Download backed-up media back to the device
+- **Google Photos import**: Sign in with Google, grant the Photos Picker scope, select items in Google Photos, and import into the same Telegram backup flow
+- **QR setup**: Show or scan a QR code on the welcome flow to copy bot/chat setup to another device
+- **Privacy options**: Optional stripping of GPS EXIF from JPEGs before upload (settings)
+- **Private by design**: Payload goes between your device and Telegram; see Telegram’s own terms and limits for the chat you use
 
-## Setup
+## Requirements
 
-1. Create a Telegram bot via [@BotFather](https://t.me/BotFather)
-2. Create a private channel or group and add the bot as admin
-3. Get your chat ID (forward a message to [@userinfobot](https://t.me/userinfobot))
-4. Open Ulap, enter your bot token and chat ID
-5. Select folders to back up
+- **Android** 8.0+ (`minSdk` 26)
+- **Build**: Android SDK **35**, **JDK 17**, **Gradle 8.9** (via wrapper), **Android Gradle Plugin** and **Kotlin** versions from `gradle/libs.versions.toml`
+
+## Setup (Telegram)
+
+1. Create a bot with [@BotFather](https://t.me/BotFather)
+2. Create a private channel or group and add the bot as an administrator with permission to post
+3. Obtain the chat ID (e.g. forward a message to [@userinfobot](https://t.me/userinfobot) or use Bot API `getUpdates` after a post)
+4. In Ulap, enter the bot token and chat ID (or use **QR show/scan** on a second device)
+5. Pick folders to back up and run sync
+
+Additional bot tokens (settings) are optional and used to rotate uploads when you hit rate limits.
 
 ## Building
 
+From the repository root:
+
+```bash
+# Debug APK (typical local build)
+./gradlew :app:assembleDebug
 ```
-./gradlew assembleDebug
+
+On Windows, use `gradlew.bat` instead of `./gradlew` if you prefer:
+
+```bat
+gradlew.bat :app:assembleDebug
 ```
 
-Requires Android SDK 35 and JDK 17.
+Release builds use minification and require a **release signing** config. Set these in `local.properties` (file is gitignored; do not commit secrets):
 
-## Architecture
+- `ulap.storeFile` — path to your keystore
+- `ulap.storePassword`, `ulap.keyAlias`, `ulap.keyPassword`
 
-- **Kotlin** + **Jetpack Compose** + **Material 3**
-- **Room** for local media database
-- **Retrofit** + **OkHttp** for Telegram Bot API
-- **WorkManager** for background sync
-- **Hilt** for dependency injection
-- **Coil 3** for image/video thumbnails
-- **Media3 ExoPlayer** for video playback
+Then:
+
+```bash
+./gradlew :app:assembleRelease
+```
+
+**Build outputs:** this project sets the app module’s build directory to **`app/build-out/`** (instead of `app/build/`) so release packaging is less likely to fail on Windows when an APK path is locked by another process. Example artifacts:
+
+- Debug APK: `app/build-out/outputs/apk/debug/`
+- Release APK: `app/build-out/outputs/apk/release/`
+
+### Optional: debug test credentials
+
+For local debug builds only, you can inject test Bot API values via `local.properties`:
+
+- `ulap.testBotToken`
+- `ulap.testChatId`
+
+These become `BuildConfig` fields in the **debug** build type (release leaves them empty).
+
+## Testing
+
+- **Unit tests** (JVM, including Robolectric where used):
+
+  ```bash
+  ./gradlew :app:testDebugUnitTest
+  ```
+
+- **Instrumented tests** (device or emulator):
+
+  ```bash
+  ./gradlew :app:connectedDebugAndroidTest
+  ```
+
+## Repository layout
+
+| Path | Purpose |
+|------|--------|
+| `app/src/main/` | Kotlin, Compose UI, sync workers, Telegram and Google Photos clients |
+| `app/src/test/` | Unit tests |
+| `app/src/androidTest/` | Android instrumented tests |
+| `app/schemas/` | Exported Room schemas |
+| `gradle/libs.versions.toml` | Centralized dependency and plugin versions |
+| `app/build-out/` | Gradle outputs for the `:app` module (see above) |
+
+## Architecture (high level)
+
+- **UI**: Jetpack Compose, Material 3, Navigation Compose
+- **DI**: Hilt (incl. Hilt WorkManager)
+- **Local data**: Room, DataStore Preferences, Encrypted storage for sensitive prefs where applicable
+- **Background work**: WorkManager (`BackupWorker`, `GooglePhotosImportWorker`, maintenance workers)
+- **Network**: Retrofit + Gson, OkHttp (Telegram Bot API)
+- **Media**: Coil 3 (thumbnails), Media3 ExoPlayer (playback; progressive/chunked sources for large restored video)
+- **Google Photos**: Google Sign-In / Play services flows and Photos Picker API–style scope for importing picks
+- **QR**: ZXing, CameraX, ML Kit barcode scanning
 
 ## FAQ
 
-**Is this free?**
-Yes. Telegram Bot API is free. There are no servers or paid services.
+**Is Telegram’s Bot API free to use?**  
+Telegram provides the Bot API without a separate fee from Ulap; your use still follows [Telegram’s policies](https://telegram.org) and any limits on your account.
 
-**What's the file size limit?**
-50MB for single upload via Bot API. Files over 2GB are excluded.
+**What are Telegram’s file limits?**  
+Limits depend on Telegram’s current Bot API and product rules. Ulap avoids loading entire huge files into memory and chunks large uploads into multiple Bot API document messages so restores can stream and reassemble.
 
-**Where are backups stored?**
-In your Telegram chat (channel/group). Ulap doesn't store files on any server.
+**Where do backups live?**  
+In the Telegram chat you configured (channel or group). Ulap does not operate its own file servers for your media.
+
+**Google Photos import — what does Ulap access?**  
+Only what you explicitly select in the Google Photos picker after signing in and granting the app the Photos Picker–related scope; imports are then uploaded to Telegram like local folder media.
