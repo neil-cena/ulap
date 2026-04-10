@@ -49,7 +49,3 @@ Yes. Telegram Bot API is free. There are no servers or paid services.
 
 **Where are backups stored?**
 In your Telegram chat (channel/group). Ulap doesn't store files on any server.
-
-## License
-
-MIT
