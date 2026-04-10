@@ -52,13 +52,9 @@ android {
             buildConfigField("String", "TEST_CHAT_ID", "\"${testChatId.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            isMinifyEnabled = false
+            isShrinkResources = false
             signingConfig = signingConfigs.getByName("release")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
             buildConfigField("String", "TEST_BOT_TOKEN", "\"\"")
             buildConfigField("String", "TEST_CHAT_ID", "\"\"")
         }
