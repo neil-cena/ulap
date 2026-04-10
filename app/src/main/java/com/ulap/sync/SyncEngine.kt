@@ -73,6 +73,7 @@ private const val DOWNLOAD_CONCURRENCY = 3
 private const val CHUNKED_THRESHOLD = 20L * 1024 * 1024 // matches Telegram Bot API getFile() download limit
 private const val MAX_BOT_COOLDOWN_WAIT_MS = 30 * 60 * 1000L
 
+@Singleton
 class SyncEngine @Inject constructor(
     private val mediaItemDao: MediaItemDao,
     private val chunkMetadataDao: ChunkMetadataDao,
@@ -106,7 +107,7 @@ class SyncEngine @Inject constructor(
     suspend fun startUpload() {
         activeJob?.cancelAndJoin()
         uploadCancelled = false
-        _progress.update { it.copy(isPaused = false) }
+        _progress.update { it.copy(isPaused = false, isActive = true, operation = SyncOperation.UPLOADING) }
         // Mirror throttle state into progress for the duration of the upload.
         throttleSyncJob?.cancel()
         throttleSyncJob = engineScope.launch {
