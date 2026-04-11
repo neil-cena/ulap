@@ -99,6 +99,10 @@ class MediaViewerViewModel @Inject constructor(
     private val _streamUrlsCache = MutableStateFlow<Map<String, StreamUrlsState>>(emptyMap())
     val streamUrlsCache: StateFlow<Map<String, StreamUrlsState>> = _streamUrlsCache.asStateFlow()
 
+    /** The single active prefetch engine; released when the user navigates away or the viewer closes. */
+    private var activePrefetchEngine: ChunkPrefetchEngine? = null
+    private var activePrefetchItemId: String? = null
+
     fun setCurrentPage(page: Int) {
         _currentPage.value = page
     }
@@ -333,6 +337,10 @@ class MediaViewerViewModel @Inject constructor(
                     logCallback = { msg -> debugLog.log("ChunkDL", msg) },
                 )
 
+                releaseActivePrefetchEngine()
+                activePrefetchEngine = prefetchEngine
+                activePrefetchItemId = itemId
+
                 val factory = PrefetchingVideoDataSource.Factory(chunkDir, chunks, prefetchEngine)
                 debugLog.log("ChunkPrefetch", "emitting ReadyProgressive for itemId=$itemId chunkCount=${chunks.size} totalSize=${chunks.sumOf { it.byteLength.toLong() }}")
                 viewModelScope.launch { telegramLogger.flushNow() }
@@ -550,6 +558,9 @@ class MediaViewerViewModel @Inject constructor(
 
     fun onVideoClosed(item: com.ulap.domain.model.MediaItem) {
         debugLog.log("VideoPlayer", "VIDEO CLOSED: id=${item.id} name=${item.fileName}")
+        if (activePrefetchItemId == item.id) {
+            releaseActivePrefetchEngine()
+        }
         viewModelScope.launch { telegramLogger.flushNow() }
     }
 
@@ -574,5 +585,19 @@ class MediaViewerViewModel @Inject constructor(
             return "Your device cannot decode this video format.\n\nTry downloading it instead."
         }
         return "Playback failed: ${error.errorCodeName}"
+    }
+
+    private fun releaseActivePrefetchEngine() {
+        activePrefetchEngine?.let { engine ->
+            debugLog.log("ChunkPrefetch", "releasing engine for itemId=$activePrefetchItemId")
+            engine.release()
+        }
+        activePrefetchEngine = null
+        activePrefetchItemId = null
+    }
+
+    override fun onCleared() {
+        releaseActivePrefetchEngine()
+        super.onCleared()
     }
 }
