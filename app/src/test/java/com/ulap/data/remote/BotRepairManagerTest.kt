@@ -282,6 +282,7 @@ class BotRepairManagerTest {
         override suspend fun getAllCloudOnlyItems() = emptyList<MediaItemEntity>()
         override suspend fun findByFileNameSizeDate(fileName: String, size: Long, dateTaken: Long) = null
         override suspend fun findByContentHash(hash: String) = null
+        override suspend fun findBackedUpByImportFingerprint(fileName: String, mimeType: String, widthPx: Int?, heightPx: Int?, excludeId: String): MediaItemEntity? = null
         override suspend fun findByTelegramFileId(fileId: String) = null
         override suspend fun updateUploadBotIndexByFileId(telegramFileId: String, uploadBotIndex: Int) {}
         override suspend fun findByIds(ids: List<String>) = emptyList<MediaItemEntity>()

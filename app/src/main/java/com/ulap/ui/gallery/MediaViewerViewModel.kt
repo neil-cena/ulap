@@ -37,6 +37,13 @@ import java.io.FileOutputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
+
+// #region agent log
+private fun dbg(loc: String, msg: String, vararg kv: Pair<String, Any?>) {
+    val data = kv.joinToString(", ") { "${it.first}=${it.second}" }
+    Log.w("DBG_5f6b53", "[$loc] $msg | $data | thread=${Thread.currentThread().name}")
+}
+// #endregion
 /** Max total size for completed `ulap_stream_*.mp4` files in cacheDir. */
 internal const val STREAM_CACHE_MAX_BYTES = 500L * 1024 * 1024 // 500 MB (increased for larger files)
 
@@ -104,13 +111,22 @@ class MediaViewerViewModel @Inject constructor(
     private var activePrefetchItemId: String? = null
 
     fun setCurrentPage(page: Int) {
+        // #region agent log
+        dbg("VM.setCurrentPage", "page=$page")
+        // #endregion
         _currentPage.value = page
     }
 
     init {
         viewModelScope.launch {
+            // #region agent log
+            dbg("VM.init", "FLOW_LAUNCH_START")
+            // #endregion
             try {
                 combine(allItems, _currentPage) { items, currentPage ->
+                    // #region agent log
+                    dbg("VM.init.transform", "COMBINE_EMIT", "itemCount" to items.size, "currentPage" to currentPage)
+                    // #endregion
                     if (items.isEmpty()) null
                     else {
                         // Only the active page: avoid prefetching / URL resolution for adjacent items.
@@ -119,10 +135,27 @@ class MediaViewerViewModel @Inject constructor(
                         Triple(items, windowIds, _streamUrlsCache.value)
                     }
                 }.collect { value ->
+                    // #region agent log
+                    dbg("VM.init.collect", "COLLECT_CALLED", "valueNull" to (value == null))
+                    // #endregion
                     if (value == null) return@collect
                     val (items, windowIds, cache) = value
                     // Guard: primary token must exist for any resolution to work.
                     getCredentials.getToken() ?: return@collect
+
+                    // #region agent log
+                    val currentItem = windowIds.firstOrNull()?.let { wid -> items.find { it.id == wid } }
+                    if (currentItem != null) {
+                        dbg("VM.init.collect", "ITEM_STATE",
+                            "id" to currentItem.id.takeLast(20),
+                            "hasFileId" to (currentItem.telegramFileId != null),
+                            "contentUri" to currentItem.contentUri.take(30),
+                            "backupStatus" to currentItem.backupStatus,
+                            "mediaType" to currentItem.mediaType,
+                            "cacheState" to cache[currentItem.id]?.javaClass?.simpleName
+                        )
+                    }
+                    // #endregion
 
                     // All candidates: in the viewport window, have a fileId, and are not already
                     // being resolved or successfully resolved.
@@ -133,6 +166,20 @@ class MediaViewerViewModel @Inject constructor(
                                 cache[item.id] !is StreamUrlsState.ReadyProgressive &&
                                 cache[item.id] !is StreamUrlsState.Loading
                         }
+
+                    val unplayable = windowIds.mapNotNull { id -> items.find { it.id == id } }
+                        .filter { item ->
+                            item.telegramFileId == null &&
+                                item.contentUri.isBlank() &&
+                                cache[item.id] !is StreamUrlsState.Error
+                        }
+                    if (unplayable.isNotEmpty()) {
+                        var newC = _streamUrlsCache.value
+                        for (item in unplayable) {
+                            newC = newC + (item.id to StreamUrlsState.Error("No cloud backup available"))
+                        }
+                        _streamUrlsCache.value = newC
+                    }
 
                     // Items that are already marked as cloud-only with no local file.
                     val clearCloudOnly = candidates.filter { item ->
@@ -157,7 +204,26 @@ class MediaViewerViewModel @Inject constructor(
                     } else emptyList()
 
                     val toFetch = clearCloudOnly + staleItems
-                    if (toFetch.isEmpty()) return@collect
+                    if (toFetch.isEmpty()) {
+                        // #region agent log
+                        val firstItem = windowIds.firstOrNull()?.let { wid -> items.find { it.id == wid } }
+                        dbg("VM.init.collect", "EMPTY_FETCH",
+                            "candidates" to candidates.size,
+                            "clearCloudOnly" to clearCloudOnly.size,
+                            "potentiallyStale" to potentiallyStale.size,
+                            "staleItems" to staleItems.size,
+                            "firstItemId" to (firstItem?.id?.takeLast(20) ?: "null"),
+                            "firstItemFileId" to (firstItem?.telegramFileId != null),
+                            "firstItemUri" to (firstItem?.contentUri?.take(30) ?: "null"),
+                            "firstItemBackup" to (firstItem?.backupStatus?.toString() ?: "null"),
+                            "firstItemCacheState" to (cache[firstItem?.id]?.javaClass?.simpleName ?: "null")
+                        )
+                        // #endregion
+                        return@collect
+                    }
+                    // #region agent log
+                    dbg("VM.init", "TO_FETCH", "count" to toFetch.size, "ids" to toFetch.map { it.id.takeLast(20) }.toString())
+                    // #endregion
 
                     var newCache = cache
                     for (item in toFetch) {
@@ -169,8 +235,10 @@ class MediaViewerViewModel @Inject constructor(
                         resolveStreamUrlsForItem(item)
                     }
                 }
-            } catch (_: Exception) {
-                // Swallow flow errors to prevent crashing the app
+            } catch (e: Exception) {
+                // #region agent log
+                dbg("VM.init", "FLOW_EXCEPTION", "type" to e.javaClass.simpleName, "msg" to (e.message?.take(100) ?: "null"))
+                // #endregion
             }
         }
     }
@@ -189,6 +257,9 @@ class MediaViewerViewModel @Inject constructor(
         val isVideo = item.mediaType == MediaType.VIDEO
         Log.d("UlapChunkPlay", "resolveStreamUrlsForItem id=${item.id} fileId=${fileId.take(30)} isNewChunked=$isNewChunked isVideo=$isVideo bot=${item.uploadBotIndex}")
         debugLog.log("ChunkPlay", "resolve id=${item.id} fileId=${fileId.take(30)} isNewChunked=$isNewChunked")
+        // #region agent log
+        dbg("VM.resolveStreamUrls", "ENTER", "itemId" to item.id, "isNewChunked" to isNewChunked, "isLegacyChunked" to isLegacyChunked, "isVideo" to isVideo, "fileIdPrefix" to fileId.take(20), "backupStatus" to item.backupStatus, "contentUri" to item.contentUri.take(30))
+        // #endregion
 
         val itemToken = getCredentials.getTokenForBot(item.uploadBotIndex)
             ?: getCredentials.getToken()
@@ -199,6 +270,9 @@ class MediaViewerViewModel @Inject constructor(
             )
             return
         }
+        // #region agent log
+        dbg("VM.resolveStreamUrls", "TOKEN_RESOLVED", "itemId" to item.id.takeLast(20), "botIndex" to item.uploadBotIndex, "tokenPrefix" to itemToken.take(10), "usedFallback" to (getCredentials.getTokenForBot(item.uploadBotIndex) == null))
+        // #endregion
 
         when {
             isNewChunked && isVideo -> {
@@ -208,12 +282,24 @@ class MediaViewerViewModel @Inject constructor(
                 startProgressiveChunkedDownload(itemToken, fileId, item.id)
             }
             else -> viewModelScope.launch {
-                val urls = try {
+                var urls = try {
                     withContext(Dispatchers.IO) {
                         downloader.resolveStreamUrls(itemToken, fileId)
                     }
                 } catch (_: Exception) {
                     emptyList()
+                }
+                if (urls.isEmpty()) {
+                    for (botIdx in 0..5) {
+                        val tryToken = getCredentials.getTokenForBot(botIdx) ?: continue
+                        if (tryToken == itemToken) continue
+                        urls = try {
+                            withContext(Dispatchers.IO) {
+                                downloader.resolveStreamUrls(tryToken, fileId)
+                            }
+                        } catch (_: Exception) { emptyList() }
+                        if (urls.isNotEmpty()) break
+                    }
                 }
                 val state: StreamUrlsState = if (urls.isEmpty()) {
                     StreamUrlsState.Error("Could not resolve stream URL")
@@ -252,6 +338,9 @@ class MediaViewerViewModel @Inject constructor(
      */
     fun onCloudPlaybackError(item: MediaItem, error: androidx.media3.common.PlaybackException) {
         Log.e("UlapChunkPlay", "onCloudPlaybackError id=${item.id} code=${error.errorCodeName} msg=${error.message}", error)
+        // #region agent log
+        dbg("VM.onCloudPlaybackError", "ENTER", "itemId" to item.id, "errorCode" to error.errorCodeName, "errorMsg" to error.message, "causeMsg" to error.cause?.message)
+        // #endregion
         if (item.telegramFileId == null) {
             _streamUrlsCache.value = _streamUrlsCache.value + (item.id to StreamUrlsState.Error("Video unavailable"))
             return
@@ -302,6 +391,9 @@ class MediaViewerViewModel @Inject constructor(
     private fun startPrefetchingChunkedDownload(token: String, itemId: String) {
         val chunkDir = chunkDirFor(appContext.cacheDir, itemId)
         debugLog.log("ChunkPrefetch", "start itemId=$itemId chunkDir=$chunkDir")
+        // #region agent log
+        dbg("VM.startPrefetch", "ENTER", "itemId" to itemId, "activeEngineId" to activePrefetchItemId)
+        // #endregion
 
         viewModelScope.launch(Dispatchers.IO) {
             evictStreamCache(activeItemId = itemId)
@@ -309,6 +401,18 @@ class MediaViewerViewModel @Inject constructor(
             try {
                 var chunks = chunkMetadataDao.getChunksForMedia(itemId)
                 debugLog.log("ChunkPrefetch", "chunks from DB: ${chunks.size} for itemId=$itemId")
+                // #region agent log
+                dbg("VM.startPrefetch", "CHUNKS_FROM_DB", "itemId" to itemId, "count" to chunks.size)
+                if (chunks.isNotEmpty()) {
+                    val first = chunks.first()
+                    val last = chunks.last()
+                    dbg("VM.startPrefetch", "CHUNK_DETAIL",
+                        "firstIdx" to first.chunkIndex, "firstOffset" to first.byteOffset, "firstLen" to first.byteLength, "firstFileId" to first.telegramFileId.take(30),
+                        "lastIdx" to last.chunkIndex, "lastOffset" to last.byteOffset, "lastLen" to last.byteLength, "lastFileId" to last.telegramFileId.take(30),
+                        "totalSize" to chunks.sumOf { it.byteLength.toLong() }
+                    )
+                }
+                // #endregion
                 if (chunks.isEmpty()) {
                     runCatching { repairChunkMetadata() }
                     chunks = chunkMetadataDao.getChunksForMedia(itemId)
@@ -316,6 +420,9 @@ class MediaViewerViewModel @Inject constructor(
                 }
                 if (chunks.isEmpty()) {
                     debugLog.log("ChunkPrefetch", "chunk metadata empty for itemId=$itemId")
+                    // #region agent log
+                    dbg("VM.startPrefetch", "NO_CHUNKS", "itemId" to itemId)
+                    // #endregion
                     viewModelScope.launch { telegramLogger.flushNow() }
                     _streamUrlsCache.value = _streamUrlsCache.value + (
                         itemId to streamErrorForMissingChunkMetadata()
@@ -323,11 +430,51 @@ class MediaViewerViewModel @Inject constructor(
                     return@launch
                 }
 
-                val urlResolver: suspend (Int) -> String = { index ->
+                // #region agent log
+                run {
+                    val testFileId = chunks.first().telegramFileId
+                    dbg("VM.startPrefetch", "TOKEN_PROBE_START", "chunkFileId_len" to testFileId.length, "chunkFileId" to testFileId.take(70), "assignedToken" to token.take(15))
+                    val primaryToken = getCredentials.getToken()
+                    for (botIdx in 0..5) {
+                        val tryToken = getCredentials.getTokenForBot(botIdx)
+                        if (tryToken == null) {
+                            dbg("VM.startPrefetch", "TOKEN_PROBE_SKIP", "botIdx" to botIdx, "reason" to "null")
+                            continue
+                        }
+                        val result = try {
+                            val url = downloader.resolveStreamUrl(tryToken, testFileId)
+                            if (url != null) "OK" else "null_url"
+                        } catch (e: Exception) {
+                            "ERR:${e.javaClass.simpleName}:${e.message?.take(60)}"
+                        }
+                        dbg("VM.startPrefetch", "TOKEN_PROBE_RESULT", "botIdx" to botIdx, "tokenPrefix" to tryToken.take(15), "result" to result)
+                    }
+                }
+                // #endregion
+
+                var resolvedToken = token
+                val urlResolver: suspend (Int) -> String = resolver@{ index ->
                     val fileId = chunks.getOrNull(index)?.telegramFileId
                         ?: throw java.io.IOException("No metadata for chunk $index")
-                    downloader.resolveStreamUrl(token, fileId)
-                        ?: throw java.io.IOException("Failed to resolve URL for chunk $index")
+                    val url = downloader.resolveStreamUrl(resolvedToken, fileId)
+                    if (url != null) return@resolver url
+
+                    // #region agent log
+                    dbg("VM.urlResolver", "FALLBACK_START", "index" to index, "assignedToken" to resolvedToken.take(15))
+                    // #endregion
+                    for (botIdx in 0..5) {
+                        val tryToken = getCredentials.getTokenForBot(botIdx) ?: continue
+                        if (tryToken == resolvedToken) continue
+                        val fallbackUrl = downloader.resolveStreamUrl(tryToken, fileId)
+                        if (fallbackUrl != null) {
+                            // #region agent log
+                            dbg("VM.urlResolver", "FALLBACK_HIT", "index" to index, "botIdx" to botIdx, "tokenPrefix" to tryToken.take(15))
+                            // #endregion
+                            resolvedToken = tryToken
+                            return@resolver fallbackUrl
+                        }
+                    }
+                    throw java.io.IOException("Failed to resolve URL for chunk $index (all bots tried)")
                 }
                 val prefetchEngine = ChunkPrefetchEngine(
                     chunkDir = chunkDir,
@@ -337,12 +484,21 @@ class MediaViewerViewModel @Inject constructor(
                     logCallback = { msg -> debugLog.log("ChunkDL", msg) },
                 )
 
+                // #region agent log
+                dbg("VM.startPrefetch", "BEFORE_RELEASE_OLD_ENGINE", "itemId" to itemId, "oldActiveId" to activePrefetchItemId, "oldEngineNull" to (activePrefetchEngine == null))
+                // #endregion
                 releaseActivePrefetchEngine()
                 activePrefetchEngine = prefetchEngine
                 activePrefetchItemId = itemId
+                // #region agent log
+                dbg("VM.startPrefetch", "ENGINE_STORED", "itemId" to itemId)
+                // #endregion
 
                 val factory = PrefetchingVideoDataSource.Factory(chunkDir, chunks, prefetchEngine)
                 debugLog.log("ChunkPrefetch", "emitting ReadyProgressive for itemId=$itemId chunkCount=${chunks.size} totalSize=${chunks.sumOf { it.byteLength.toLong() }}")
+                // #region agent log
+                dbg("VM.startPrefetch", "EMITTING_READY_PROGRESSIVE", "itemId" to itemId, "chunkCount" to chunks.size)
+                // #endregion
                 viewModelScope.launch { telegramLogger.flushNow() }
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.ReadyProgressive(
@@ -350,12 +506,13 @@ class MediaViewerViewModel @Inject constructor(
                         dataSourceFactory = factory,
                     )
                 )
-                // Start prefetch of first chunks.
-                prefetchEngine.setPrefetchOrigin(0)
 
             } catch (e: Exception) {
                 Log.e("UlapChunkPlay", "prefetch setup failed for itemId=$itemId", e)
                 debugLog.log("ChunkPrefetch", "EXCEPTION for itemId=$itemId: ${e.javaClass.simpleName}: ${e.message}")
+                // #region agent log
+                dbg("VM.startPrefetch", "EXCEPTION", "itemId" to itemId, "error" to "${e.javaClass.simpleName}: ${e.message}")
+                // #endregion
                 viewModelScope.launch { telegramLogger.flushNow() }
                 _streamUrlsCache.value = _streamUrlsCache.value + (
                     itemId to StreamUrlsState.Error("Video could not be prepared. Please try again.")
@@ -558,6 +715,9 @@ class MediaViewerViewModel @Inject constructor(
 
     fun onVideoClosed(item: com.ulap.domain.model.MediaItem) {
         debugLog.log("VideoPlayer", "VIDEO CLOSED: id=${item.id} name=${item.fileName}")
+        // #region agent log
+        dbg("VM.onVideoClosed", "ENTER", "itemId" to item.id, "activeEngineId" to activePrefetchItemId, "match" to (activePrefetchItemId == item.id))
+        // #endregion
         if (activePrefetchItemId == item.id) {
             releaseActivePrefetchEngine()
         }
@@ -570,6 +730,9 @@ class MediaViewerViewModel @Inject constructor(
 
     fun onVideoError(item: com.ulap.domain.model.MediaItem, error: androidx.media3.common.PlaybackException) {
         Log.e("UlapChunkPlay", "onVideoError id=${item.id} code=${error.errorCodeName} msg=${error.message}", error)
+        // #region agent log
+        dbg("VM.onVideoError", "ERROR", "itemId" to item.id, "errorCode" to error.errorCodeName, "msg" to error.message, "causeMsg" to error.cause?.message, "causeOfCauseMsg" to error.cause?.cause?.message)
+        // #endregion
         debugLog.log("VideoPlayer", "ERROR id=${item.id} code=${error.errorCodeName} msg=${error.message}")
         viewModelScope.launch { telegramLogger.flushNow() }
     }
@@ -588,8 +751,14 @@ class MediaViewerViewModel @Inject constructor(
     }
 
     private fun releaseActivePrefetchEngine() {
+        // #region agent log
+        dbg("VM.releaseEngine", "ENTER", "activeId" to activePrefetchItemId, "engineNull" to (activePrefetchEngine == null))
+        // #endregion
         activePrefetchEngine?.let { engine ->
             debugLog.log("ChunkPrefetch", "releasing engine for itemId=$activePrefetchItemId")
+            // #region agent log
+            dbg("VM.releaseEngine", "CALLING_RELEASE", "activeId" to activePrefetchItemId)
+            // #endregion
             engine.release()
         }
         activePrefetchEngine = null

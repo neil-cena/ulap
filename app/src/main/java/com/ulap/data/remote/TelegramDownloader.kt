@@ -53,16 +53,26 @@ class TelegramDownloader @Inject constructor(
         val fileIds = parseFileIds(fileId)
         if (fileIds.isEmpty()) return@withContext emptyList()
         val safeToken = sanitizeTokenForPath(token)
-        // Resolve all chunk URLs in parallel. supervisorScope ensures one failure doesn't cancel
-        // sibling coroutines; each async catches its own exception and returns null on failure.
         val results = supervisorScope {
             fileIds.map { id ->
                 async {
                     try {
                         val fileResponse = api.getFile(safeToken, id)
+                        // #region agent log
+                        android.util.Log.w("DBG_5f6b53", "[Downloader.resolveStreamUrls] fileId=${id.take(30)} ok=${fileResponse.ok} filePath=${fileResponse.result?.filePath?.take(50)} errCode=${fileResponse.errorCode} errDesc=${fileResponse.description?.take(80)} | thread=${Thread.currentThread().name}")
+                        // #endregion
                         if (!fileResponse.ok || fileResponse.result?.filePath == null) null
                         else "${TELEGRAM_FILE_BASE}bot$safeToken/${fileResponse.result.filePath}"
-                    } catch (_: Exception) {
+                    } catch (e: retrofit2.HttpException) {
+                        // #region agent log
+                        val errBody = try { e.response()?.errorBody()?.string()?.take(300) } catch (_: Exception) { "unreadable" }
+                        android.util.Log.w("DBG_5f6b53", "[Downloader.resolveStreamUrls] HTTP_ERR fileId_len=${id.length} fileId=${id.take(70)} code=${e.code()} body=$errBody | thread=${Thread.currentThread().name}")
+                        // #endregion
+                        null
+                    } catch (e: Exception) {
+                        // #region agent log
+                        android.util.Log.w("DBG_5f6b53", "[Downloader.resolveStreamUrls] EXCEPTION fileId_len=${id.length} fileId=${id.take(70)} error=${e.javaClass.simpleName}: ${e.message?.take(100)} | thread=${Thread.currentThread().name}")
+                        // #endregion
                         null
                     }
                 }

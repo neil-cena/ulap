@@ -22,6 +22,10 @@ android {
     namespace = "com.ulap"
     compileSdk = 35
 
+    testOptions {
+        unitTests.isReturnDefaultValues = true
+    }
+
     defaultConfig {
         applicationId = "com.ulap"
         minSdk = 26

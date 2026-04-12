@@ -48,16 +48,34 @@ class PrefetchingVideoDataSource(
             totalSize - globalOffset
         }
         Log.d("UlapChunkPlay", "DataSource.open pos=$globalOffset totalSize=$totalSize bytesRemaining=$bytesRemaining chunkIdx=$currentChunkIndex posInChunk=$positionInChunk totalChunks=${chunkMeta.size}")
+        // #region agent log
+        Log.w("DBG_5f6b53", "[DS.open] ENTER pos=$globalOffset chunkIdx=$currentChunkIndex totalChunks=${chunkMeta.size} | thread=${Thread.currentThread().name}")
+        // #endregion
 
+        // #region agent log
+        Log.w("DBG_5f6b53", "[DS.open] CALLING_SET_PREFETCH_ORIGIN chunkIdx=$currentChunkIndex | thread=${Thread.currentThread().name}")
+        // #endregion
         prefetchEngine.setPrefetchOrigin(currentChunkIndex)
         try {
+            // #region agent log
+            Log.w("DBG_5f6b53", "[DS.open] CALLING_WAIT_FOR_CHUNK chunkIdx=$currentChunkIndex | thread=${Thread.currentThread().name}")
+            // #endregion
             runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
+            // #region agent log
+            Log.w("DBG_5f6b53", "[DS.open] WAIT_FOR_CHUNK_SUCCESS chunkIdx=$currentChunkIndex | thread=${Thread.currentThread().name}")
+            // #endregion
         } catch (e: IOException) {
+            // #region agent log
+            Log.w("DBG_5f6b53", "[DS.open] WAIT_FOR_CHUNK_FAILED chunkIdx=$currentChunkIndex error=${e.message} | thread=${Thread.currentThread().name}")
+            // #endregion
             throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
         }
         openCurrentChunk()
         if (currentRaf == null) {
             Log.w("UlapChunkPlay", "DataSource.open: chunk file STILL not found after wait for idx=$currentChunkIndex, file=${ParallelChunkDownloader.chunkFile(chunkDir, currentChunkIndex)}")
+            // #region agent log
+            Log.w("DBG_5f6b53", "[DS.open] CHUNK_FILE_NOT_FOUND idx=$currentChunkIndex file=${ParallelChunkDownloader.chunkFile(chunkDir, currentChunkIndex)} exists=${ParallelChunkDownloader.chunkFile(chunkDir, currentChunkIndex).exists()} | thread=${Thread.currentThread().name}")
+            // #endregion
         }
         transferStarted(dataSpec)
         return bytesRemaining
@@ -71,6 +89,9 @@ class PrefetchingVideoDataSource(
         try {
             runBlocking { prefetchEngine.waitForChunk(currentChunkIndex) }
         } catch (e: IOException) {
+            // #region agent log
+            Log.w("DBG_5f6b53", "[DS.read] WAIT_FOR_CHUNK_FAILED chunkIdx=$currentChunkIndex error=${e.message} | thread=${Thread.currentThread().name}")
+            // #endregion
             throw DataSourceException(e, PlaybackException.ERROR_CODE_IO_UNSPECIFIED)
         }
 

@@ -102,7 +102,13 @@ fun VideoPlayerView(
     }
 
     DisposableEffect(uris, dataSourceFactory) {
+        // #region agent log
+        android.util.Log.w("DBG_5f6b53", "[VideoPlayerView] DisposableEffect STARTED uris=${uris.size} hasFactory=${dataSourceFactory != null} | thread=${Thread.currentThread().name}")
+        // #endregion
         onDispose {
+            // #region agent log
+            android.util.Log.w("DBG_5f6b53", "[VideoPlayerView] DisposableEffect onDispose FIRING uris=${uris.size} | thread=${Thread.currentThread().name}")
+            // #endregion
             onVideoReleased?.invoke()
             exoPlayer.release()
         }
