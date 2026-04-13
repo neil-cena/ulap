@@ -1,0 +1,6 @@
+# Force LF for shell scripts (prevents CRLF on Windows checkouts breaking Linux runners)
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Force CRLF for Windows batch files
+*.bat text eol=crlf
