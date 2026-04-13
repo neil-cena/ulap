@@ -100,11 +100,36 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 val items = response.mediaItems.orEmpty()
 
                 val googlePhotosItems = items.map { it.toGooglePhotosMediaItem() }
-                val batchResults = importManager.importBatch(
+                importManager.importBatch(
                     items = googlePhotosItems,
                     sessionId = sessionId,
                     concurrency = 3,
-                    onItemComplete = { _, _ ->
+                    onItemComplete = { item, result ->
+                        result.fold(
+                            onSuccess = { status ->
+                                processed++
+                                when (status) {
+                                    GooglePhotosImportItemStatus.UPLOADED -> imported++
+                                    GooglePhotosImportItemStatus.SKIPPED_DUPLICATE -> skippedDuplicate++
+                                    GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED -> skippedUnsupported++
+                                }
+                            },
+                            onFailure = { err ->
+                                processed++
+                                failed++
+                                debugLog.log(TAG, "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(err)}")
+                                try {
+                                    mediaItemDao.upsert(
+                                        GooglePhotosImportEntityFactory.failedEntity(
+                                            item,
+                                            err.message ?: "import failed",
+                                        ),
+                                    )
+                                } catch (db: Exception) {
+                                    debugLog.log(TAG, "failed to persist FAILED row: ${formatGooglePhotosDiagnostics(db)}")
+                                }
+                            },
+                        )
                         setProgress(
                             buildGooglePhotosImportProgressData(
                                 imported = imported,
@@ -114,35 +139,6 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                         )
                     },
                 )
-                for (batchResult in batchResults) {
-                    val item = batchResult.item
-                    batchResult.result.fold(
-                        onSuccess = { status ->
-                            processed++
-                            when (status) {
-                                GooglePhotosImportItemStatus.UPLOADED -> imported++
-                                GooglePhotosImportItemStatus.SKIPPED_DUPLICATE -> skippedDuplicate++
-                                GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED -> skippedUnsupported++
-                            }
-                        },
-                        onFailure = { err ->
-                            processed++
-                            failed++
-                            debugLog.log(TAG, "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(err)}")
-                            try {
-                                mediaItemDao.upsert(
-                                    GooglePhotosImportEntityFactory.failedEntity(
-                                        item,
-                                        err.message ?: "import failed",
-                                    ),
-                                )
-                            } catch (db: Exception) {
-                                debugLog.log(TAG, "failed to persist FAILED row: ${formatGooglePhotosDiagnostics(db)}")
-                            }
-                        },
-                    )
-                }
-                setProgress(buildGooglePhotosImportProgressData(imported, processed, selectedTotal))
 
                 nextPageToken = response.nextPageToken
             } while (nextPageToken != null && !isStopped)
