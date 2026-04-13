@@ -430,28 +430,6 @@ class MediaViewerViewModel @Inject constructor(
                     return@launch
                 }
 
-                // #region agent log
-                run {
-                    val testFileId = chunks.first().telegramFileId
-                    dbg("VM.startPrefetch", "TOKEN_PROBE_START", "chunkFileId_len" to testFileId.length, "chunkFileId" to testFileId.take(70), "assignedToken" to token.take(15))
-                    val primaryToken = getCredentials.getToken()
-                    for (botIdx in 0..5) {
-                        val tryToken = getCredentials.getTokenForBot(botIdx)
-                        if (tryToken == null) {
-                            dbg("VM.startPrefetch", "TOKEN_PROBE_SKIP", "botIdx" to botIdx, "reason" to "null")
-                            continue
-                        }
-                        val result = try {
-                            val url = downloader.resolveStreamUrl(tryToken, testFileId)
-                            if (url != null) "OK" else "null_url"
-                        } catch (e: Exception) {
-                            "ERR:${e.javaClass.simpleName}:${e.message?.take(60)}"
-                        }
-                        dbg("VM.startPrefetch", "TOKEN_PROBE_RESULT", "botIdx" to botIdx, "tokenPrefix" to tryToken.take(15), "result" to result)
-                    }
-                }
-                // #endregion
-
                 var resolvedToken = token
                 val urlResolver: suspend (Int) -> String = resolver@{ index ->
                     val fileId = chunks.getOrNull(index)?.telegramFileId

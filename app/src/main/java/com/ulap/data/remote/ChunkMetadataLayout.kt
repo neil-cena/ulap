@@ -9,6 +9,7 @@ object ChunkMetadataLayout {
         totalSize: Long,
         chunkCount: Int,
         chunkUploadSize: Long = CHUNK_UPLOAD_SIZE,
+        fastStartChunkSize: Long? = null,
     ): List<Int> {
         require(chunkCount > 0) { "chunkCount must be positive" }
         require(totalSize >= 0) { "totalSize must be non-negative" }
@@ -17,10 +18,10 @@ object ChunkMetadataLayout {
         var offset = 0L
         repeat(chunkCount) { idx ->
             val isLast = idx == chunkCount - 1
-            val len = if (isLast) {
-                (totalSize - offset).coerceAtLeast(0).coerceAtMost(chunkSize.toLong()).toInt()
-            } else {
-                chunkSize
+            val len = when {
+                isLast -> (totalSize - offset).coerceAtLeast(0).coerceAtMost(chunkSize.toLong()).toInt()
+                idx == 0 && fastStartChunkSize != null -> fastStartChunkSize.toInt()
+                else -> chunkSize
             }
             out.add(len)
             offset += len

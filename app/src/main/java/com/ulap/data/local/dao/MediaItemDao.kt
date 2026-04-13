@@ -198,6 +198,22 @@ interface MediaItemDao {
     )
     suspend fun markOversizedChunkedItemsAsFailed()
 
+    /** Mark BACKED_UP chunked items whose first chunk was uploaded with the old large size so they re-upload with the fast-start layout. */
+    @Query(
+        """
+        UPDATE media_items
+        SET backupStatus = 'FAILED', errorMessage = 'Re-upload required (fast-start)',
+            telegramFileId = NULL, telegramMessageId = NULL, lastSyncedAt = NULL
+        WHERE backupStatus = 'BACKED_UP'
+        AND telegramFileId LIKE 'chunked:%'
+        AND id IN (
+            SELECT mediaItemId FROM chunk_metadata
+            WHERE chunkIndex = 0 AND byteLength > 524288
+        )
+        """
+    )
+    suspend fun markSlowStartChunkedItemsAsFailed()
+
     @Query(
         """
         SELECT COUNT(*) FROM media_items

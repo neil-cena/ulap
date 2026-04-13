@@ -15,6 +15,7 @@ import javax.inject.Singleton
 
 private const val MAX_SINGLE_UPLOAD_SIZE = 20L * 1024 * 1024 // 20MB Bot API getFile() limit for download/streaming
 internal const val CHUNK_UPLOAD_SIZE = 19L * 1024 * 1024 // 19MB per chunk (under 20MB getFile limit for streaming)
+internal const val FAST_START_CHUNK_SIZE = 512L * 1024 // 512KB first chunk for faster media player start
 
 // Top-level so BackupForegroundService can import it for the notification string.
 const val CHUNK_MAX_RETRIES = 5
@@ -176,15 +177,21 @@ class TelegramUploader @Inject constructor(
         val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
         var uploadedSoFar = 0L
 
-        val totalChunks = ((fileSize + CHUNK_UPLOAD_SIZE - 1) / CHUNK_UPLOAD_SIZE).toInt()
+        val totalChunks = if (fileSize <= FAST_START_CHUNK_SIZE) {
+            1
+        } else {
+            val remaining = fileSize - FAST_START_CHUNK_SIZE
+            (1 + (remaining + CHUNK_UPLOAD_SIZE - 1) / CHUNK_UPLOAD_SIZE).toInt()
+        }
         onTotalChunksKnown(totalChunks)   // sets SyncProgress.totalChunks before any chunk starts
 
         // 0-based chunk index, aligned with byteOffset tracking.
         var chunkIndex = resumeFromChunk
 
         // Skip already-uploaded bytes (resume support).
+        // Chunk 0 consumed FAST_START_CHUNK_SIZE bytes; chunks 1..n consumed CHUNK_UPLOAD_SIZE each.
         if (resumeFromChunk > 0) {
-            var remaining = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
+            var remaining = FAST_START_CHUNK_SIZE + (resumeFromChunk - 1).toLong() * CHUNK_UPLOAD_SIZE
             while (remaining > 0) {
                 val skipped = inputStream.skip(remaining)
                 if (skipped <= 0) break
@@ -196,13 +203,15 @@ class TelegramUploader @Inject constructor(
                     Exception("Resume failed: stream ended before expected offset (file may have been modified)")
                 )
             }
-            uploadedSoFar = resumeFromChunk.toLong() * CHUNK_UPLOAD_SIZE
+            uploadedSoFar = FAST_START_CHUNK_SIZE + (resumeFromChunk - 1).toLong() * CHUNK_UPLOAD_SIZE
         }
 
-        val chunkSize = CHUNK_UPLOAD_SIZE.toInt()
-        val buf = ByteArray(chunkSize)
         var read: Int
-        while (readFully(inputStream, buf).also { read = it } != -1) {
+        while (true) {
+            val currentChunkSize = if (chunkIndex == 0) FAST_START_CHUNK_SIZE.toInt() else CHUNK_UPLOAD_SIZE.toInt()
+            val buf = ByteArray(currentChunkSize)
+            read = readFully(inputStream, buf)
+            if (read == -1) break
             val byteOffset = uploadedSoFar
             val chunkData = buf.copyOf(read)
             val chunkCaption = "[ulap-chunk] $fileName part ${chunkIndex + 1}/$totalChunks"

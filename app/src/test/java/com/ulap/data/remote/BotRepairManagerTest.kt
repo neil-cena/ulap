@@ -270,6 +270,7 @@ class BotRepairManagerTest {
         override suspend fun resetStaleUploadingToPending() {}
         override suspend fun resetItemToPending(id: String) {}
         override suspend fun markOversizedChunkedItemsAsFailed() {}
+        override suspend fun markSlowStartChunkedItemsAsFailed() {}
         override suspend fun countBackedUp(bucket: String) = 0
         override suspend fun getModifiedSince(bucket: String, since: Long) = emptyList<MediaItemEntity>()
         override fun countByStatus(status: BackupStatus) = kotlinx.coroutines.flow.flowOf(0)
