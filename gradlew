@@ -40,7 +40,7 @@ APP_BASE_NAME=${0##*/}
 CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar:$APP_HOME/gradle/wrapper/gradle-wrapper-shared.jar
 
 # Add default JVM options here.
-DEFAULT_JVM_OPTS='-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"'
+DEFAULT_JVM_OPTS='-Dfile.encoding=UTF-8 -Xmx64m -Xms64m'
 
 # Find java.exe
 if [ -n "$JAVA_HOME" ] ; then
