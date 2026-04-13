@@ -125,7 +125,7 @@ class GooglePhotosImportManagerBotPoolContractBrt {
                 ),
             )
 
-            val result = manager.importGooglePhotosMediaItem(item)
+            val result = manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
             assertTrue("$trace import ok", result.isSuccess)
             verify(botPool, atLeast(1)).selectForUpload()
         }

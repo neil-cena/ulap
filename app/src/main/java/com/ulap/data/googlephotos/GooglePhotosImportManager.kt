@@ -15,7 +15,13 @@ import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.di.UploadClient
 import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
+import java.util.Collections
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -46,6 +52,12 @@ enum class GooglePhotosImportItemStatus {
     SKIPPED_UNSUPPORTED,
 }
 
+/** Per-item result returned by [GooglePhotosImportManager.importBatch]. */
+data class BatchItemResult(
+    val item: GooglePhotosMediaItem,
+    val result: Result<GooglePhotosImportItemStatus>,
+)
+
 @Singleton
 class GooglePhotosImportManager @Inject constructor(
     private val pickerApi: GooglePhotosPickerApi,
@@ -61,7 +73,7 @@ class GooglePhotosImportManager @Inject constructor(
      * Imports a single media item (image via authenticated download, video via in-memory chunking).
      * Used by [com.ulap.sync.GooglePhotosImportWorker]; skips non-image/non-video MIME types.
      */
-    suspend fun importGooglePhotosMediaItem(item: GooglePhotosMediaItem): Result<GooglePhotosImportItemStatus> =
+    suspend fun importGooglePhotosMediaItem(item: GooglePhotosMediaItem, sessionId: String): Result<GooglePhotosImportItemStatus> =
         withContext(Dispatchers.IO) {
             val fileName = item.filename?.takeIf { it.isNotBlank() } ?: item.id
             val (w, h) = item.mediaMetadata.pixelDimensions()
@@ -88,10 +100,10 @@ class GooglePhotosImportManager @Inject constructor(
                 item.mimeType.startsWith("video/") -> {
                     val bot = botPool.selectForUpload()
                         ?: return@withContext Result.failure(IllegalStateException("No Telegram bot available for upload"))
-                    importVideoItem(item, bot, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importVideoItem(item, bot, chatIdBody, sessionId).map { GooglePhotosImportItemStatus.UPLOADED }
                 }
                 item.mimeType.startsWith("image/") ->
-                    importImageItemWithBotRetries(item, chatIdBody).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importImageItemWithBotRetries(item, chatIdBody, sessionId).map { GooglePhotosImportItemStatus.UPLOADED }
                 else -> {
                     Log.d(TAG, "skip non-media mime=${item.mimeType} id=${item.id}")
                     Result.success(GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED)
@@ -100,19 +112,52 @@ class GooglePhotosImportManager @Inject constructor(
         }
 
     /**
+     * Processes [items] concurrently up to [concurrency] at a time, calling
+     * [importGooglePhotosMediaItem] for each and invoking [onItemComplete] after each finishes.
+     * Returns a [BatchItemResult] for every input item; per-item exceptions are captured as
+     * [Result.failure] rather than propagated to sibling coroutines.
+     */
+    suspend fun importBatch(
+        items: List<GooglePhotosMediaItem>,
+        sessionId: String,
+        concurrency: Int = 3,
+        onItemComplete: suspend (item: GooglePhotosMediaItem, result: Result<GooglePhotosImportItemStatus>) -> Unit = { _, _ -> },
+    ): List<BatchItemResult> = coroutineScope {
+        val semaphore = Semaphore(concurrency)
+        val results = Collections.synchronizedList(mutableListOf<BatchItemResult>())
+        items.map { item ->
+            async {
+                semaphore.withPermit {
+                    val result = try {
+                        importGooglePhotosMediaItem(item, sessionId)
+                    } catch (e: Exception) {
+                        Result.failure(e)
+                    }
+                    val batchResult = BatchItemResult(item, result)
+                    results.add(batchResult)
+                    onItemComplete(item, result)
+                    batchResult
+                }
+            }
+        }.awaitAll()
+        results
+    }
+
+    /**
      * Picks a bot via [botPool] on each attempt; on HTTP 429 marks that bot cooldown and retries
      * with [botPool.selectForUpload] (same pattern as [com.ulap.sync.SyncEngine] multi-bot handoff).
      */
     private suspend fun importImageItemWithBotRetries(
         item: GooglePhotosMediaItem,
         chatIdBody: RequestBody,
+        sessionId: String,
     ): Result<Unit> {
         var lastError: Exception? = null
         repeat(MAX_UPLOAD_BOT_ATTEMPTS) {
             val bot = botPool.selectForUpload()
                 ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
             try {
-                return importImageItem(item, bot, chatIdBody)
+                return importImageItem(item, bot, chatIdBody, sessionId)
             } catch (e: TelegramRateLimitException) {
                 botPool.markRateLimited(bot.index, e.retryAfterMs)
                 lastError = e
@@ -132,6 +177,7 @@ class GooglePhotosImportManager @Inject constructor(
         item: GooglePhotosMediaItem,
         bot: BotCredential,
         chatIdBody: RequestBody,
+        sessionId: String,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
             return Result.failure(
@@ -140,7 +186,17 @@ class GooglePhotosImportManager @Inject constructor(
         }
         val baseUrl = item.baseUrl!!
         val downloadUrl = GooglePhotosUrls.fullResolutionImageUrl(baseUrl)
-        val streamResponse = pickerApi.streamMedia(downloadUrl)
+        var streamResponse = pickerApi.streamMedia(downloadUrl)
+        if (streamResponse.code() in listOf(401, 403)) {
+            // baseUrl has expired — re-fetch a fresh one and retry exactly once
+            streamResponse.errorBody()?.close()
+            val freshItem = runCatching { pickerApi.getMediaItem(item.id, sessionId) }.getOrNull()
+            val freshBaseUrl = freshItem?.mediaFile?.baseUrl
+            if (freshBaseUrl != null) {
+                val freshDownloadUrl = GooglePhotosUrls.fullResolutionImageUrl(freshBaseUrl)
+                streamResponse = pickerApi.streamMedia(freshDownloadUrl)
+            }
+        }
         if (!streamResponse.isSuccessful) {
             streamResponse.errorBody()?.close()
             return Result.failure(
@@ -185,6 +241,7 @@ class GooglePhotosImportManager @Inject constructor(
         item: GooglePhotosMediaItem,
         bot: BotCredential,
         chatIdBody: RequestBody,
+        sessionId: String,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
             return Result.failure(
@@ -201,7 +258,16 @@ class GooglePhotosImportManager @Inject constructor(
         }.getOrNull()
 
         val videoUrl = GooglePhotosUrls.downloadVideoUrl(baseUrl)
-        val response = pickerApi.streamMedia(videoUrl)
+        var response = pickerApi.streamMedia(videoUrl)
+        if (response.code() in listOf(401, 403)) {
+            response.errorBody()?.close()
+            val freshItem = runCatching { pickerApi.getMediaItem(item.id, sessionId) }.getOrNull()
+            val freshBaseUrl = freshItem?.mediaFile?.baseUrl
+            if (freshBaseUrl != null) {
+                val freshVideoUrl = GooglePhotosUrls.downloadVideoUrl(freshBaseUrl)
+                response = pickerApi.streamMedia(freshVideoUrl)
+            }
+        }
         if (!response.isSuccessful) {
             response.errorBody()?.close()
             return Result.failure(

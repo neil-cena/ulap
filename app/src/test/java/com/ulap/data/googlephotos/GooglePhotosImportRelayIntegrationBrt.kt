@@ -125,7 +125,7 @@ class GooglePhotosImportRelayIntegrationBrt {
                 ),
             )
 
-            val result = manager.importGooglePhotosMediaItem(item)
+            val result = manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
             assertTrue("$trace import ok", result.isSuccess)
 
             val captor = argumentCaptor<MediaItemEntity>()

@@ -48,6 +48,16 @@ interface GooglePhotosPickerApi {
     ): PickedMediaItemsResponse
 
     /**
+     * Returns a single media item with a fresh [PickedMediaFile.baseUrl].
+     * Used to re-fetch an expired baseUrl without re-paging the full session.
+     */
+    @GET("mediaItems/{mediaItemId}")
+    suspend fun getMediaItem(
+        @Path("mediaItemId") mediaItemId: String,
+        @Query("sessionId") sessionId: String,
+    ): PickedMediaItem
+
+    /**
      * Streams raw bytes from a Picker API media URL (e.g. [PickedMediaFile.baseUrl] with `=d` or
      * `=dv` suffix). Unlike the old Library API CDN, Picker API base URLs require a valid
      * Authorization header — which this client's interceptor always provides.

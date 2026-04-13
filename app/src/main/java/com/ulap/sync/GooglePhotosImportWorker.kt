@@ -99,57 +99,50 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 )
                 val items = response.mediaItems.orEmpty()
 
-                for (pickedItem in items) {
-                    if (isStopped) break
-                    val item = pickedItem.toGooglePhotosMediaItem()
-                    try {
-                        val result = importManager.importGooglePhotosMediaItem(item)
-                        result.fold(
-                            onSuccess = { status ->
-                                processed++
-                                when (status) {
-                                    GooglePhotosImportItemStatus.UPLOADED -> imported++
-                                    GooglePhotosImportItemStatus.SKIPPED_DUPLICATE -> skippedDuplicate++
-                                    GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED -> skippedUnsupported++
-                                }
-                            },
-                            onFailure = { err ->
-                                processed++
-                                failed++
+                val googlePhotosItems = items.map { it.toGooglePhotosMediaItem() }
+                val batchResults = importManager.importBatch(
+                    items = googlePhotosItems,
+                    sessionId = sessionId,
+                    concurrency = 3,
+                    onItemComplete = { _, _ ->
+                        setProgress(
+                            buildGooglePhotosImportProgressData(
+                                imported = imported,
+                                processed = processed,
+                                selectedTotal = selectedTotal,
+                            ),
+                        )
+                    },
+                )
+                for (batchResult in batchResults) {
+                    val item = batchResult.item
+                    batchResult.result.fold(
+                        onSuccess = { status ->
+                            processed++
+                            when (status) {
+                                GooglePhotosImportItemStatus.UPLOADED -> imported++
+                                GooglePhotosImportItemStatus.SKIPPED_DUPLICATE -> skippedDuplicate++
+                                GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED -> skippedUnsupported++
+                            }
+                        },
+                        onFailure = { err ->
+                            processed++
+                            failed++
+                            debugLog.log(TAG, "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(err)}")
+                            try {
                                 mediaItemDao.upsert(
                                     GooglePhotosImportEntityFactory.failedEntity(
                                         item,
                                         err.message ?: "import failed",
                                     ),
                                 )
-                            },
-                        )
-                    } catch (e: Exception) {
-                        debugLog.log(
-                            TAG,
-                            "item import failed id=${item.id}: ${formatGooglePhotosDiagnostics(e)}",
-                        )
-                        processed++
-                        failed++
-                        try {
-                            mediaItemDao.upsert(
-                                GooglePhotosImportEntityFactory.failedEntity(
-                                    item,
-                                    e.message ?: e.javaClass.simpleName,
-                                ),
-                            )
-                        } catch (db: Exception) {
-                            debugLog.log(TAG, "failed to persist FAILED row: ${formatGooglePhotosDiagnostics(db)}")
-                        }
-                    }
-                    setProgress(
-                        buildGooglePhotosImportProgressData(
-                            imported = imported,
-                            processed = processed,
-                            selectedTotal = selectedTotal,
-                        ),
+                            } catch (db: Exception) {
+                                debugLog.log(TAG, "failed to persist FAILED row: ${formatGooglePhotosDiagnostics(db)}")
+                            }
+                        },
                     )
                 }
+                setProgress(buildGooglePhotosImportProgressData(imported, processed, selectedTotal))
 
                 nextPageToken = response.nextPageToken
             } while (nextPageToken != null && !isStopped)
