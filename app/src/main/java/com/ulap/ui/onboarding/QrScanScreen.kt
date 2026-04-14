@@ -54,6 +54,7 @@ data class ScannedCredentials(
     val telegramLoggingEnabled: Boolean = false,
     val telegramLoggingChatId: String? = null,
     val googlePhotosWebClientId: String? = null,
+    val googlePhotosClientSecret: String? = null,
 )
 
 @Composable
@@ -200,6 +201,7 @@ private fun parseUlapQr(raw: String): ScannedCredentials? {
         val telegramLoggingEnabled = json.optBoolean("le", false)
         val telegramLoggingChatId = json.optString("lc").takeIf { it.isNotBlank() }
         val googlePhotosWebClientId = json.optString("gp").takeIf { it.isNotBlank() }
+        val googlePhotosClientSecret = json.optString("gs").takeIf { it.isNotBlank() }
         ScannedCredentials(
             token,
             chatId,
@@ -207,6 +209,7 @@ private fun parseUlapQr(raw: String): ScannedCredentials? {
             telegramLoggingEnabled,
             telegramLoggingChatId,
             googlePhotosWebClientId,
+            googlePhotosClientSecret,
         )
     } catch (_: JSONException) {
         null

@@ -230,6 +230,9 @@ private fun UlapNavHost(
                     if (!creds.googlePhotosWebClientId.isNullOrBlank()) {
                         userPrefs.setGooglePhotosWebClientId(creds.googlePhotosWebClientId)
                     }
+                    if (!creds.googlePhotosClientSecret.isNullOrBlank()) {
+                        userPrefs.setGooglePhotosClientSecret(creds.googlePhotosClientSecret)
+                    }
                     SyncWorker.schedule(
                         context.applicationContext,
                         wifiOnly = userPrefs.wifiOnly.value,
@@ -248,6 +251,7 @@ private fun UlapNavHost(
                     telegramLoggingEnabled = userPrefs.telegramLoggingEnabled.value,
                     telegramLoggingChatId = userPrefs.telegramLoggingChatId.value,
                     googlePhotosWebClientId = userPrefs.googlePhotosWebClientId.value,
+                    googlePhotosClientSecret = userPrefs.googlePhotosClientSecret.value,
                 )
             }
             composable(Screen.FolderPicker.route) { backStack ->

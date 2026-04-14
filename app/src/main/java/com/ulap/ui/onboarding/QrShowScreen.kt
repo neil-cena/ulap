@@ -40,8 +40,9 @@ fun QrShowScreen(
     telegramLoggingEnabled: Boolean = false,
     telegramLoggingChatId: String? = null,
     googlePhotosWebClientId: String? = null,
+    googlePhotosClientSecret: String? = null,
 ) {
-    val payload = remember(token, chatId, additionalBots, telegramLoggingEnabled, telegramLoggingChatId, googlePhotosWebClientId) {
+    val payload = remember(token, chatId, additionalBots, telegramLoggingEnabled, telegramLoggingChatId, googlePhotosWebClientId, googlePhotosClientSecret) {
         val json = JSONObject().put("t", token).put("c", chatId)
         if (additionalBots.isNotEmpty()) {
             val arr = JSONArray()
@@ -53,6 +54,7 @@ fun QrShowScreen(
         if (telegramLoggingEnabled) json.put("le", true)
         if (!telegramLoggingChatId.isNullOrBlank()) json.put("lc", telegramLoggingChatId)
         if (!googlePhotosWebClientId.isNullOrBlank()) json.put("gp", googlePhotosWebClientId)
+        if (!googlePhotosClientSecret.isNullOrBlank()) json.put("gs", googlePhotosClientSecret)
         json.toString()
     }
 
