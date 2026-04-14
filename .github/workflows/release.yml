@@ -69,11 +69,91 @@ jobs:
         if: always()
         run: rm -f "$GITHUB_WORKSPACE/ulap-release.jks" local.properties
 
+      - name: Generate release notes
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          PREV_TAG=$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed -n '2p' || true)
+
+          if [ -z "$PREV_TAG" ]; then
+            RANGE="$CURRENT_TAG"
+          else
+            RANGE="${PREV_TAG}..${CURRENT_TAG}"
+          fi
+
+          declare -a FEATURES FIXES REFACTORS CHORES OTHERS
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            hash="${line%% *}"
+            msg="${line#* }"
+            short_hash="${hash:0:7}"
+
+            case "$msg" in
+              feat:*|feat\(*)
+                clean="${msg#feat: }" ; clean="${clean#feat(}" ; clean="${clean#*)}" ; clean="${clean# }"
+                FEATURES+=("- ${clean^} (\`${short_hash}\`)")
+                ;;
+              fix:*|fix\(*)
+                clean="${msg#fix: }" ; clean="${clean#fix(}" ; clean="${clean#*)}" ; clean="${clean# }"
+                FIXES+=("- ${clean^} (\`${short_hash}\`)")
+                ;;
+              refactor:*|refactor\(*)
+                clean="${msg#refactor: }" ; clean="${clean#refactor(}" ; clean="${clean#*)}" ; clean="${clean# }"
+                REFACTORS+=("- ${clean^} (\`${short_hash}\`)")
+                ;;
+              chore:*|chore\(*)
+                clean="${msg#chore: }" ; clean="${clean#chore(}" ; clean="${clean#*)}" ; clean="${clean# }"
+                CHORES+=("- ${clean^} (\`${short_hash}\`)")
+                ;;
+              *)
+                OTHERS+=("- ${msg} (\`${short_hash}\`)")
+                ;;
+            esac
+          done < <(git log "$RANGE" --pretty=format:"%H %s" --no-merges)
+
+          {
+            echo "## What's Changed"
+            echo ""
+            if [ ${#FEATURES[@]} -gt 0 ]; then
+              echo "### New Features"
+              printf '%s\n' "${FEATURES[@]}"
+              echo ""
+            fi
+            if [ ${#FIXES[@]} -gt 0 ]; then
+              echo "### Bug Fixes"
+              printf '%s\n' "${FIXES[@]}"
+              echo ""
+            fi
+            if [ ${#REFACTORS[@]} -gt 0 ]; then
+              echo "### Refactoring"
+              printf '%s\n' "${REFACTORS[@]}"
+              echo ""
+            fi
+            if [ ${#CHORES[@]} -gt 0 ]; then
+              echo "### Maintenance"
+              printf '%s\n' "${CHORES[@]}"
+              echo ""
+            fi
+            if [ ${#OTHERS[@]} -gt 0 ]; then
+              echo "### Other"
+              printf '%s\n' "${OTHERS[@]}"
+              echo ""
+            fi
+            if [ -n "$PREV_TAG" ]; then
+              echo "---"
+              echo "**Full changelog**: [\`${PREV_TAG}...${CURRENT_TAG}\`](https://github.com/${{ github.repository }}/compare/${PREV_TAG}...${CURRENT_TAG})"
+            fi
+          } > release_notes.md
+
+          echo "--- Generated release notes ---"
+          cat release_notes.md
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
           name: ${{ github.ref_name }}
+          body_path: release_notes.md
           files: app/build-out/outputs/apk/release/*.apk
           fail_on_unmatched_files: true
           make_latest: ${{ !contains(github.ref_name, '-') }}
