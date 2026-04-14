@@ -111,6 +111,7 @@ class GooglePhotosImportRelayIntegrationBrt {
                 rateLimiter = rateLimiter,
                 credentialRepository = creds,
                 botPool = botPool,
+                appContext = androidx.test.core.app.ApplicationProvider.getApplicationContext(),
             )
 
             val item = GooglePhotosMediaItem(

@@ -1,5 +1,6 @@
 package com.ulap.data.googlephotos
 
+import android.content.Context
 import android.util.Log
 import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
@@ -15,6 +16,7 @@ import com.ulap.data.remote.sanitizeTokenForPath
 import com.ulap.di.UploadClient
 import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.util.Collections
 import kotlin.math.min
 import kotlin.math.max
@@ -29,7 +31,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -148,6 +152,9 @@ class AimdConcurrencyController(
     }
 }
 
+/** Subdirectory inside [Context.getCacheDir] used for temporary image downloads. */
+internal const val GPHOTO_IMPORT_TEMP_DIR = "gphoto_import"
+
 @Singleton
 class GooglePhotosImportManager @Inject constructor(
     private val pickerApi: GooglePhotosPickerApi,
@@ -157,7 +164,11 @@ class GooglePhotosImportManager @Inject constructor(
     private val rateLimiter: TelegramRateLimiter,
     private val credentialRepository: CredentialRepository,
     private val botPool: BotPool,
+    @ApplicationContext private val appContext: Context,
 ) {
+
+    private val importTempDir: File
+        get() = File(appContext.cacheDir, GPHOTO_IMPORT_TEMP_DIR).also { it.mkdirs() }
 
     /**
      * Returns the recommended concurrency for [importBatch] based on the number of configured bots.
@@ -275,8 +286,11 @@ class GooglePhotosImportManager @Inject constructor(
                 try {
                     val result = try {
                         importGooglePhotosMediaItem(item, sessionId, aimd)
-                    } catch (e: Exception) {
-                        Result.failure(e)
+                    } catch (e: Throwable) {
+                        if (e is OutOfMemoryError) {
+                            Log.e(TAG, "OOM importing item=${item.id}; skipping to protect batch", e)
+                        }
+                        Result.failure(if (e is Exception) e else RuntimeException(e))
                     }
                     val batchResult = BatchItemResult(item, result)
                     results.add(batchResult)
@@ -363,36 +377,47 @@ class GooglePhotosImportManager @Inject constructor(
         }
         val body = streamResponse.body()
             ?: return Result.failure(IllegalStateException("empty stream body from Google Photos"))
-        val bytes = body.use { it.bytes() }
         val fileName = item.filename?.takeIf { it.isNotBlank() } ?: "${item.id}.jpg"
         val mediaType = item.mimeType.toMediaTypeOrNull() ?: "image/jpeg".toMediaType()
-        val part = MultipartBody.Part.createFormData("document", fileName, bytes.toRequestBody(mediaType))
-        val safeBotToken = sanitizeTokenForPath(bot.token)
-        val response = rateLimiter.withRateLimit {
-            uploadTelegramBotApi.sendDocument(
-                token = safeBotToken,
-                chatId = chatIdBody,
-                document = part,
-                caption = null,
+        val tempFile = File(importTempDir, "${item.id}_${System.currentTimeMillis()}")
+        try {
+            body.use { rb ->
+                tempFile.outputStream().use { out ->
+                    rb.byteStream().copyTo(out)
+                }
+            }
+            val part = MultipartBody.Part.createFormData(
+                "document", fileName, tempFile.asRequestBody(mediaType),
             )
-        }
-        throwIfTelegramRateLimited(response)
-        if (!response.ok || response.result?.document == null) {
-            if (!response.ok) rateLimiter.recordFailure()
-            return Result.failure(
-                IllegalStateException(response.description ?: "sendDocument failed for image"),
+            val safeBotToken = sanitizeTokenForPath(bot.token)
+            val response = rateLimiter.withRateLimit {
+                uploadTelegramBotApi.sendDocument(
+                    token = safeBotToken,
+                    chatId = chatIdBody,
+                    document = part,
+                    caption = null,
+                )
+            }
+            throwIfTelegramRateLimited(response)
+            if (!response.ok || response.result?.document == null) {
+                if (!response.ok) rateLimiter.recordFailure()
+                return Result.failure(
+                    IllegalStateException(response.description ?: "sendDocument failed for image"),
+                )
+            }
+            val message = response.result
+            val entity = GooglePhotosImportEntityFactory.cloudEntityFromGooglePhoto(
+                item = item,
+                telegramFileId = message.document.fileId,
+                messageId = message.messageId,
+                thumbnailFileId = message.document.thumbnail?.fileId,
+                uploadBotIndex = bot.index,
             )
+            mediaItemDao.upsert(entity)
+            return Result.success(Unit)
+        } finally {
+            tempFile.delete()
         }
-        val message = response.result
-        val entity = GooglePhotosImportEntityFactory.cloudEntityFromGooglePhoto(
-            item = item,
-            telegramFileId = message.document.fileId,
-            messageId = message.messageId,
-            thumbnailFileId = message.document.thumbnail?.fileId,
-            uploadBotIndex = bot.index,
-        )
-        mediaItemDao.upsert(entity)
-        return Result.success(Unit)
     }
 
     /**

@@ -1,5 +1,6 @@
 package com.ulap.data.googlephotos
 
+import android.content.Context
 import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BotPool
@@ -17,6 +18,8 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.After
+import org.junit.Before
 import org.mockito.kotlin.any
 import org.mockito.kotlin.anyOrNull
 import org.mockito.kotlin.doSuspendableAnswer
@@ -25,6 +28,7 @@ import org.mockito.kotlin.mock
 import org.mockito.kotlin.verify
 import org.mockito.kotlin.whenever
 import retrofit2.Response
+import java.io.File
 
 /**
  * Bug Reproduction Tests — GooglePhotosImportManager URL re-fetch on HTTP 401/403.
@@ -53,6 +57,22 @@ import retrofit2.Response
  * Deterministic: no real network, no I/O, no clocks, no randomness.
  */
 class GooglePhotosImportManagerUrlRefetchBrt {
+
+    private lateinit var tempCacheDir: File
+    private lateinit var mockContext: Context
+
+    @Before
+    fun setUp() {
+        tempCacheDir = File(System.getProperty("java.io.tmpdir"), "refetch-brt-${System.nanoTime()}")
+        tempCacheDir.mkdirs()
+        mockContext = mock()
+        whenever(mockContext.cacheDir).thenReturn(tempCacheDir)
+    }
+
+    @After
+    fun tearDown() {
+        tempCacheDir.deleteRecursively()
+    }
 
     // ── Test constants ─────────────────────────────────────────────────────────
 
@@ -145,6 +165,7 @@ class GooglePhotosImportManagerUrlRefetchBrt {
         rateLimiter = rateLimiter,
         credentialRepository = creds,
         botPool = botPool,
+        appContext = mockContext,
     )
 
     // ── Contract 1 — image HTTP 401 → re-fetch → retry succeeds ──────────────

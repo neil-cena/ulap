@@ -1,5 +1,6 @@
 package com.ulap.data.googlephotos
 
+import android.content.Context
 import com.ulap.data.local.dao.ChunkMetadataDao
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BotPool
@@ -26,7 +27,10 @@ import org.mockito.kotlin.doSuspendableAnswer
 import org.mockito.kotlin.eq
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.whenever
+import org.junit.After
+import org.junit.Before
 import retrofit2.Response
+import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -57,6 +61,22 @@ import java.util.concurrent.atomic.AtomicInteger
  * Deterministic: no real network, no I/O; `delay()` uses virtual time via [runTest].
  */
 class GooglePhotosImportBatchBrt {
+
+    private lateinit var tempCacheDir: File
+    private lateinit var mockContext: Context
+
+    @Before
+    fun setUp() {
+        tempCacheDir = File(System.getProperty("java.io.tmpdir"), "batch-brt-${System.nanoTime()}")
+        tempCacheDir.mkdirs()
+        mockContext = mock()
+        whenever(mockContext.cacheDir).thenReturn(tempCacheDir)
+    }
+
+    @After
+    fun tearDown() {
+        tempCacheDir.deleteRecursively()
+    }
 
     // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -122,6 +142,7 @@ class GooglePhotosImportBatchBrt {
         rateLimiter = rateLimiter,
         credentialRepository = creds,
         botPool = botPool,
+        appContext = mockContext,
     )
 
     private suspend fun defaultDependencies(

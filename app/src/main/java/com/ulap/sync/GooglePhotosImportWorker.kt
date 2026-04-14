@@ -16,6 +16,7 @@ import androidx.work.workDataOf
 import com.ulap.MainActivity
 import com.ulap.R
 import com.ulap.data.auth.GoogleAuthManager
+import com.ulap.data.googlephotos.GPHOTO_IMPORT_TEMP_DIR
 import com.ulap.data.googlephotos.GooglePhotosImportEntityFactory
 import com.ulap.data.googlephotos.GooglePhotosImportItemStatus
 import com.ulap.data.googlephotos.GooglePhotosImportManager
@@ -30,6 +31,7 @@ import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.domain.repository.CredentialRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
+import java.io.File
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 
@@ -85,6 +87,9 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 selectedTotal = selectedTotal,
             ),
         )
+
+        // Layer C: sweep orphaned temp files from a prior crashed run before starting.
+        cleanupImportTempDir()
 
         var nextPageToken: String? = null
         var imported = 0
@@ -147,8 +152,6 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             } while (nextPageToken != null && !isStopped)
         } catch (e: Exception) {
             debugLog.log(TAG, "import loop failed: ${formatGooglePhotosDiagnostics(e)}")
-            // Export the index for any items that were successfully imported before the failure,
-            // so they are accessible even though the run did not complete fully.
             if (imported > 0) {
                 exportIndexSafely(imported)
             }
@@ -162,17 +165,17 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                     return Result.retry()
                 }
             }
+        } finally {
+            // Layer B: sweep any leftover temp files after the import loop ends
+            // (success, failure, or cancellation via isStopped).
+            cleanupImportTempDir()
         }
 
-        // Session cleanup: only delete the session when the run completed without being
-        // stopped externally (so a cancelled run can be re-attempted later).
         if (!isStopped) {
             runCatching { pickerApi.deleteSession(sessionId) }
                 .onFailure { debugLog.log(TAG, "deleteSession failed (non-critical): ${it.message}") }
         }
 
-        // Always export the index when items were imported — including when isStopped is true
-        // (e.g. rate limits caused WorkManager to time out after some items succeeded).
         if (imported > 0) {
             exportIndexSafely(imported)
         } else if (!isStopped) {
@@ -209,6 +212,12 @@ class GooglePhotosImportWorker @AssistedInject constructor(
             .onSuccess { result ->
                 result.onFailure { debugLog.log(TAG, "index export returned failure (non-critical): ${it.message}") }
             }
+    }
+
+    private fun cleanupImportTempDir() {
+        runCatching {
+            File(applicationContext.cacheDir, GPHOTO_IMPORT_TEMP_DIR).deleteRecursively()
+        }
     }
 
     private fun createForegroundInfo(): ForegroundInfo {
