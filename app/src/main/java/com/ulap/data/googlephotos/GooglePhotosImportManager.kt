@@ -16,13 +16,14 @@ import com.ulap.di.UploadClient
 import com.ulap.domain.model.BotCredential
 import com.ulap.domain.repository.CredentialRepository
 import java.util.Collections
+import kotlin.math.min
+import kotlin.math.max
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -30,19 +31,35 @@ import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.InputStream
+import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
 import javax.inject.Singleton
 
 private const val TAG = "GooglePhotosImport"
 
 /** Retries across bots when a bot returns HTTP 429 during upload. */
-private const val MAX_UPLOAD_BOT_ATTEMPTS = 12
+private const val MAX_UPLOAD_BOT_ATTEMPTS = 8
 
 /** Maximum time (ms) to wait for a single bot cooldown before retrying anyway. */
 private const val MAX_COOLDOWN_WAIT_MS = 60_000L
 
 /** Hard cap on concurrent import slots regardless of bot count. */
-private const val MAX_IMPORT_CONCURRENCY = 3
+private const val MAX_IMPORT_CONCURRENCY = 6
+
+/** Minimum backoff (ms) for exponential retry after a 429. */
+private const val BACKOFF_BASE_MS = 2_000L
+
+/** Multiplier applied to the backoff on each successive retry attempt. */
+private const val BACKOFF_MULTIPLIER = 1.5
+
+/** Maximum backoff (ms) per retry attempt. */
+private const val BACKOFF_CAP_MS = 60_000L
+
+/**
+ * Batch API-call-to-bot ratio above which the AIMD controller starts at concurrency 1
+ * instead of the full bot count, to prevent an immediate 429 storm.
+ */
+private const val CONSERVATIVE_START_RATIO = 50
 
 /** Telegram Bot API: max chunk size is capped at 19 MB to stay under the 20 MB getFile() streaming limit. */
 internal val GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES = CHUNK_UPLOAD_SIZE.toInt() // 19 * 1024 * 1024
@@ -65,6 +82,72 @@ data class BatchItemResult(
     val result: Result<GooglePhotosImportItemStatus>,
 )
 
+/** Pre-import analysis of a batch's expected API cost, used to tune AIMD starting state. */
+data class BatchProfile(
+    val totalItems: Int,
+    val imageCount: Int,
+    val videoCount: Int,
+    val estimatedApiCalls: Int,
+    val botCount: Int,
+    val initialConcurrency: Int,
+)
+
+/**
+ * AIMD (Additive Increase / Multiplicative Decrease) concurrency controller.
+ *
+ * Uses a [Channel] as a permit pool: coroutines receive a permit before starting work
+ * and send it back when done. On success the controller may add a permit (additive increase);
+ * on a 429 it drains permits to halve concurrency (multiplicative decrease).
+ *
+ * Thread-safe: all mutations go through the atomic [_currentLimit].
+ */
+class AimdConcurrencyController(
+    initialConcurrency: Int,
+    private val maxConcurrency: Int,
+) {
+    private val _currentLimit = AtomicInteger(initialConcurrency.coerceIn(1, maxConcurrency))
+    val currentLimit: Int get() = _currentLimit.get()
+
+    private val permits = Channel<Unit>(Channel.UNLIMITED)
+    private val successesSinceLastDecrease = AtomicInteger(0)
+
+    init {
+        repeat(_currentLimit.get()) { permits.trySend(Unit) }
+    }
+
+    suspend fun acquirePermit() { permits.receive() }
+
+    fun releasePermit() { permits.trySend(Unit) }
+
+    /**
+     * Called after a successful upload. After every 2 consecutive successes (without a decrease),
+     * adds one permit — up to [maxConcurrency].
+     */
+    fun onSuccess() {
+        val count = successesSinceLastDecrease.incrementAndGet()
+        if (count >= 2) {
+            successesSinceLastDecrease.set(0)
+            val newLimit = _currentLimit.updateAndGet { cur -> min(cur + 1, maxConcurrency) }
+            // If the limit actually grew, inject a new permit into the pool.
+            if (newLimit > _currentLimit.get() - 1) {
+                permits.trySend(Unit)
+            }
+        }
+    }
+
+    /**
+     * Called when a 429 rate-limit is encountered. Halves the concurrency (floor 1) by
+     * draining excess permits from the channel.
+     */
+    fun onRateLimit() {
+        successesSinceLastDecrease.set(0)
+        val oldLimit = _currentLimit.get()
+        val newLimit = _currentLimit.updateAndGet { cur -> max(cur / 2, 1) }
+        val toDrain = oldLimit - newLimit
+        repeat(toDrain) { permits.tryReceive() }
+    }
+}
+
 @Singleton
 class GooglePhotosImportManager @Inject constructor(
     private val pickerApi: GooglePhotosPickerApi,
@@ -84,10 +167,50 @@ class GooglePhotosImportManager @Inject constructor(
         botPool.allBots().size.coerceIn(1, MAX_IMPORT_CONCURRENCY)
 
     /**
+     * Estimates the total Telegram API calls a batch will produce.
+     * - Image → 1 call
+     * - Video → ceil(estimatedSize / 19MB) calls, defaulting to 3 if size is unknown
+     */
+    fun estimateApiCalls(items: List<GooglePhotosMediaItem>): Int =
+        items.sumOf { item -> estimateItemApiCalls(item) }
+
+    /**
+     * Builds a [BatchProfile] that tunes the AIMD controller's starting concurrency.
+     *
+     * High API-call-to-bot ratio (> [CONSERVATIVE_START_RATIO]) → start at 1 to avoid
+     * an immediate 429 storm. Otherwise start at `min(botCount, MAX_IMPORT_CONCURRENCY)`.
+     */
+    fun profileBatch(items: List<GooglePhotosMediaItem>): BatchProfile {
+        val botCount = botPool.allBots().size.coerceAtLeast(1)
+        val imageCount = items.count { it.mimeType.startsWith("image/") }
+        val videoCount = items.count { it.mimeType.startsWith("video/") }
+        val estimatedCalls = estimateApiCalls(items)
+        val ratio = estimatedCalls.toDouble() / botCount
+        val initialConcurrency = if (ratio > CONSERVATIVE_START_RATIO) 1
+            else min(botCount, MAX_IMPORT_CONCURRENCY)
+        return BatchProfile(
+            totalItems = items.size,
+            imageCount = imageCount,
+            videoCount = videoCount,
+            estimatedApiCalls = estimatedCalls,
+            botCount = botCount,
+            initialConcurrency = initialConcurrency,
+        )
+    }
+
+    /**
      * Imports a single media item (image via authenticated download, video via in-memory chunking).
      * Used by [com.ulap.sync.GooglePhotosImportWorker]; skips non-image/non-video MIME types.
+     *
+     * @param aimd optional AIMD controller — when provided, [onRateLimit][AimdConcurrencyController.onRateLimit]
+     *   is called on 429 and [onSuccess][AimdConcurrencyController.onSuccess] on successful upload,
+     *   so the batch-level concurrency adapts in real time.
      */
-    suspend fun importGooglePhotosMediaItem(item: GooglePhotosMediaItem, sessionId: String): Result<GooglePhotosImportItemStatus> =
+    suspend fun importGooglePhotosMediaItem(
+        item: GooglePhotosMediaItem,
+        sessionId: String,
+        aimd: AimdConcurrencyController? = null,
+    ): Result<GooglePhotosImportItemStatus> =
         withContext(Dispatchers.IO) {
             val fileName = item.filename?.takeIf { it.isNotBlank() } ?: item.id
             val (w, h) = item.mediaMetadata.pixelDimensions()
@@ -112,9 +235,9 @@ class GooglePhotosImportManager @Inject constructor(
             val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
             when {
                 item.mimeType.startsWith("video/") ->
-                    importVideoItemWithBotRetries(item, chatIdBody, sessionId).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importVideoItemWithBotRetries(item, chatIdBody, sessionId, aimd).map { GooglePhotosImportItemStatus.UPLOADED }
                 item.mimeType.startsWith("image/") ->
-                    importImageItemWithBotRetries(item, chatIdBody, sessionId).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importImageItemWithBotRetries(item, chatIdBody, sessionId, aimd).map { GooglePhotosImportItemStatus.UPLOADED }
                 else -> {
                     Log.d(TAG, "skip non-media mime=${item.mimeType} id=${item.id}")
                     Result.success(GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED)
@@ -123,10 +246,12 @@ class GooglePhotosImportManager @Inject constructor(
         }
 
     /**
-     * Processes [items] concurrently up to [concurrency] at a time, calling
-     * [importGooglePhotosMediaItem] for each and invoking [onItemComplete] after each finishes.
-     * Returns a [BatchItemResult] for every input item; per-item exceptions are captured as
-     * [Result.failure] rather than propagated to sibling coroutines.
+     * Processes [items] with AIMD-controlled concurrency. The controller starts at the
+     * [BatchProfile.initialConcurrency] and adapts in real time: additive increase on success,
+     * multiplicative decrease (halve) on 429.
+     *
+     * The `concurrency` parameter is kept for backward compatibility but is only used as
+     * a fallback when the caller has not profiled the batch.
      */
     suspend fun importBatch(
         items: List<GooglePhotosMediaItem>,
@@ -134,13 +259,22 @@ class GooglePhotosImportManager @Inject constructor(
         concurrency: Int = 3,
         onItemComplete: suspend (item: GooglePhotosMediaItem, result: Result<GooglePhotosImportItemStatus>) -> Unit = { _, _ -> },
     ): List<BatchItemResult> = coroutineScope {
-        val semaphore = Semaphore(concurrency)
+        val profile = profileBatch(items)
+        val maxConcurrency = min(profile.botCount * 2, MAX_IMPORT_CONCURRENCY)
+        val aimd = AimdConcurrencyController(
+            initialConcurrency = profile.initialConcurrency,
+            maxConcurrency = maxConcurrency,
+        )
+        Log.d(TAG, "importBatch: items=${profile.totalItems} est_calls=${profile.estimatedApiCalls} " +
+            "bots=${profile.botCount} initial_concurrency=${profile.initialConcurrency} max=$maxConcurrency")
+
         val results = Collections.synchronizedList(mutableListOf<BatchItemResult>())
         items.map { item ->
             async {
-                semaphore.withPermit {
+                aimd.acquirePermit()
+                try {
                     val result = try {
-                        importGooglePhotosMediaItem(item, sessionId)
+                        importGooglePhotosMediaItem(item, sessionId, aimd)
                     } catch (e: Exception) {
                         Result.failure(e)
                     }
@@ -148,31 +282,43 @@ class GooglePhotosImportManager @Inject constructor(
                     results.add(batchResult)
                     onItemComplete(item, result)
                     batchResult
+                } finally {
+                    aimd.releasePermit()
                 }
             }
         }.awaitAll()
         results
     }
 
+    private fun estimateItemApiCalls(item: GooglePhotosMediaItem): Int {
+        if (!item.mimeType.startsWith("video/")) return 1
+        // Google Photos Picker API doesn't expose file size, so we use a conservative default.
+        return 3
+    }
+
     /**
-     * Picks a bot via [botPool] on each attempt; on HTTP 429 marks that bot cooldown, waits for
-     * the cooldown to expire, then retries with [botPool.selectForUpload].
+     * Picks a bot via [botPool] on each attempt; on HTTP 429 marks that bot cooldown, notifies the
+     * AIMD controller, and applies exponential backoff with jitter before retrying.
      */
     private suspend fun importImageItemWithBotRetries(
         item: GooglePhotosMediaItem,
         chatIdBody: RequestBody,
         sessionId: String,
+        aimd: AimdConcurrencyController? = null,
     ): Result<Unit> {
         var lastError: Exception? = null
-        repeat(MAX_UPLOAD_BOT_ATTEMPTS) {
+        repeat(MAX_UPLOAD_BOT_ATTEMPTS) { attempt ->
             val bot = botPool.selectForUpload()
                 ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
             try {
-                return importImageItem(item, bot, chatIdBody, sessionId)
+                val result = importImageItem(item, bot, chatIdBody, sessionId)
+                aimd?.onSuccess()
+                return result
             } catch (e: TelegramRateLimitException) {
                 botPool.markRateLimited(bot.index, e.retryAfterMs)
+                aimd?.onRateLimit()
                 lastError = e
-                awaitBotCooldown()
+                exponentialBackoff(attempt, e.retryAfterMs)
             }
         }
         return Result.failure(
@@ -250,24 +396,28 @@ class GooglePhotosImportManager @Inject constructor(
     }
 
     /**
-     * Wraps [importVideoItem] with the same bot-retry-with-backoff pattern used for images.
-     * Previously, a single 429 during video upload was a permanent failure.
+     * Wraps [importVideoItem] with the same AIMD-aware exponential backoff pattern used for images.
      */
     private suspend fun importVideoItemWithBotRetries(
         item: GooglePhotosMediaItem,
         chatIdBody: RequestBody,
         sessionId: String,
+        aimd: AimdConcurrencyController? = null,
     ): Result<Unit> {
         var lastError: Exception? = null
-        repeat(MAX_UPLOAD_BOT_ATTEMPTS) {
+        repeat(MAX_UPLOAD_BOT_ATTEMPTS) { attempt ->
             val bot = botPool.selectForUpload()
                 ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
             val result = importVideoItem(item, bot, chatIdBody, sessionId)
-            if (result.isSuccess) return result
+            if (result.isSuccess) {
+                aimd?.onSuccess()
+                return result
+            }
             val err = result.exceptionOrNull()
             if (err is TelegramRateLimitException) {
+                aimd?.onRateLimit()
                 lastError = err
-                awaitBotCooldown()
+                exponentialBackoff(attempt, err.retryAfterMs)
             } else {
                 return result
             }
@@ -473,12 +623,26 @@ class GooglePhotosImportManager @Inject constructor(
     )
 
     /**
-     * Suspends until at least one bot's cooldown has expired, capped at [MAX_COOLDOWN_WAIT_MS].
-     * Uses [BotPool.maxTempCooldownExpiryMs] to determine how long to wait.
+     * Suspends until the first bot's cooldown has expired, capped at [MAX_COOLDOWN_WAIT_MS].
+     * Uses [BotPool.minTempCooldownExpiryMs] so we resume as soon as any bot becomes available,
+     * rather than waiting for the slowest bot.
      */
     private suspend fun awaitBotCooldown() {
-        val expiryMs = botPool.maxTempCooldownExpiryMs()
+        val expiryMs = botPool.minTempCooldownExpiryMs()
         val waitMs = (expiryMs - System.currentTimeMillis()).coerceIn(0, MAX_COOLDOWN_WAIT_MS)
+        if (waitMs > 0) delay(waitMs)
+    }
+
+    /**
+     * Exponential backoff with jitter. Waits for at least the server's `retryAfterMs` hint,
+     * then adds geometrically increasing delay per attempt: `base * multiplier^attempt + jitter`.
+     * Capped at [BACKOFF_CAP_MS].
+     */
+    private suspend fun exponentialBackoff(attempt: Int, retryAfterMs: Long) {
+        val minCooldownWait = botPool.minTempCooldownExpiryMs() - System.currentTimeMillis()
+        val expDelay = (BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt.toDouble())).toLong()
+        val jitter = (expDelay * 0.2 * (Math.random() * 2 - 1)).toLong()
+        val waitMs = maxOf(retryAfterMs, minCooldownWait, expDelay + jitter).coerceIn(0, BACKOFF_CAP_MS)
         if (waitMs > 0) delay(waitMs)
     }
 

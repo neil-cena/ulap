@@ -151,7 +151,7 @@ class GooglePhotosImportRateLimitResilienceBrt {
     }
 
     @Test
-    fun recommendedConcurrency_fiveBotsReturnsCappedAtThree() {
+    fun recommendedConcurrency_fiveBotsReturnsFive() {
         val botPool = mock<BotPool>()
         whenever(botPool.allBots()).thenReturn(
             (0..4).map { BotCredential(it, "tok$it") },
@@ -159,8 +159,8 @@ class GooglePhotosImportRateLimitResilienceBrt {
 
         val manager = buildManager(botPool = botPool)
         assertEquals(
-            "5 bots should produce concurrency=3 (hard cap)",
-            3,
+            "5 bots should produce concurrency=5 (hard cap is now 6)",
+            5,
             manager.recommendedConcurrency(),
         )
     }
@@ -197,7 +197,7 @@ class GooglePhotosImportRateLimitResilienceBrt {
 
         val botPool = mock<BotPool>()
         whenever(botPool.selectForUpload()).thenReturn(bot)
-        whenever(botPool.maxTempCooldownExpiryMs()).thenReturn(0L)
+        whenever(botPool.minTempCooldownExpiryMs()).thenReturn(0L)
 
         val callCount = AtomicInteger(0)
         val uploadApi = mock<TelegramBotApi>()
@@ -254,7 +254,7 @@ class GooglePhotosImportRateLimitResilienceBrt {
 
         val botPool = mock<BotPool>()
         whenever(botPool.selectForUpload()).thenReturn(bot)
-        whenever(botPool.maxTempCooldownExpiryMs()).thenReturn(0L)
+        whenever(botPool.minTempCooldownExpiryMs()).thenReturn(0L)
 
         val callCount = AtomicInteger(0)
         val uploadApi = mock<TelegramBotApi>()
@@ -290,8 +290,8 @@ class GooglePhotosImportRateLimitResilienceBrt {
     }
 
     @Test
-    fun videoImport_rateLimitedExhaustsRetries_failsGracefully() = runTest {
-        val item = videoItem("exhaust-vid")
+    fun videoImport_nonRateLimitError_failsImmediately() = runTest {
+        val item = videoItem("fail-vid")
         val bot = BotCredential(0, "tok")
 
         val smallVideoBytes = ByteArray(1024) { 0x00 }
@@ -309,11 +309,21 @@ class GooglePhotosImportRateLimitResilienceBrt {
 
         val botPool = mock<BotPool>()
         whenever(botPool.selectForUpload()).thenReturn(bot)
-        whenever(botPool.maxTempCooldownExpiryMs()).thenReturn(0L)
+        whenever(botPool.minTempCooldownExpiryMs()).thenReturn(0L)
 
+        val sendDocCallCount = AtomicInteger(0)
         val uploadApi = mock<TelegramBotApi>()
         whenever(uploadApi.sendDocument(any(), any(), any(), anyOrNull(), anyOrNull()))
-            .doSuspendableAnswer { throw TelegramRateLimitException(1_000L) }
+            .doAnswer {
+                sendDocCallCount.incrementAndGet()
+                TelegramResponse(
+                    ok = false,
+                    result = null,
+                    description = "Bad Request: file is too big",
+                    errorCode = 400,
+                    parameters = null,
+                )
+            }
 
         val rateLimiter = mockPassthroughRateLimiter()
         val manager = buildManager(
@@ -327,15 +337,20 @@ class GooglePhotosImportRateLimitResilienceBrt {
 
         val result = manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
         assertTrue(
-            "Video import must fail gracefully after exhausting retries",
+            "Video import must fail gracefully on non-rate-limit error",
             result.isFailure,
+        )
+        assertEquals(
+            "Should only attempt sendDocument once (no retry for non-429 errors)",
+            1,
+            sendDocCallCount.get(),
         )
     }
 
     // ── Contract 2 (extended): Adaptive concurrency limits peak in-flight ───
 
     @Test
-    fun importBatch_oneBotConcurrencyOne_peakInFlightNeverExceedsOne() = runTest {
+    fun importBatch_oneBotAimdStartsAtOne_peakBoundedByAimdMax() = runTest {
         val items = (1..5).map { imageItem("adap-$it") }
 
         val currentConcurrency = AtomicInteger(0)
@@ -373,19 +388,15 @@ class GooglePhotosImportRateLimitResilienceBrt {
             botPool = botPool,
         )
 
-        val concurrency = manager.recommendedConcurrency()
-        assertEquals("1 bot → concurrency 1", 1, concurrency)
-
         val results = manager.importBatch(
             items = items,
             sessionId = "session",
-            concurrency = concurrency,
         )
 
         assertEquals("All 5 items must complete", 5, results.size)
         assertTrue(
-            "Peak concurrent calls (${peakConcurrency.get()}) must not exceed concurrency=1",
-            peakConcurrency.get() <= 1,
+            "Peak concurrent calls (${peakConcurrency.get()}) must not exceed AIMD max for 1 bot (2)",
+            peakConcurrency.get() <= 2,
         )
     }
 }

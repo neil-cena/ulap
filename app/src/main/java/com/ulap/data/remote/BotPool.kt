@@ -161,6 +161,19 @@ class BotPool @Inject constructor(
     }
 
     /**
+     * Returns the minimum (earliest) cooldown expiry timestamp among non-banned bots that have
+     * a future expiry. This is the soonest any bot will become available for uploads.
+     * Returns 0L when no bot is cooling down.
+     */
+    fun minTempCooldownExpiryMs(): Long {
+        val now = System.currentTimeMillis()
+        return allBots()
+            .filter { !permanentBans.contains(it.index) }
+            .mapNotNull { bot -> cooldowns[bot.index]?.takeIf { it > now } }
+            .minOrNull() ?: 0L
+    }
+
+    /**
      * Returns the bot that performed the upload for a specific item, identified by [botIndex].
      * Falls back to the primary bot (index 0) if [botIndex] is not found — this keeps
      * downloads working even after a secondary bot is removed from the pool.
