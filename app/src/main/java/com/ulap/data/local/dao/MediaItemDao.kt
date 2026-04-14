@@ -70,6 +70,7 @@ interface MediaItemDao {
         SELECT COUNT(*) FROM media_items
         WHERE fileName = :fileName
         AND mimeType = :mimeType
+        AND backupStatus IN ('BACKED_UP', 'CLOUD_ONLY')
         AND (
             (:widthPx IS NULL AND :heightPx IS NULL)
             OR (width_px IS NULL AND height_px IS NULL)
@@ -148,6 +149,7 @@ interface MediaItemDao {
         SET backupStatus = 'EXCLUDED', errorMessage = 'Folder disabled'
         WHERE backupStatus IN ('PENDING', 'FAILED', 'UPLOADING')
         AND bucketName NOT IN (:enabledBuckets)
+        AND bucketName != 'Google Photos'
         """
     )
     suspend fun excludeItemsNotInBuckets(enabledBuckets: List<String>)

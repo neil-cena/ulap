@@ -107,7 +107,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 importManager.importBatch(
                     items = googlePhotosItems,
                     sessionId = sessionId,
-                    concurrency = 3,
+                    concurrency = importManager.recommendedConcurrency(),
                     onItemComplete = { item, result ->
                         result.fold(
                             onSuccess = { status ->

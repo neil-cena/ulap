@@ -94,6 +94,7 @@ class GooglePhotosImportWorkerProgressBrt {
 
         // ── importBatch mock: calls onItemComplete once per item, sequentially ───────────────
         val importManager = mock<GooglePhotosImportManager>()
+        whenever(importManager.recommendedConcurrency()).thenReturn(3)
         whenever(importManager.importBatch(any(), any(), any(), any()))
             .doSuspendableAnswer { inv ->
                 val batchItems = inv.getArgument<List<GooglePhotosMediaItem>>(0)

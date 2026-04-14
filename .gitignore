@@ -17,5 +17,6 @@ local.properties
 app/schemas/
 /IMPROVEMENTS.md
 /helper.txt
+/BUGS.md
 /docs/
 /.kotlin
