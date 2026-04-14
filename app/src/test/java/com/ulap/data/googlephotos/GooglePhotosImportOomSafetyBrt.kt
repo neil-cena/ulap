@@ -313,4 +313,170 @@ class GooglePhotosImportOomSafetyBrt {
         assertTrue("Import must succeed", result.isSuccess)
         assertEquals("Exactly one sendDocument call", 1, capturedParts.size)
     }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // Video OOM Safety BRTs (BUG-004a)
+    //
+    // importVideoFromStream must NOT hold 19 MB ByteArrays in heap during upload.
+    // Each chunk must be written to a temp file and cleaned up in a finally block.
+    // ════════════════════════════════════════════════════════════════════════
+
+    private val smallVideoBytes = ByteArray(4096) { (it % 256).toByte() }
+
+    private fun successVideoResponse(): Response<okhttp3.ResponseBody> =
+        Response.success(smallVideoBytes.toResponseBody("video/mp4".toMediaType()))
+
+    private fun videoItem(id: String): GooglePhotosMediaItem = GooglePhotosMediaItem(
+        id = id,
+        mimeType = "video/mp4",
+        filename = "$id.mp4",
+        baseUrl = "https://lh3.googleusercontent.com/$id",
+        mediaMetadata = GooglePhotosMediaMetadata(creationTime = null, width = "1920", height = "1080"),
+    )
+
+    // ── Video Contract 1: No temp files remain after successful video import ─
+
+    @Test
+    fun videoImport_success_noTempFilesRemainAfterImport() = runTest {
+        val item = videoItem("vid-oom-1")
+        val bot = BotCredential(0, "tok")
+
+        val pickerApi = mock<GooglePhotosPickerApi>()
+        whenever(pickerApi.streamMedia(any())).doAnswer { successVideoResponse() }
+
+        val mediaDao = mock<MediaItemDao>()
+        whenever(mediaDao.countItemsMatchingImportFingerprint(any(), any(), any(), any())).thenReturn(0)
+
+        val uploadApi = mock<TelegramBotApi>()
+        whenever(uploadApi.sendDocument(any(), any(), any(), anyOrNull(), anyOrNull()))
+            .thenReturn(telegramOkResponse())
+
+        val creds = mock<CredentialRepository>()
+        whenever(creds.getBotToken()).thenReturn("tok")
+        whenever(creds.getChatId()).thenReturn("99")
+
+        val botPool = mock<BotPool>()
+        whenever(botPool.selectForUpload()).thenReturn(bot)
+
+        val manager = buildManager(
+            pickerApi = pickerApi,
+            uploadApi = uploadApi,
+            mediaDao = mediaDao,
+            creds = creds,
+            botPool = botPool,
+        )
+
+        val result = manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
+        assertTrue("Video import must succeed", result.isSuccess)
+
+        val importDir = File(tempCacheDir, "gphoto_import")
+        val remainingFiles = importDir.listFiles()?.toList() ?: emptyList()
+        assertTrue(
+            "No temp files should remain after successful video import, found: $remainingFiles",
+            remainingFiles.isEmpty(),
+        )
+    }
+
+    // ── Video Contract 2: Chunk temp files cleaned up on upload failure ──────
+
+    @Test
+    fun videoImport_uploadFails_chunkTempFilesStillCleaned() = runTest {
+        val item = videoItem("vid-oom-fail")
+        val bot = BotCredential(0, "tok")
+
+        val pickerApi = mock<GooglePhotosPickerApi>()
+        whenever(pickerApi.streamMedia(any())).doAnswer { successVideoResponse() }
+
+        val mediaDao = mock<MediaItemDao>()
+        whenever(mediaDao.countItemsMatchingImportFingerprint(any(), any(), any(), any())).thenReturn(0)
+
+        val uploadApi = mock<TelegramBotApi>()
+        whenever(uploadApi.sendDocument(any(), any(), any(), anyOrNull(), anyOrNull()))
+            .thenReturn(
+                TelegramResponse(
+                    ok = false,
+                    result = null,
+                    description = "Bad Request",
+                    errorCode = 400,
+                    parameters = null,
+                ),
+            )
+
+        val creds = mock<CredentialRepository>()
+        whenever(creds.getBotToken()).thenReturn("tok")
+        whenever(creds.getChatId()).thenReturn("99")
+
+        val botPool = mock<BotPool>()
+        whenever(botPool.selectForUpload()).thenReturn(bot)
+
+        val manager = buildManager(
+            pickerApi = pickerApi,
+            uploadApi = uploadApi,
+            mediaDao = mediaDao,
+            creds = creds,
+            botPool = botPool,
+        )
+
+        val result = manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
+        assertTrue("Video import must fail when sendDocument returns ok=false", result.isFailure)
+
+        val importDir = File(tempCacheDir, "gphoto_import")
+        val remainingFiles = importDir.listFiles()?.toList() ?: emptyList()
+        assertTrue(
+            "No temp files should remain after failed video import, found: $remainingFiles",
+            remainingFiles.isEmpty(),
+        )
+    }
+
+    // ── Video Contract 3 (BRT): A temp file must exist on disk during upload ─
+    //
+    // The current code allocates ByteArray(19 MB) and never writes a temp file.
+    // The fix must write the chunk to a temp file BEFORE calling sendDocument,
+    // so this assertion is FALSE with the old code (no file → fails) and TRUE
+    // after the fix (file present during upload → passes).
+
+    @Test
+    fun videoImport_chunkTempFileExistsDuringUpload() = runTest {
+        val item = videoItem("vid-brt-tempfile")
+        val bot = BotCredential(0, "tok")
+        var tempFilesExistDuringUpload = false
+
+        val pickerApi = mock<GooglePhotosPickerApi>()
+        whenever(pickerApi.streamMedia(any())).doAnswer { successVideoResponse() }
+
+        val mediaDao = mock<MediaItemDao>()
+        whenever(mediaDao.countItemsMatchingImportFingerprint(any(), any(), any(), any())).thenReturn(0)
+
+        val uploadApi = mock<TelegramBotApi>()
+        whenever(uploadApi.sendDocument(any(), any(), any(), anyOrNull(), anyOrNull()))
+            .doAnswer { _ ->
+                val importDir = File(tempCacheDir, "gphoto_import")
+                val files = importDir.listFiles() ?: emptyArray()
+                tempFilesExistDuringUpload = files.isNotEmpty()
+                telegramOkResponse()
+            }
+
+        val creds = mock<CredentialRepository>()
+        whenever(creds.getBotToken()).thenReturn("tok")
+        whenever(creds.getChatId()).thenReturn("99")
+
+        val botPool = mock<BotPool>()
+        whenever(botPool.selectForUpload()).thenReturn(bot)
+
+        val manager = buildManager(
+            pickerApi = pickerApi,
+            uploadApi = uploadApi,
+            mediaDao = mediaDao,
+            creds = creds,
+            botPool = botPool,
+        )
+
+        manager.importGooglePhotosMediaItem(item, sessionId = "test-session")
+
+        assertTrue(
+            "A temp file must exist on disk while the video chunk sendDocument is in-flight " +
+                "(verifies disk-backed streaming is used instead of in-memory ByteArray)",
+            tempFilesExistDuringUpload,
+        )
+    }
 }

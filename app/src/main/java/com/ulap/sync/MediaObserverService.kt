@@ -9,6 +9,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.MediaStore
+import android.util.Log
 import com.ulap.data.local.dao.BackupFolderDao
 import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.domain.usecase.GetCredentialsUseCase
@@ -92,10 +93,19 @@ class MediaObserverService : Service() {
     }
 
     companion object {
+        private const val TAG = "MediaObserverService"
         private const val DEBOUNCE_MS = 3_000L
 
         fun start(context: Context) {
-            context.startService(Intent(context, MediaObserverService::class.java))
+            try {
+                context.startService(Intent(context, MediaObserverService::class.java))
+            } catch (e: Exception) {
+                // On Android 12+, startService throws BackgroundServiceStartNotAllowedException
+                // (subclass of IllegalStateException) when the app is in background state,
+                // e.g. when the activity is relaunched after an OOM kill. Log and swallow so
+                // the activity does not crash a second time.
+                Log.w(TAG, "Could not start MediaObserverService (app in background?): ${e.message}")
+            }
         }
 
         fun stop(context: Context) {

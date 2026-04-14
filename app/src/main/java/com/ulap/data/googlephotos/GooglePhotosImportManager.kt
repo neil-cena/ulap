@@ -523,49 +523,55 @@ class GooglePhotosImportManager @Inject constructor(
             )
         }
 
+        val readBuf = ByteArray(65_536)
+
         while (true) {
-            var buffer: ByteArray? = ByteArray(GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES)
-            val read = readFully(input, buffer!!)
-            if (read == -1) break
+            val chunkTempFile = File(importTempDir, "${item.id}_vc${chunkIndex}_${System.nanoTime()}")
+            var chunkSize = 0
+            try {
+                chunkTempFile.outputStream().use { out ->
+                    while (chunkSize < GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES) {
+                        val remaining = GOOGLE_PHOTOS_VIDEO_CHUNK_BYTES - chunkSize
+                        val n = input.read(readBuf, 0, minOf(readBuf.size, remaining))
+                        if (n == -1) break
+                        out.write(readBuf, 0, n)
+                        chunkSize += n
+                    }
+                }
 
-            val toUpload = if (read == buffer.size) {
-                val b = buffer
-                buffer = null
-                b
-            } else {
-                val slice = buffer.copyOf(read)
-                buffer = null
-                slice
+                if (chunkSize == 0) break
+
+                val fileName = "$baseName.part${chunkIndex + 1}"
+                val caption = "[gphoto-chunk] $baseName part ${chunkIndex + 1}"
+                val uploadResult = uploadVideoChunkDocument(
+                    safeBotToken = safeBotToken,
+                    chatIdBody = chatIdBody,
+                    chunkFile = chunkTempFile,
+                    chunkSize = chunkSize,
+                    fileName = fileName,
+                    mimeType = item.mimeType,
+                    caption = caption,
+                    thumbnail = if (chunkIndex == 0) thumbnailPart else null,
+                )
+
+                val uploaded = uploadResult
+                    ?: return Result.failure(IllegalStateException("sendDocument failed for chunk $chunkIndex"))
+
+                totalChunks.add(
+                    UploadedVideoChunk(
+                        chunkIndex = chunkIndex,
+                        fileId = uploaded.fileId,
+                        messageId = uploaded.messageId,
+                        byteOffset = totalBytes,
+                        byteLength = chunkSize,
+                        thumbnailFileId = uploaded.thumbnailFileId,
+                    ),
+                )
+                totalBytes += chunkSize
+                chunkIndex++
+            } finally {
+                chunkTempFile.delete()
             }
-
-            val fileName = "$baseName.part${chunkIndex + 1}"
-            val caption = "[gphoto-chunk] $baseName part ${chunkIndex + 1}"
-            val uploadResult = uploadVideoChunkDocument(
-                safeBotToken = safeBotToken,
-                chatIdBody = chatIdBody,
-                chunkData = toUpload,
-                fileName = fileName,
-                mimeType = item.mimeType,
-                caption = caption,
-                thumbnail = if (chunkIndex == 0) thumbnailPart else null,
-            )
-            toUpload.fill(0)
-
-            val uploaded = uploadResult
-                ?: return Result.failure(IllegalStateException("sendDocument failed for chunk $chunkIndex"))
-
-            totalChunks.add(
-                UploadedVideoChunk(
-                    chunkIndex = chunkIndex,
-                    fileId = uploaded.fileId,
-                    messageId = uploaded.messageId,
-                    byteOffset = totalBytes,
-                    byteLength = read,
-                    thumbnailFileId = uploaded.thumbnailFileId,
-                ),
-            )
-            totalBytes += read
-            chunkIndex++
         }
 
         if (totalChunks.isEmpty()) {
@@ -603,7 +609,8 @@ class GooglePhotosImportManager @Inject constructor(
     private suspend fun uploadVideoChunkDocument(
         safeBotToken: String,
         chatIdBody: RequestBody,
-        chunkData: ByteArray,
+        chunkFile: File,
+        chunkSize: Int,
         fileName: String,
         mimeType: String,
         caption: String,
@@ -611,7 +618,7 @@ class GooglePhotosImportManager @Inject constructor(
     ): UploadedVideoChunk? {
         val captionBody = caption.toRequestBody("text/plain".toMediaType())
         val mediaType = mimeType.toMediaTypeOrNull() ?: "application/octet-stream".toMediaType()
-        val body = chunkData.toRequestBody(mediaType)
+        val body = chunkFile.asRequestBody(mediaType)
         val part = MultipartBody.Part.createFormData("document", fileName, body)
         val response = rateLimiter.withRateLimit {
             uploadTelegramBotApi.sendDocument(
@@ -633,7 +640,7 @@ class GooglePhotosImportManager @Inject constructor(
             fileId = msg.document.fileId,
             messageId = msg.messageId,
             byteOffset = 0,
-            byteLength = chunkData.size,
+            byteLength = chunkSize,
             thumbnailFileId = msg.document.thumbnail?.fileId,
         )
     }
@@ -679,16 +686,4 @@ class GooglePhotosImportManager @Inject constructor(
         }
     }
 
-    /**
-     * Reads up to [buf].size bytes into [buf], or returns -1 at EOF before any byte read.
-     */
-    private fun readFully(input: InputStream, buf: ByteArray): Int {
-        var offset = 0
-        while (offset < buf.size) {
-            val n = input.read(buf, offset, buf.size - offset)
-            if (n == -1) break
-            offset += n
-        }
-        return if (offset == 0) -1 else offset
-    }
 }
