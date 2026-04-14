@@ -99,6 +99,56 @@ class PkceTokenExchangeTest {
     }
 
     @Test
+    fun `executeTokenRequest retries on IOException and succeeds on second attempt`() {
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
+        server.enqueue(
+            MockResponse()
+                .setBody("""{"access_token":"retry-at","refresh_token":"retry-rt","expires_in":3600,"token_type":"Bearer"}""")
+                .setResponseCode(200),
+        )
+
+        val result = tokenClient.refreshToken("rt", "cid", "secret")
+
+        assertTrue("Should succeed after retry", result is TokenResult.Success)
+        val success = result as TokenResult.Success
+        assertEquals("retry-at", success.accessToken)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test
+    fun `executeTokenRequest does not retry on HTTP 400`() {
+        server.enqueue(
+            MockResponse()
+                .setBody("""{"error":"invalid_grant","error_description":"Bad code"}""")
+                .setResponseCode(400),
+        )
+
+        val result = tokenClient.exchangeCode("code", "cid", "secret", "verifier", "http://127.0.0.1:9999")
+
+        assertTrue("Should be error", result is TokenResult.Error)
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun `executeTokenRequest returns network_error after exhausting retries`() {
+        val noRetryClient = PkceTokenClient(
+            httpClient = OkHttpClient(),
+            tokenEndpoint = server.url("/token").toString(),
+            maxRetries = 2,
+        )
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_START))
+
+        val result = noRetryClient.refreshToken("rt", "cid", "secret")
+
+        assertTrue("Should be network_error after exhausting retries", result is TokenResult.Error)
+        val error = result as TokenResult.Error
+        assertEquals("network_error", error.error)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
     fun `refreshToken sends correct POST body`() {
         server.enqueue(
             MockResponse()

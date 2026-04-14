@@ -15,6 +15,7 @@ import com.ulap.data.auth.GoogleAuthManager
 import com.ulap.data.googlephotos.GooglePhotosPickerApi
 import com.ulap.data.googlephotos.PickerSession
 import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
+import com.ulap.data.googlephotos.httpStatusCodeOrNull
 import com.ulap.data.googlephotos.pollIntervalMs
 import com.ulap.data.googlephotos.timeoutMs
 import com.ulap.data.repository.UserPreferencesRepository
@@ -158,10 +159,15 @@ class GooglePhotosImportViewModel @Inject constructor(
                     }
                 }
                 is AuthResult.Error -> {
+                    val displayError = if (result.error == "network_error") {
+                        "Network error — please check your internet connection and try again."
+                    } else {
+                        result.errorDescription ?: result.error
+                    }
                     _uiState.update {
                         it.copy(
                             isBusy = false,
-                            error = result.errorDescription ?: result.error,
+                            error = displayError,
                         )
                     }
                 }
@@ -173,22 +179,47 @@ class GooglePhotosImportViewModel @Inject constructor(
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
             try {
-                val session = pickerApi.createSession(EMPTY_JSON_BODY)
-                userPreferencesRepository.setPickerSessionId(session.id)
+                var lastException: java.io.IOException? = null
+                var session: PickerSession? = null
+                val maxAttempts = 3
+                repeat(maxAttempts) { attempt ->
+                    try {
+                        session = pickerApi.createSession(EMPTY_JSON_BODY)
+                        lastException = null
+                        return@repeat
+                    } catch (e: java.io.IOException) {
+                        lastException = e
+                        debugLog.log(
+                            GOOGLE_PHOTOS_LOG_TAG,
+                            "createSession network retry ${attempt + 1}/$maxAttempts: ${e.message}",
+                        )
+                        if (attempt < maxAttempts - 1) delay(1_000L)
+                    }
+                }
+                if (lastException != null || session == null) {
+                    throw lastException ?: java.io.IOException("Failed to create session after $maxAttempts attempts")
+                }
+                val s = session!!
+                userPreferencesRepository.setPickerSessionId(s.id)
                 _uiState.update {
                     it.copy(
-                        pickerSessionId = session.id,
-                        pickerUri = session.pickerUri,
+                        pickerSessionId = s.id,
+                        pickerUri = s.pickerUri,
                         isWaitingForPicker = true,
                         isBusy = false,
                         importSuccessSummary = null,
                     )
                 }
-                launchUri(session.pickerUri)
-                startPolling(session.id, session)
+                launchUri(s.pickerUri)
+                startPolling(s.id, s)
             } catch (e: Exception) {
                 debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "createPickerSession failed: ${formatGooglePhotosDiagnostics(e)}")
-                _uiState.update { it.copy(isBusy = false, error = "Could not start Google Photos session: ${e.message ?: formatGooglePhotosDiagnostics(e)}") }
+                val displayError = if (e is java.io.IOException) {
+                    "Network error — please check your internet connection and try again."
+                } else {
+                    "Could not start Google Photos session: ${e.message ?: formatGooglePhotosDiagnostics(e)}"
+                }
+                _uiState.update { it.copy(isBusy = false, error = displayError) }
             }
         }
     }
@@ -296,10 +327,13 @@ class GooglePhotosImportViewModel @Inject constructor(
             val intervalMs = initialSession.pollingConfig.pollIntervalMs()
             val timeoutMs = initialSession.pollingConfig.timeoutMs()
             val startTime = System.currentTimeMillis()
+            var consecutiveFailures = 0
+            val maxConsecutiveFailures = 3
             while (true) {
                 delay(intervalMs)
                 try {
                     val session = pickerApi.getSession(sessionId)
+                    consecutiveFailures = 0
                     if (session.mediaItemsSet) {
                         _uiState.update { it.copy(isWaitingForPicker = false) }
                         refreshSelectionCount(sessionId)
@@ -319,17 +353,30 @@ class GooglePhotosImportViewModel @Inject constructor(
                         break
                     }
                 } catch (e: Exception) {
-                    debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "Picker session poll error: ${formatGooglePhotosDiagnostics(e)}")
-                    userPreferencesRepository.setPickerSessionId(null)
-                    _uiState.update {
-                        it.copy(
-                            isWaitingForPicker = false,
-                            pickerSessionId = null,
-                            pickerUri = null,
-                            error = "Session error — please try selecting photos again.",
-                        )
+                    consecutiveFailures++
+                    debugLog.log(
+                        GOOGLE_PHOTOS_LOG_TAG,
+                        "Picker poll error ($consecutiveFailures/$maxConsecutiveFailures): ${formatGooglePhotosDiagnostics(e)}",
+                    )
+                    if (e.httpStatusCodeOrNull() == 401) {
+                        val clientId = userPreferencesRepository.googlePhotosWebClientId.first()
+                        val clientSecret = userPreferencesRepository.googlePhotosClientSecret.first()
+                        if (clientId != null && clientSecret != null) {
+                            googleAuthManager.refreshToken(clientId, clientSecret)
+                        }
                     }
-                    break
+                    if (consecutiveFailures >= maxConsecutiveFailures) {
+                        userPreferencesRepository.setPickerSessionId(null)
+                        _uiState.update {
+                            it.copy(
+                                isWaitingForPicker = false,
+                                pickerSessionId = null,
+                                pickerUri = null,
+                                error = "Session error — please try selecting photos again.",
+                            )
+                        }
+                        break
+                    }
                 }
             }
         }

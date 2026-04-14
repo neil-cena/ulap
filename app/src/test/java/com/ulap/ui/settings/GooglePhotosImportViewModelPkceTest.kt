@@ -116,6 +116,22 @@ class GooglePhotosImportViewModelPkceTest {
     }
 
     @Test
+    fun `launchSignIn maps network_error to friendly message`() = runTest {
+        whenever(googleAuthManager.awaitAuthResult(any(), any(), any()))
+            .thenReturn(AuthResult.Error("network_error", "Unable to resolve host \"oauth2.googleapis.com\""))
+
+        val vm = createViewModel()
+        vm.launchSignIn { }
+
+        val state = vm.uiState.first()
+        assertFalse("Should not be signed in", state.isSignedIn)
+        assertEquals(
+            "Network error — please check your internet connection and try again.",
+            state.error,
+        )
+    }
+
+    @Test
     fun `launchSignIn does nothing without client ID`() = runTest {
         whenever(userPrefs.googlePhotosWebClientId).thenReturn(MutableStateFlow(null))
         whenever(userPrefs.googlePhotosClientSecret).thenReturn(MutableStateFlow(null))

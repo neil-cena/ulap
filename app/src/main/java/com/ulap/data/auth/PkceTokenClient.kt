@@ -5,6 +5,7 @@ import com.google.gson.annotations.SerializedName
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.IOException
 
 sealed class TokenResult {
     data class Success(
@@ -22,9 +23,11 @@ sealed class TokenResult {
 class PkceTokenClient(
     private val httpClient: OkHttpClient,
     private val tokenEndpoint: String = TOKEN_ENDPOINT,
+    private val maxRetries: Int = MAX_NETWORK_RETRIES,
 ) {
     companion object {
         const val TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+        const val MAX_NETWORK_RETRIES = 2
     }
 
     fun exchangeCode(
@@ -61,32 +64,39 @@ class PkceTokenClient(
             .post(body)
             .build()
 
-        return try {
-            val response = httpClient.newCall(request).execute()
-            val responseBody = response.body?.string() ?: ""
+        var lastException: IOException? = null
+        repeat(1 + maxRetries) { attempt ->
+            try {
+                val response = httpClient.newCall(request).execute()
+                val responseBody = response.body?.string() ?: ""
 
-            if (response.isSuccessful) {
-                val parsed = gson.fromJson(responseBody, TokenResponseDto::class.java)
-                TokenResult.Success(
-                    accessToken = parsed.accessToken ?: "",
-                    refreshToken = parsed.refreshToken?.takeIf { it.isNotBlank() },
-                    expiresInSeconds = parsed.expiresIn ?: 0,
-                )
-            } else {
-                val parsed = runCatching {
-                    gson.fromJson(responseBody, TokenErrorDto::class.java)
-                }.getOrNull()
-                TokenResult.Error(
-                    error = parsed?.error ?: "http_${response.code}",
-                    errorDescription = parsed?.errorDescription,
-                )
+                return if (response.isSuccessful) {
+                    val parsed = gson.fromJson(responseBody, TokenResponseDto::class.java)
+                    TokenResult.Success(
+                        accessToken = parsed.accessToken ?: "",
+                        refreshToken = parsed.refreshToken?.takeIf { it.isNotBlank() },
+                        expiresInSeconds = parsed.expiresIn ?: 0,
+                    )
+                } else {
+                    val parsed = runCatching {
+                        gson.fromJson(responseBody, TokenErrorDto::class.java)
+                    }.getOrNull()
+                    TokenResult.Error(
+                        error = parsed?.error ?: "http_${response.code}",
+                        errorDescription = parsed?.errorDescription,
+                    )
+                }
+            } catch (e: IOException) {
+                lastException = e
+                if (attempt < maxRetries) {
+                    Thread.sleep((attempt + 1) * 1_000L)
+                }
             }
-        } catch (e: Exception) {
-            TokenResult.Error(
-                error = "network_error",
-                errorDescription = e.message,
-            )
         }
+        return TokenResult.Error(
+            error = "network_error",
+            errorDescription = lastException?.message,
+        )
     }
 }
 
