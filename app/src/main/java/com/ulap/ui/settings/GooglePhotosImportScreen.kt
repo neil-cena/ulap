@@ -1,12 +1,7 @@
 package com.ulap.ui.settings
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -37,7 +32,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.work.WorkInfo
-import com.ulap.MainActivity
 import com.ulap.R
 import com.ulap.sync.GooglePhotosImportProgress
 
@@ -51,35 +45,6 @@ fun GooglePhotosImportScreen(
     val selectedCount = state.selectedMediaCount
     val workInfo by viewModel.workInfo.collectAsState(initial = null)
     val context = LocalContext.current
-    val activity = context as Activity
-    val mainActivity = context as? MainActivity
-
-    val signInLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        viewModel.onSignInActivityResult(result.data)
-    }
-
-    val googleConsentLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        viewModel.onGoogleConsentActivityResult(result.resultCode)
-    }
-
-    LaunchedEffect(state.pendingGoogleConsentIntent) {
-        val intent = state.pendingGoogleConsentIntent ?: return@LaunchedEffect
-        googleConsentLauncher.launch(intent)
-        viewModel.clearPendingConsentIntent()
-    }
-
-    DisposableEffect(mainActivity) {
-        val act = mainActivity ?: return@DisposableEffect onDispose { }
-        val cb: (Int, Intent?) -> Unit = { code, data ->
-            viewModel.onGooglePhotosScopePermissionResult(code, data)
-        }
-        act.googlePhotosScopePermissionResult = cb
-        onDispose { act.googlePhotosScopePermissionResult = null }
-    }
 
     val wi = workInfo
     val running = wi?.state == WorkInfo.State.RUNNING
@@ -158,32 +123,14 @@ fun GooglePhotosImportScreen(
             if (!state.isSignedIn) {
                 Button(
                     onClick = {
-                        viewModel.prepareAndLaunchSignIn(activity) { intent ->
-                            signInLauncher.launch(intent)
+                        viewModel.launchSignIn { url ->
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         }
                     },
                     enabled = !state.isBusy && !importInFlight,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.google_photos_sign_in))
-                }
-            }
-
-            state.signedInEmail?.takeIf { it.isNotBlank() }?.let { email ->
-                Text(
-                    text = stringResource(R.string.google_photos_signed_in_as, email),
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-
-            if (state.needsPlayServicesPhotosScope) {
-                Button(
-                    onClick = { viewModel.requestPhotosScopePermission(activity) },
-                    enabled = !state.isBusy && !importInFlight,
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Text(stringResource(R.string.google_photos_grant_library_scope))
                 }
             }
 
@@ -201,7 +148,6 @@ fun GooglePhotosImportScreen(
                 CircularProgressIndicator(modifier = Modifier.height(32.dp))
             }
 
-            // Step 1: user is ready to pick — show the "Select from Google Photos" button
             if (state.isSignedIn && state.hasPhotosAccessToken &&
                 !state.isWaitingForPicker && state.pickerSessionId == null && !importInFlight
             ) {
@@ -211,14 +157,13 @@ fun GooglePhotosImportScreen(
                             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(uri)))
                         }
                     },
-                    enabled = !state.isBusy && !state.needsPlayServicesPhotosScope,
+                    enabled = !state.isBusy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(stringResource(R.string.google_photos_select_photos))
                 }
             }
 
-            // Step 2: session open, waiting for user to finish selecting in Google Photos
             if (state.isWaitingForPicker) {
                 Text(
                     text = stringResource(R.string.google_photos_waiting_for_selection),
@@ -242,7 +187,6 @@ fun GooglePhotosImportScreen(
                 }
             }
 
-            // Step 3: selection done — count items, then offer import or empty state
             if (sessionReadyForImport) {
                 when {
                     state.isCountingSelection -> {

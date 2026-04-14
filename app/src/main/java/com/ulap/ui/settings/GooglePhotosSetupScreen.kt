@@ -67,12 +67,13 @@ fun GooglePhotosSetupScreen(
     viewModel: GooglePhotosSetupViewModel = hiltViewModel(),
 ) {
     val savedClientId by viewModel.savedClientId.collectAsState()
-    val fingerprint = viewModel.signingFingerprint
+    val savedClientSecret by viewModel.savedClientSecret.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val fieldBringIntoView = remember { BringIntoViewRequester() }
 
     var clientIdInput by remember(savedClientId) { mutableStateOf(savedClientId ?: "") }
+    var clientSecretInput by remember(savedClientSecret) { mutableStateOf(savedClientSecret ?: "") }
     var showDisableDialog by remember { mutableStateOf(false) }
 
     Scaffold(
@@ -107,7 +108,6 @@ fun GooglePhotosSetupScreen(
             )
             Spacer(Modifier.height(24.dp))
 
-            // Step 1
             SetupStepCard(number = "1", title = "Create a Google Cloud project") {
                 Text(
                     "Go to console.cloud.google.com, sign in with your Google account, " +
@@ -128,10 +128,9 @@ fun GooglePhotosSetupScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // Step 2
             SetupStepCard(number = "2", title = "Enable the Photos Picker API") {
                 Text(
-                    "Inside your project, open APIs & Services → Library. " +
+                    "Inside your project, open APIs & Services \u2192 Library. " +
                         "Search for \"Photos Picker API\" and click Enable.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -152,73 +151,12 @@ fun GooglePhotosSetupScreen(
 
             Spacer(Modifier.height(12.dp))
 
-            // Step 3
-            SetupStepCard(number = "3", title = "Register this app") {
+            SetupStepCard(number = "3", title = "Set up the OAuth consent screen") {
                 Text(
-                    "Go to APIs & Services → Credentials → Create Credential → OAuth client ID. " +
-                        "Choose Application type: Android. " +
-                        "Set the package name to:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                CopyableChip(
-                    value = "com.ulap",
-                    label = "Package name",
-                    context = context,
-                )
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "Set the SHA-1 certificate fingerprint to:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(8.dp))
-                CopyableChip(
-                    value = fingerprint,
-                    label = "SHA-1 fingerprint",
-                    context = context,
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = {
-                        context.startActivity(
-                            Intent(
-                                Intent.ACTION_VIEW,
-                                Uri.parse("https://console.cloud.google.com/apis/credentials/oauthclient"),
-                            )
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) { Text("Open Credentials") }
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // Step 4
-            SetupStepCard(number = "4", title = "Create a Web Client ID") {
-                Text(
-                    "In the same Credentials page, create a second credential: " +
-                        "OAuth client ID → Application type: Web application. " +
-                        "Copy the Client ID — it ends in .apps.googleusercontent.com.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "You will paste this into Ulap in step 6.",
-                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-
-            Spacer(Modifier.height(12.dp))
-
-            // Step 5
-            SetupStepCard(number = "5", title = "Configure the OAuth consent screen") {
-                Text(
-                    "Go to APIs & Services → OAuth consent screen. Choose External. " +
-                        "Fill in the required app name and support email fields.",
+                    "Google requires you to configure an OAuth consent screen before " +
+                        "you can create credentials. Tap the button below and click " +
+                        "\"Get started\". Choose External, then fill in the required " +
+                        "app name and support email fields.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -230,9 +168,9 @@ fun GooglePhotosSetupScreen(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        "Keep publishing status as Testing — do not publish. " +
+                        "Keep publishing status as Testing \u2014 do not publish. " +
                             "Google blocks the Photos Picker scope for published or unverified apps, " +
-                            "so Testing mode is required. Under Test users, add your own Google account email.",
+                            "so Testing mode is required.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onErrorContainer,
                         modifier = Modifier.padding(10.dp),
@@ -244,12 +182,33 @@ fun GooglePhotosSetupScreen(
                         context.startActivity(
                             Intent(
                                 Intent.ACTION_VIEW,
-                                Uri.parse("https://console.cloud.google.com/apis/credentials/consent"),
+                                Uri.parse("https://console.cloud.google.com/auth/clients"),
                             )
                         )
                     },
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("Open Consent Screen") }
+                ) { Text("Open Google Auth Platform") }
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "Next, add your Google account as a test user. " +
+                        "Open the Audience page and add your email under \"Test users\".",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse("https://console.cloud.google.com/auth/audience"),
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open Audience (Test Users)") }
                 Spacer(Modifier.height(12.dp))
                 HorizontalDivider()
                 Spacer(Modifier.height(12.dp))
@@ -279,34 +238,72 @@ fun GooglePhotosSetupScreen(
                 ) { Text("Open Scopes Page") }
             }
 
-            Spacer(Modifier.height(24.dp))
-            HorizontalDivider()
+            Spacer(Modifier.height(12.dp))
+
+            SetupStepCard(number = "4", title = "Create a Desktop OAuth Client ID") {
+                Text(
+                    "Go to APIs & Services \u2192 Credentials \u2192 Create Credential \u2192 OAuth client ID. " +
+                        "Choose Application type: Desktop app. Give it any name.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    "After clicking Create, Google will show you the Client ID and Client secret. " +
+                        "Copy both values and paste them below.",
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(
+                                Intent.ACTION_VIEW,
+                                Uri.parse("https://console.cloud.google.com/apis/credentials/oauthclient"),
+                            )
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Open Credentials") }
+
+                Spacer(Modifier.height(16.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(16.dp))
+
+                OutlinedTextField(
+                    value = clientIdInput,
+                    onValueChange = { clientIdInput = it },
+                    label = { Text("Client ID") },
+                    placeholder = { Text("xxxxxxxx.apps.googleusercontent.com") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewRequester(fieldBringIntoView)
+                        .onFocusEvent { if (it.isFocused) scope.launch { fieldBringIntoView.bringIntoView() } },
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedTextField(
+                    value = clientSecretInput,
+                    onValueChange = { clientSecretInput = it },
+                    label = { Text("Client secret") },
+                    placeholder = { Text("GOCSPX-xxxxxxxxxxxxxxxxxxxxxxxx") },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .bringIntoViewRequester(fieldBringIntoView)
+                        .onFocusEvent { if (it.isFocused) scope.launch { fieldBringIntoView.bringIntoView() } },
+                )
+            }
+
             Spacer(Modifier.height(24.dp))
 
-            // Step 6 — paste the key
-            Text(
-                "Step 6 — Paste your Web Client ID",
-                style = MaterialTheme.typography.titleSmall,
-            )
-            Spacer(Modifier.height(8.dp))
-            OutlinedTextField(
-                value = clientIdInput,
-                onValueChange = { clientIdInput = it },
-                label = { Text("Web Client ID") },
-                placeholder = { Text("xxxxxxxx.apps.googleusercontent.com") },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .bringIntoViewRequester(fieldBringIntoView)
-                    .onFocusEvent { if (it.isFocused) scope.launch { fieldBringIntoView.bringIntoView() } },
-            )
-            Spacer(Modifier.height(16.dp))
             Button(
                 onClick = {
-                    viewModel.saveClientId(clientIdInput)
+                    viewModel.saveCredentials(clientIdInput, clientSecretInput)
                     onBack()
                 },
-                enabled = clientIdInput.isNotBlank(),
+                enabled = clientIdInput.isNotBlank() && clientSecretInput.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Save and enable Google Photos import") }
 
@@ -328,15 +325,16 @@ fun GooglePhotosSetupScreen(
                     title = { Text("Disable Google Photos import?") },
                     text = {
                         Text(
-                            "This will remove your Web Client ID. " +
-                                "You will need to paste it again to re-enable Google Photos import.",
+                            "This will remove your Client ID and secret. " +
+                                "You will need to paste them again to re-enable Google Photos import.",
                         )
                     },
                     confirmButton = {
                         Button(
                             onClick = {
-                                viewModel.clearClientId()
+                                viewModel.clearCredentials()
                                 clientIdInput = ""
+                                clientSecretInput = ""
                                 showDisableDialog = false
                             },
                             colors = ButtonDefaults.buttonColors(

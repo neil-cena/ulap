@@ -32,6 +32,7 @@ private const val KEY_UPLOAD_SPEED_MODE = "upload_speed_mode"
 private const val KEY_TELEGRAM_LOGGING_ENABLED = "telegram_logging_enabled"
 private const val KEY_TELEGRAM_LOGGING_CHAT_ID = "telegram_logging_chat_id"
 private const val KEY_GOOGLE_PHOTOS_WEB_CLIENT_ID = "google_photos_web_client_id"
+private const val KEY_GOOGLE_PHOTOS_CLIENT_SECRET = "google_photos_client_secret"
 
 private val GOOGLE_PHOTOS_NEXT_PAGE_TOKEN = stringPreferencesKey("google_photos_sync_token")
 private val GOOGLE_PHOTOS_PICKER_SESSION_ID = stringPreferencesKey("google_photos_picker_session_id")
@@ -69,6 +70,11 @@ class UserPreferencesRepository @Inject constructor(
         prefs.getString(KEY_GOOGLE_PHOTOS_WEB_CLIENT_ID, null)
     )
     val googlePhotosWebClientId: StateFlow<String?> = _googlePhotosWebClientId.asStateFlow()
+
+    private val _googlePhotosClientSecret = MutableStateFlow(
+        prefs.getString(KEY_GOOGLE_PHOTOS_CLIENT_SECRET, null)
+    )
+    val googlePhotosClientSecret: StateFlow<String?> = _googlePhotosClientSecret.asStateFlow()
 
     val googlePhotosPageToken: Flow<String?> = dataStore.data.map { preferences ->
         preferences[GOOGLE_PHOTOS_NEXT_PAGE_TOKEN]
@@ -135,6 +141,11 @@ class UserPreferencesRepository @Inject constructor(
     fun setGooglePhotosWebClientId(clientId: String?) {
         prefs.edit().putString(KEY_GOOGLE_PHOTOS_WEB_CLIENT_ID, clientId?.takeIf { it.isNotBlank() }).apply()
         _googlePhotosWebClientId.value = clientId?.takeIf { it.isNotBlank() }
+    }
+
+    fun setGooglePhotosClientSecret(secret: String?) {
+        prefs.edit().putString(KEY_GOOGLE_PHOTOS_CLIENT_SECRET, secret?.takeIf { it.isNotBlank() }).apply()
+        _googlePhotosClientSecret.value = secret?.takeIf { it.isNotBlank() }
     }
 
     private fun loadTheme(): ThemePreference {

@@ -21,8 +21,10 @@ import com.ulap.data.googlephotos.PickedMediaItemsResponse
 import com.ulap.data.googlephotos.toGooglePhotosMediaItem
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BackupIndexManager
+import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.domain.repository.CredentialRepository
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -107,7 +109,11 @@ class GooglePhotosImportWorkerProgressBrt {
 
         // ── Other mocks ────────────────────────────────────────────────────────────────────────
         val googleAuthManager = mock<GoogleAuthManager>()
-        whenever(googleAuthManager.refreshTokenFromLastAccount()).thenReturn(true)
+        whenever(googleAuthManager.refreshToken(any(), any())).thenReturn(true)
+
+        val userPreferencesRepository = mock<UserPreferencesRepository>()
+        whenever(userPreferencesRepository.googlePhotosWebClientId).thenReturn(MutableStateFlow("test-cid"))
+        whenever(userPreferencesRepository.googlePhotosClientSecret).thenReturn(MutableStateFlow("test-secret"))
 
         val pickerApi = mock<GooglePhotosPickerApi>()
         whenever(pickerApi.listMediaItems(any(), any(), anyOrNull())).thenReturn(
@@ -148,6 +154,7 @@ class GooglePhotosImportWorkerProgressBrt {
                     googleAuthManager = googleAuthManager,
                     backupIndexManager = backupIndexManager,
                     credentialRepository = credentialRepository,
+                    userPreferencesRepository = userPreferencesRepository,
                     debugLog = debugLog,
                 )
             })

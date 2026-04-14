@@ -1,7 +1,5 @@
 package com.ulap.ui.settings
 
-import android.app.Activity
-import android.content.Intent
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.Constraints
@@ -11,8 +9,9 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.ulap.data.auth.AuthResult
+import com.ulap.data.auth.AuthSession
 import com.ulap.data.auth.GoogleAuthManager
-import com.ulap.data.auth.PhotosTokenSyncResult
 import com.ulap.data.googlephotos.GooglePhotosPickerApi
 import com.ulap.data.googlephotos.PickerSession
 import com.ulap.data.googlephotos.formatGooglePhotosDiagnostics
@@ -36,27 +35,16 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 
-data class GooglePhotosImportUiState(    /** Google account is selected (may still need Photos scope or token). */
+data class GooglePhotosImportUiState(
     val isSignedIn: Boolean = false,
-    val signedInEmail: String? = null,
     val isBusy: Boolean = false,
     val error: String? = null,
-    /** Play Services says [com.google.android.gms.auth.api.signin.GoogleSignIn.hasPermissions] is false — tap [grant scope]. */
-    val needsPlayServicesPhotosScope: Boolean = false,
-    /** One-shot consent from [com.google.android.gms.auth.UserRecoverableAuthException] (launched by UI). */
-    val pendingGoogleConsentIntent: Intent? = null,
     val hasPhotosAccessToken: Boolean = false,
-    /** Session ID for the active Picker API session, if one has been created. */
     val pickerSessionId: String? = null,
-    /** The pickerUri the user must open in Google Photos to select media. */
     val pickerUri: String? = null,
-    /** True while waiting for the user to finish selecting items in Google Photos. */
     val isWaitingForPicker: Boolean = false,
-    /** Total media items in the picker session (after [listMediaItems] count). Null until counted. */
     val selectedMediaCount: Int? = null,
-    /** True while paginating the Picker API to count selected items. */
     val isCountingSelection: Boolean = false,
-    /** Shown after the import worker finishes successfully; cleared by [dismissImportSuccess]. */
     val importSuccessSummary: GooglePhotosImportSummary? = null,
 )
 
@@ -82,7 +70,19 @@ class GooglePhotosImportViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = false)
+            val signedIn = googleAuthManager.isSignedIn()
+            val hasToken = googleAuthManager.getAccessToken() != null
+            _uiState.update { it.copy(isSignedIn = signedIn, hasPhotosAccessToken = hasToken) }
+            if (signedIn && !hasToken) {
+                val clientId = userPreferencesRepository.googlePhotosWebClientId.first()
+                val clientSecret = userPreferencesRepository.googlePhotosClientSecret.first()
+                if (clientId != null && clientSecret != null) {
+                    val refreshed = googleAuthManager.refreshToken(clientId, clientSecret)
+                    _uiState.update {
+                        it.copy(hasPhotosAccessToken = refreshed)
+                    }
+                }
+            }
             resumeSavedSessionIfAny()
         }
         viewModelScope.launch {
@@ -127,64 +127,48 @@ class GooglePhotosImportViewModel @Inject constructor(
         }
     }
 
-    fun getSignInIntent(activity: Activity): Intent = googleAuthManager.getSignInIntent(activity)
-
     /**
-     * Revokes any stale Play Services session, then returns the sign-in intent.
-     * Ensures a completely fresh sign-in even if a previous session was not fully cleared.
+     * Starts the PKCE auth flow: opens a loopback server, returns the auth URL
+     * for the caller to launch in a browser, then suspends until the redirect
+     * arrives and the code is exchanged for tokens.
      */
-    fun prepareAndLaunchSignIn(activity: Activity, launcher: (Intent) -> Unit) {
+    fun launchSignIn(openBrowser: (String) -> Unit) {
+        val clientId = userPreferencesRepository.googlePhotosWebClientId.value ?: return
+        val clientSecret = userPreferencesRepository.googlePhotosClientSecret.value ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
-            googleAuthManager.ensureSignedOut()
-            val intent = googleAuthManager.getSignInIntent(activity)
-            _uiState.update { it.copy(isBusy = false) }
-            launcher(intent)
-        }
-    }
-
-    fun onSignInActivityResult(data: Intent?) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, error = null) }
-            val sync = googleAuthManager.handleSignInActivityResult(data)
-            applySyncResult(sync, fromUserAction = true)
-            _uiState.update { it.copy(isBusy = false) }
-        }
-    }
-
-    /** After [GoogleAuthManager.requestPhotosScopePermission] + [MainActivity.onActivityResult]. */
-    fun onGooglePhotosScopePermissionResult(resultCode: Int, data: Intent?) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, error = null) }
-            applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = true)
-            _uiState.update { it.copy(isBusy = false) }
-        }
-    }
-
-    /** After launching [GooglePhotosImportUiState.pendingGoogleConsentIntent]. */
-    fun onGoogleConsentActivityResult(resultCode: Int) {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, error = null, pendingGoogleConsentIntent = null) }
-            if (resultCode == Activity.RESULT_OK) {
-                applySyncResult(googleAuthManager.syncPhotosAccessTokenFromLastAccount(), fromUserAction = true)
+            val session: AuthSession
+            try {
+                session = googleAuthManager.startAuth(clientId)
+            } catch (e: Exception) {
+                _uiState.update { it.copy(isBusy = false, error = "Could not start sign-in: ${e.message}") }
+                return@launch
             }
-            _uiState.update { it.copy(isBusy = false) }
+            openBrowser(session.url)
+            val result = googleAuthManager.awaitAuthResult(session, clientId, clientSecret)
+            when (result) {
+                is AuthResult.Success -> {
+                    _uiState.update {
+                        it.copy(
+                            isSignedIn = true,
+                            hasPhotosAccessToken = true,
+                            isBusy = false,
+                            error = null,
+                        )
+                    }
+                }
+                is AuthResult.Error -> {
+                    _uiState.update {
+                        it.copy(
+                            isBusy = false,
+                            error = result.errorDescription ?: result.error,
+                        )
+                    }
+                }
+            }
         }
     }
 
-    fun clearPendingConsentIntent() {
-        _uiState.update { it.copy(pendingGoogleConsentIntent = null) }
-    }
-
-    fun requestPhotosScopePermission(activity: Activity) {
-        val account = googleAuthManager.getLastSignedInAccount() ?: return
-        googleAuthManager.requestPhotosScopePermission(activity, account)
-    }
-
-    /**
-     * Creates a Picker API session and opens the [PickerSession.pickerUri] so the user can
-     * select photos in Google Photos. Starts background polling for session completion.
-     */
     fun createPickerSession(launchUri: (String) -> Unit) {
         viewModelScope.launch {
             _uiState.update { it.copy(isBusy = true, error = null) }
@@ -209,7 +193,6 @@ class GooglePhotosImportViewModel @Inject constructor(
         }
     }
 
-    /** Cancels the active picker session and clears related state. */
     fun cancelPickerSession() {
         pollingJob?.cancel()
         pollingJob = null
@@ -271,17 +254,10 @@ class GooglePhotosImportViewModel @Inject constructor(
             pollingJob?.cancel()
             pollingJob = null
             workManager.cancelUniqueWork("google_import")
-            var signOutError: String? = null
-            try {
-                googleAuthManager.signOut()
-            } catch (e: Exception) {
-                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "signOut failed: ${e.message}")
-                signOutError = "Sign-out failed — please try again"
-            } finally {
-                userPreferencesRepository.updateGooglePhotosPageToken(null)
-                userPreferencesRepository.setPickerSessionId(null)
-                _uiState.update { GooglePhotosImportUiState().copy(error = signOutError) }
-            }
+            googleAuthManager.signOut()
+            userPreferencesRepository.updateGooglePhotosPageToken(null)
+            userPreferencesRepository.setPickerSessionId(null)
+            _uiState.update { GooglePhotosImportUiState() }
         }
     }
 
@@ -399,70 +375,5 @@ class GooglePhotosImportViewModel @Inject constructor(
             pageToken = response.nextPageToken
         } while (!pageToken.isNullOrBlank())
         return total
-    }
-
-    private fun applySyncResult(result: PhotosTokenSyncResult, fromUserAction: Boolean) {
-        val account = googleAuthManager.getLastSignedInAccount()
-        val email = googleAuthManager.getLastSignedInAccountEmail()
-        val token = googleAuthManager.getAccessToken()
-        when (result) {
-            is PhotosTokenSyncResult.Success -> {
-                _uiState.update {
-                    it.copy(
-                        isSignedIn = account != null,
-                        signedInEmail = email,
-                        error = null,
-                        needsPlayServicesPhotosScope = false,
-                        pendingGoogleConsentIntent = null,
-                        hasPhotosAccessToken = !token.isNullOrBlank(),
-                    )
-                }
-            }
-            is PhotosTokenSyncResult.NeedsScopePermissionRequest -> {
-                debugLog.log(
-                    GOOGLE_PHOTOS_LOG_TAG,
-                    "Photos picker scope not granted in Play Services — user must tap Grant access",
-                )
-                _uiState.update {
-                    it.copy(
-                        isSignedIn = account != null,
-                        signedInEmail = email,
-                        needsPlayServicesPhotosScope = true,
-                        pendingGoogleConsentIntent = null,
-                        hasPhotosAccessToken = false,
-                        error = if (fromUserAction) null else it.error,
-                    )
-                }
-            }
-            is PhotosTokenSyncResult.NeedsUserConsentDialog -> {
-                debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "Google account consent required for Photos picker token")
-                _uiState.update {
-                    it.copy(
-                        isSignedIn = account != null,
-                        signedInEmail = email,
-                        needsPlayServicesPhotosScope = false,
-                        pendingGoogleConsentIntent = result.consentIntent,
-                        hasPhotosAccessToken = false,
-                        error = null,
-                    )
-                }
-            }
-            is PhotosTokenSyncResult.Error -> {
-                val msg = result.throwable.message
-                result.throwable.let { err ->
-                    debugLog.log(GOOGLE_PHOTOS_LOG_TAG, "token sync failed: ${formatGooglePhotosDiagnostics(err)}")
-                }
-                _uiState.update {
-                    it.copy(
-                        isSignedIn = account != null,
-                        signedInEmail = email,
-                        needsPlayServicesPhotosScope = false,
-                        pendingGoogleConsentIntent = null,
-                        hasPhotosAccessToken = !token.isNullOrBlank(),
-                        error = if (fromUserAction || account != null) msg else null,
-                    )
-                }
-            }
-        }
     }
 }

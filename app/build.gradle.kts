@@ -138,11 +138,8 @@ dependencies {
     implementation(libs.okhttp)
     implementation(libs.okhttp.logging)
 
-    // Google Sign-In / Credential Manager (Google Photos OAuth)
-    implementation(libs.play.services.auth)
-    implementation(libs.androidx.credentials)
-    implementation(libs.androidx.credentials.play.services)
-    implementation(libs.googleid)
+    // OAuth PKCE flow (Google Photos)
+    implementation(libs.androidx.browser)
 
     // Coil
     implementation(libs.coil.compose)

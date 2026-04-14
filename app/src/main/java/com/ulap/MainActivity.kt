@@ -63,7 +63,6 @@ import com.ulap.ui.settings.SettingsScreen
 import com.ulap.ui.theme.UlapTheme
 import com.ulap.sync.StorageCleanupWorker
 import com.ulap.sync.SyncWorker
-import com.ulap.data.auth.GOOGLE_PHOTOS_SCOPE_REQUEST_CODE
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 
@@ -72,17 +71,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_BACKUP_RETRY = "com.ulap.OPEN_BACKUP_RETRY"
-    }
-
-    /** Set by [com.ulap.ui.settings.GooglePhotosImportScreen] for [com.google.android.gms.auth.api.signin.GoogleSignIn.requestPermissions]. */
-    var googlePhotosScopePermissionResult: ((Int, Intent?) -> Unit)? = null
-
-    @Suppress("DEPRECATION")
-    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == GOOGLE_PHOTOS_SCOPE_REQUEST_CODE) {
-            googlePhotosScopePermissionResult?.invoke(resultCode, data)
-        }
     }
 
     @Inject

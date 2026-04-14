@@ -26,6 +26,7 @@ import com.ulap.data.googlephotos.toGooglePhotosMediaItem
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BackupIndexManager
+import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.domain.repository.CredentialRepository
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
@@ -46,6 +47,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
     private val googleAuthManager: GoogleAuthManager,
     private val backupIndexManager: BackupIndexManager,
     private val credentialRepository: CredentialRepository,
+    private val userPreferencesRepository: UserPreferencesRepository,
     private val debugLog: DebugLogBuffer,
 ) : CoroutineWorker(context, params) {
 
@@ -66,7 +68,9 @@ class GooglePhotosImportWorker @AssistedInject constructor(
         }
         val selectedTotal = inputData.getInt(KEY_SELECTED_TOTAL, 0)
 
-        if (!googleAuthManager.refreshTokenFromLastAccount()) {
+        val clientId = userPreferencesRepository.googlePhotosWebClientId.value
+        val clientSecret = userPreferencesRepository.googlePhotosClientSecret.value
+        if (clientId == null || clientSecret == null || !googleAuthManager.refreshToken(clientId, clientSecret)) {
             debugLog.log(
                 TAG,
                 "No Google access token for Photos import (sign in again or check OAuth client / scopes)",
@@ -155,7 +159,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                     return Result.failure()
                 }
                 else -> {
-                    googleAuthManager.refreshTokenFromLastAccount()
+                    if (clientId != null && clientSecret != null) googleAuthManager.refreshToken(clientId, clientSecret)
                     return Result.retry()
                 }
             }

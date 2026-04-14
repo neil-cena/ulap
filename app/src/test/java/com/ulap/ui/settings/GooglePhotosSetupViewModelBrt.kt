@@ -1,6 +1,5 @@
 package com.ulap.ui.settings
 
-import android.content.Context
 import com.ulap.data.auth.GoogleAuthManager
 import com.ulap.data.repository.UserPreferencesRepository
 import kotlinx.coroutines.Dispatchers
@@ -24,7 +23,6 @@ class GooglePhotosSetupViewModelBrt {
 
     private lateinit var googleAuthManager: GoogleAuthManager
     private lateinit var userPreferencesRepository: UserPreferencesRepository
-    private lateinit var context: Context
     private lateinit var viewModel: GooglePhotosSetupViewModel
 
     @Before
@@ -33,15 +31,15 @@ class GooglePhotosSetupViewModelBrt {
 
         googleAuthManager = mock()
         userPreferencesRepository = mock()
-        context = mock()
 
         whenever(userPreferencesRepository.googlePhotosWebClientId)
             .thenReturn(MutableStateFlow("test-client-id"))
+        whenever(userPreferencesRepository.googlePhotosClientSecret)
+            .thenReturn(MutableStateFlow("test-secret"))
 
         viewModel = GooglePhotosSetupViewModel(
             googleAuthManager = googleAuthManager,
             userPrefs = userPreferencesRepository,
-            context = context,
         )
     }
 
@@ -51,12 +49,13 @@ class GooglePhotosSetupViewModelBrt {
     }
 
     @Test
-    fun clearClientId_signOutCalledBeforeClientIdCleared() = runTest {
+    fun clearCredentials_signOutCalledBeforeCredentialsCleared() = runTest {
         val order = inOrder(googleAuthManager, userPreferencesRepository)
 
-        viewModel.clearClientId()
+        viewModel.clearCredentials()
 
         order.verify(googleAuthManager).signOut()
         order.verify(userPreferencesRepository).setGooglePhotosWebClientId(null)
+        order.verify(userPreferencesRepository).setGooglePhotosClientSecret(null)
     }
 }
