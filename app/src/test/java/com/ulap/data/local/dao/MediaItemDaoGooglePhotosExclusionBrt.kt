@@ -1,5 +1,6 @@
 package com.ulap.data.local.dao
 
+import android.app.Application
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
 import com.ulap.data.local.db.UlapDatabase
@@ -31,7 +32,7 @@ import org.robolectric.annotation.Config
  * Deterministic: in-memory Room database, no network, no clocks, no randomness.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [34])
+@Config(sdk = [34], application = Application::class)
 class MediaItemDaoGooglePhotosExclusionBrt {
 
     private lateinit var db: UlapDatabase

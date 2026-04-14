@@ -1,5 +1,6 @@
 package com.ulap.ui.gallery
 
+import android.app.Application
 import android.net.Uri
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
@@ -46,7 +47,7 @@ import java.io.IOException
  *    correct chunk, preventing stale-window issues.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [33], application = Application::class)
 class PrefetchingVideoDataSourceRegressionTest {
 
     @get:Rule

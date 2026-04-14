@@ -1,5 +1,6 @@
 package com.ulap.ui.gallery
 
+import android.app.Application
 import android.net.Uri
 import androidx.media3.common.PlaybackException
 import androidx.media3.datasource.DataSourceException
@@ -36,7 +37,7 @@ import java.io.IOException
  * Both tests PASS once the wrapping is in place.
  */
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [33])
+@Config(sdk = [33], application = Application::class)
 class PrefetchingVideoDataSourceTest {
 
     @get:Rule
