@@ -595,7 +595,15 @@ class SyncEngine @Inject constructor(
             return
         }
 
-        if (entity.size == 0L) {
+        // Re-query the actual file size from ContentResolver to handle the MediaStore race
+        // where SIZE=0 is reported for a file that was just written (BUG-005a).
+        // queryOpenableStatSize opens a file descriptor to get the stat size — this is
+        // the true on-device byte count even if MediaStore hasn't updated its index yet.
+        val contentUri = Uri.parse(entity.contentUri)
+        val statSize = if (entity.size == 0L) contentResolver.queryOpenableStatSize(contentUri) else null
+        val liveSize = resolveEmptyFileSize(entity.size, statSize)
+
+        if (liveSize == 0L) {
             inputStream.close()
             mediaItemDao.updateBackupResult(
                 id = entity.id,
@@ -615,9 +623,14 @@ class SyncEngine @Inject constructor(
             return
         }
 
+        // If MediaStore had a stale SIZE=0, persist the corrected value so dedup matching
+        // and future retries use the real size rather than hitting this check again.
+        if (entity.size == 0L && liveSize > 0L) {
+            mediaItemDao.update(entity.copy(size = liveSize))
+        }
+
         // Compute MD5 from a separate stream open so the upload stream is untouched.
         // Non-fatal: if hashing fails (e.g. stream error) we proceed without it.
-        val contentUri = Uri.parse(entity.contentUri)
         val contentHash: String? = computeMd5(contentUri)
 
         // Hash-based dedup: if another item with identical content is already backed up, reuse it.

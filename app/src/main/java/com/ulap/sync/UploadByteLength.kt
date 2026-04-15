@@ -26,6 +26,21 @@ internal fun coalesceStatSize(entitySize: Long, statSize: Long?): Long =
     statSize?.takeIf { it > 0 } ?: entitySize
 
 /**
+ * Resolves the file size to use for the empty-file guard when [entitySize] may be stale.
+ *
+ * MediaStore can report `SIZE = 0` for a file that was just created (race condition — the
+ * scanner ran before the bytes were fully flushed). [statSize] is the result of a
+ * [ContentResolver.queryOpenableStatSize] re-query and reflects the live on-device size.
+ *
+ * - If [entitySize] is already positive, it is returned as-is (no re-query needed).
+ * - If [entitySize] is 0 and [statSize] is positive, [statSize] wins — the file has real bytes.
+ * - If [entitySize] is 0 and [statSize] is null or 0, the file is truly empty — returns 0.
+ */
+internal fun resolveEmptyFileSize(entitySize: Long, statSize: Long?): Long =
+    if (entitySize > 0L) entitySize
+    else statSize?.takeIf { it > 0L } ?: 0L
+
+/**
  * Returns the size in bytes of the openable asset behind [uri], or null if unavailable.
  */
 internal fun ContentResolver.queryOpenableStatSize(uri: Uri): Long? {

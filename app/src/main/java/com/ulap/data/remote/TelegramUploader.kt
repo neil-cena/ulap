@@ -111,21 +111,18 @@ class TelegramUploader @Inject constructor(
         val captionBody = caption?.toRequestBody("text/plain".toMediaType())
         val safeToken = sanitizeTokenForPath(token)
 
-        val isVideo = mimeType.startsWith("video/")
-
-        fun makeBody(name: String): MultipartBody.Part {
+        fun makeBody(): MultipartBody.Part {
             val requestBody = StreamProgressRequestBody(
                 inputStream = inputStream,
                 contentLength = fileSize,
                 contentType = mimeType.toMediaType(),
                 onProgress = onProgress,
             )
-            return MultipartBody.Part.createFormData(name = name, filename = fileName, body = requestBody)
+            return MultipartBody.Part.createFormData(name = "document", filename = fileName, body = requestBody)
         }
 
         val response = rateLimiter.withRateLimit {
-            if (isVideo) api.sendVideo(safeToken, chatIdBody, makeBody("video"), captionBody)
-            else api.sendDocument(safeToken, chatIdBody, makeBody("document"), captionBody)
+            api.sendDocument(safeToken, chatIdBody, makeBody(), captionBody)
         }
 
         if (!response.ok || response.result == null) {
@@ -141,13 +138,9 @@ class TelegramUploader @Inject constructor(
 
         rateLimiter.recordSuccess()
         val msg = response.result
-        val fileId = msg.document?.fileId ?: msg.video?.fileId
+        val fileId = msg.document?.fileId
             ?: return UploadResult.Error(Exception("No file_id in response"))
-        val thumbId = when {
-            msg.video != null -> msg.video.thumbnail?.fileId
-            msg.document != null -> msg.document.thumbnail?.fileId
-            else -> null
-        }
+        val thumbId = msg.document.thumbnail?.fileId
         return UploadResult.Success(messageId = msg.messageId, fileId = fileId, thumbnailFileId = thumbId)
     }
 
