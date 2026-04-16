@@ -60,6 +60,7 @@ fun BackupScreen(
 
     val startBackup = rememberRunWithNotificationPermission(viewModel::startBackup)
     val retryFailed = rememberRunWithNotificationPermission(viewModel::retryFailed)
+    val syncNow = rememberRunWithNotificationPermission(viewModel::syncNow)
 
     LaunchedEffect(onOpenWithRetry) {
         if (onOpenWithRetry) {
@@ -209,7 +210,7 @@ fun BackupScreen(
                 ) { Text(stringResource(R.string.back_up_now)) }
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(
-                    onClick = viewModel::syncNow,
+                    onClick = syncNow,
                     modifier = Modifier.weight(1f),
                 ) { Text(stringResource(R.string.sync_now)) }
                 if ((stats?.failed ?: 0) > 0) {
