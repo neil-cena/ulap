@@ -116,7 +116,10 @@ class BackupViewModel @Inject constructor(
     fun syncNow() {
         runWithWifiCheck {
             viewModelScope.launch {
-                try { scanMedia(fullScan = false) } catch (_: Exception) { }
+                try {
+                    fetchIndex()
+                    scanMedia(fullScan = false)
+                } catch (_: Exception) { }
             }
             BackupForegroundService.startBackup(context)
         }
