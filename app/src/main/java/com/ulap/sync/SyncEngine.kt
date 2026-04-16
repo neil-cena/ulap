@@ -43,6 +43,7 @@ import com.ulap.data.repository.UserPreferencesRepository
 import com.ulap.data.repository.UploadSpeedMode
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -91,7 +92,21 @@ class SyncEngine @Inject constructor(
     private val botPool: BotPool,
     private val botHealthMonitor: BotHealthMonitor,
 ) {
-    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * Safety net: any uncaught exception reaching the scope's root (e.g. a Retrofit HttpException
+     * escaping an inner suspend call that forgot to wrap it) is logged instead of crashing the
+     * process.  See HTTP 400 crash report from 25053RT47C — the StandaloneCoroutine launched by
+     * engineScope had no handler, so an escaped retrofit2.HttpException killed the app.
+     */
+    private val engineExceptionHandler = CoroutineExceptionHandler { _, throwable ->
+        if (throwable is CancellationException) return@CoroutineExceptionHandler
+        debugLog.log(
+            "SyncEngine",
+            "engineScope uncaught — ${throwable.javaClass.simpleName}: ${throwable.message}",
+        )
+    }
+
+    private val engineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + engineExceptionHandler)
     private var activeJob: Job? = null
     /** Mirrors rateLimiter.throttleState into _progress while an upload is active. */
     private var throttleSyncJob: Job? = null
@@ -406,6 +421,16 @@ class SyncEngine @Inject constructor(
                     }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Last-resort safety net: any unexpected exception from the pipeline (e.g. a transport
+            // error escaping an early step like fetchAndMerge) must not crash the process.
+            // Downstream state is still cleaned up by the outer `finally` block below.
+            debugLog.log(
+                "SyncEngine",
+                "upload pipeline: unexpected exception — ${e.javaClass.simpleName}: ${e.message}",
+            )
         } finally {
             throttleSyncJob?.cancel()
             throttleSyncJob = null
@@ -1012,6 +1037,15 @@ class SyncEngine @Inject constructor(
                     launch { for (entity in queue) processDownload(entity) }
                 }
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Mirror of the upload-pipeline safety net — prevents an unexpected transport error
+            // from killing the process instead of gracefully ending the download run.
+            debugLog.log(
+                "SyncEngine",
+                "download pipeline: unexpected exception — ${e.javaClass.simpleName}: ${e.message}",
+            )
         } finally {
             val snapshot = _progress.value
             val completionEvent = if (snapshot.itemsTotal > 0) {

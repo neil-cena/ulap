@@ -103,8 +103,19 @@ class BackupIndexManager @Inject constructor(
     suspend fun fetchAndMerge(token: String, chatId: String): Result<Int> = withContext(Dispatchers.IO) {
         debugLog.log("IndexManager", "fetchAndMerge: querying pinned message for chatId=$chatId")
         val safeToken = sanitizeTokenForPath(token)
-        val chatResponse = rateLimiter.withRateLimit {
-            api.getChat(safeToken, chatId)
+        // Transport failures (HttpException from non-2xx, IOException from socket errors / DNS / reset)
+        // must be captured here. `rateLimiter.withRateLimit` only catches TelegramRateLimitException;
+        // anything else would propagate into SyncEngine.runUploadPipeline (no catch) and crash the
+        // engineScope's StandaloneCoroutine — see crash report HTTP 400 on 25053RT47C.
+        val chatResponse = try {
+            rateLimiter.withRateLimit {
+                api.getChat(safeToken, chatId)
+            }
+        } catch (e: TelegramRateLimitException) {
+            throw e
+        } catch (e: Exception) {
+            debugLog.log("IndexManager", "fetchAndMerge: getChat transport error — ${e.javaClass.simpleName}: ${e.message}")
+            return@withContext Result.failure(e)
         }
         if (!chatResponse.ok || chatResponse.result == null) {
             if (chatResponse.errorCode == 429) {
@@ -448,8 +459,18 @@ class BackupIndexManager @Inject constructor(
 
     private suspend fun loadPinnedIndexEntries(token: String, chatId: String): Result<List<IndexEntry>> = withContext(Dispatchers.IO) {
         val safeToken = sanitizeTokenForPath(token)
-        val chatResponse = rateLimiter.withRateLimit {
-            api.getChat(safeToken, chatId)
+        // See fetchAndMerge for why transport failures (HttpException / IOException) must be caught
+        // here.  Callers already treat Result.failure as "pinned index unavailable" and fall back
+        // safely; an uncaught throw would crash the enclosing coroutine scope.
+        val chatResponse = try {
+            rateLimiter.withRateLimit {
+                api.getChat(safeToken, chatId)
+            }
+        } catch (e: TelegramRateLimitException) {
+            return@withContext Result.failure(e)
+        } catch (e: Exception) {
+            debugLog.log("IndexManager", "loadPinnedIndexEntries: getChat transport error — ${e.javaClass.simpleName}: ${e.message}")
+            return@withContext Result.failure(e)
         }
         if (!chatResponse.ok || chatResponse.result == null) {
             if (chatResponse.errorCode == 429) {
