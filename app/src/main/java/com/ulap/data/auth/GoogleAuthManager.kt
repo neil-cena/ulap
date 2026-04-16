@@ -4,6 +4,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -26,6 +28,7 @@ class GoogleAuthManager @Inject constructor(
 ) {
     private val _signedInState = MutableStateFlow(tokenStore.hasRefreshToken())
     val signedInState: StateFlow<Boolean> = _signedInState.asStateFlow()
+    private val refreshMutex = Mutex()
 
     fun getAccessToken(): String? = tokenStore.getAccessToken()
 
@@ -75,19 +78,22 @@ class GoogleAuthManager @Inject constructor(
     }
 
     suspend fun refreshToken(clientId: String, clientSecret: String): Boolean = withContext(Dispatchers.IO) {
-        val rt = tokenStore.getRefreshToken() ?: return@withContext false
-        val result = tokenClient.refreshToken(rt, clientId, clientSecret)
-        when (result) {
-            is TokenResult.Success -> {
-                val expiresAt = System.currentTimeMillis() + result.expiresInSeconds * 1000L
-                if (result.refreshToken != null) {
-                    tokenStore.saveTokens(result.accessToken, result.refreshToken, expiresAt)
-                } else {
-                    tokenStore.updateAccessToken(result.accessToken, expiresAt)
+        refreshMutex.withLock {
+            if (!tokenStore.isAccessTokenExpired()) return@withLock true
+            val rt = tokenStore.getRefreshToken() ?: return@withLock false
+            val result = tokenClient.refreshToken(rt, clientId, clientSecret)
+            when (result) {
+                is TokenResult.Success -> {
+                    val expiresAt = System.currentTimeMillis() + result.expiresInSeconds * 1000L
+                    if (result.refreshToken != null) {
+                        tokenStore.saveTokens(result.accessToken, result.refreshToken, expiresAt)
+                    } else {
+                        tokenStore.updateAccessToken(result.accessToken, expiresAt)
+                    }
+                    true
                 }
-                true
+                is TokenResult.Error -> false
             }
-            is TokenResult.Error -> false
         }
     }
 
@@ -97,7 +103,7 @@ class GoogleAuthManager @Inject constructor(
     }
 
     fun clearAccessToken() {
-        tokenStore.clearTokens()
+        tokenStore.expireAccessToken()
         _signedInState.value = false
     }
 

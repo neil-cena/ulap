@@ -34,6 +34,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Inject
@@ -221,6 +222,7 @@ class GooglePhotosImportManager @Inject constructor(
         item: GooglePhotosMediaItem,
         sessionId: String,
         aimd: AimdConcurrencyController? = null,
+        tokenRefresher: (suspend () -> Boolean)? = null,
     ): Result<GooglePhotosImportItemStatus> =
         withContext(Dispatchers.IO) {
             val fileName = item.filename?.takeIf { it.isNotBlank() } ?: item.id
@@ -246,9 +248,9 @@ class GooglePhotosImportManager @Inject constructor(
             val chatIdBody = chatId.toRequestBody("text/plain".toMediaType())
             when {
                 item.mimeType.startsWith("video/") ->
-                    importVideoItemWithBotRetries(item, chatIdBody, sessionId, aimd).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importVideoItemWithBotRetries(item, chatIdBody, sessionId, aimd, tokenRefresher).map { GooglePhotosImportItemStatus.UPLOADED }
                 item.mimeType.startsWith("image/") ->
-                    importImageItemWithBotRetries(item, chatIdBody, sessionId, aimd).map { GooglePhotosImportItemStatus.UPLOADED }
+                    importImageItemWithBotRetries(item, chatIdBody, sessionId, aimd, tokenRefresher).map { GooglePhotosImportItemStatus.UPLOADED }
                 else -> {
                     Log.d(TAG, "skip non-media mime=${item.mimeType} id=${item.id}")
                     Result.success(GooglePhotosImportItemStatus.SKIPPED_UNSUPPORTED)
@@ -268,6 +270,7 @@ class GooglePhotosImportManager @Inject constructor(
         items: List<GooglePhotosMediaItem>,
         sessionId: String,
         concurrency: Int = 3,
+        tokenRefresher: (suspend () -> Boolean)? = null,
         onItemComplete: suspend (item: GooglePhotosMediaItem, result: Result<GooglePhotosImportItemStatus>) -> Unit = { _, _ -> },
     ): List<BatchItemResult> = coroutineScope {
         val profile = profileBatch(items)
@@ -285,7 +288,7 @@ class GooglePhotosImportManager @Inject constructor(
                 aimd.acquirePermit()
                 try {
                     val result = try {
-                        importGooglePhotosMediaItem(item, sessionId, aimd)
+                        importGooglePhotosMediaItem(item, sessionId, aimd, tokenRefresher)
                     } catch (e: Throwable) {
                         if (e is OutOfMemoryError) {
                             Log.e(TAG, "OOM importing item=${item.id}; skipping to protect batch", e)
@@ -319,13 +322,14 @@ class GooglePhotosImportManager @Inject constructor(
         chatIdBody: RequestBody,
         sessionId: String,
         aimd: AimdConcurrencyController? = null,
+        tokenRefresher: (suspend () -> Boolean)? = null,
     ): Result<Unit> {
         var lastError: Exception? = null
         repeat(MAX_UPLOAD_BOT_ATTEMPTS) { attempt ->
             val bot = botPool.selectForUpload()
                 ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
             try {
-                val result = importImageItem(item, bot, chatIdBody, sessionId)
+                val result = importImageItem(item, bot, chatIdBody, sessionId, tokenRefresher)
                 aimd?.onSuccess()
                 return result
             } catch (e: TelegramRateLimitException) {
@@ -333,6 +337,9 @@ class GooglePhotosImportManager @Inject constructor(
                 aimd?.onRateLimit()
                 lastError = e
                 exponentialBackoff(attempt, e.retryAfterMs)
+            } catch (e: IOException) {
+                lastError = e
+                exponentialBackoff(attempt, 0L)
             }
         }
         return Result.failure(
@@ -350,6 +357,7 @@ class GooglePhotosImportManager @Inject constructor(
         bot: BotCredential,
         chatIdBody: RequestBody,
         sessionId: String,
+        tokenRefresher: (suspend () -> Boolean)? = null,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
             return Result.failure(
@@ -362,6 +370,7 @@ class GooglePhotosImportManager @Inject constructor(
         if (streamResponse.code() in listOf(401, 403)) {
             // baseUrl has expired — re-fetch a fresh one and retry exactly once
             streamResponse.errorBody()?.close()
+            tokenRefresher?.invoke()
             val freshItem = runCatching { pickerApi.getMediaItem(item.id, sessionId) }.getOrNull()
             val freshBaseUrl = freshItem?.mediaFile?.baseUrl
             if (freshBaseUrl != null) {
@@ -428,23 +437,29 @@ class GooglePhotosImportManager @Inject constructor(
         chatIdBody: RequestBody,
         sessionId: String,
         aimd: AimdConcurrencyController? = null,
+        tokenRefresher: (suspend () -> Boolean)? = null,
     ): Result<Unit> {
         var lastError: Exception? = null
         repeat(MAX_UPLOAD_BOT_ATTEMPTS) { attempt ->
             val bot = botPool.selectForUpload()
                 ?: return Result.failure(IllegalStateException("No Telegram bot available for upload"))
-            val result = importVideoItem(item, bot, chatIdBody, sessionId)
+            val result = importVideoItem(item, bot, chatIdBody, sessionId, tokenRefresher)
             if (result.isSuccess) {
                 aimd?.onSuccess()
                 return result
             }
             val err = result.exceptionOrNull()
-            if (err is TelegramRateLimitException) {
-                aimd?.onRateLimit()
-                lastError = err
-                exponentialBackoff(attempt, err.retryAfterMs)
-            } else {
-                return result
+            when {
+                err is TelegramRateLimitException -> {
+                    aimd?.onRateLimit()
+                    lastError = err
+                    exponentialBackoff(attempt, err.retryAfterMs)
+                }
+                err is IOException -> {
+                    lastError = err
+                    exponentialBackoff(attempt, 0L)
+                }
+                else -> return result
             }
         }
         return Result.failure(
@@ -457,6 +472,7 @@ class GooglePhotosImportManager @Inject constructor(
         bot: BotCredential,
         chatIdBody: RequestBody,
         sessionId: String,
+        tokenRefresher: (suspend () -> Boolean)? = null,
     ): Result<Unit> {
         if (item.baseUrl.isNullOrBlank()) {
             return Result.failure(
@@ -476,6 +492,7 @@ class GooglePhotosImportManager @Inject constructor(
         var response = pickerApi.streamMedia(videoUrl)
         if (response.code() in listOf(401, 403)) {
             response.errorBody()?.close()
+            tokenRefresher?.invoke()
             val freshItem = runCatching { pickerApi.getMediaItem(item.id, sessionId) }.getOrNull()
             val freshBaseUrl = freshItem?.mediaFile?.baseUrl
             if (freshBaseUrl != null) {

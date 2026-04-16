@@ -95,11 +95,11 @@ class GooglePhotosImportWorkerProgressBrt {
         // ── importBatch mock: calls onItemComplete once per item, sequentially ───────────────
         val importManager = mock<GooglePhotosImportManager>()
         whenever(importManager.recommendedConcurrency()).thenReturn(3)
-        whenever(importManager.importBatch(any(), any(), any(), any()))
+        whenever(importManager.importBatch(any(), any(), any(), anyOrNull(), any()))
             .doSuspendableAnswer { inv ->
                 val batchItems = inv.getArgument<List<GooglePhotosMediaItem>>(0)
                 @Suppress("UNCHECKED_CAST")
-                val onItemComplete = inv.getArgument(3)
+                val onItemComplete = inv.getArgument(4)
                     as (suspend (GooglePhotosMediaItem, kotlin.Result<GooglePhotosImportItemStatus>) -> Unit)
                 batchItems.map { item ->
                     val result = kotlin.Result.success(GooglePhotosImportItemStatus.UPLOADED)

@@ -39,7 +39,7 @@ class OAuthTokenStore(private val prefs: SharedPreferences) {
     fun isAccessTokenExpired(): Boolean {
         val expiresAt = prefs.getLong(KEY_EXPIRES_AT, 0L)
         if (expiresAt == 0L) return true
-        return System.currentTimeMillis() >= expiresAt
+        return System.currentTimeMillis() >= expiresAt - 300_000L
     }
 
     fun clearTokens() {
@@ -47,6 +47,12 @@ class OAuthTokenStore(private val prefs: SharedPreferences) {
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_EXPIRES_AT)
+            .apply()
+    }
+
+    fun expireAccessToken() {
+        prefs.edit()
+            .putLong(KEY_EXPIRES_AT, 0L)
             .apply()
     }
 }

@@ -91,6 +91,10 @@ class GooglePhotosImportWorker @AssistedInject constructor(
         // Layer C: sweep orphaned temp files from a prior crashed run before starting.
         cleanupImportTempDir()
 
+        val tokenRefresher: suspend () -> Boolean = {
+            googleAuthManager.refreshToken(clientId!!, clientSecret!!)
+        }
+
         var nextPageToken: String? = null
         var imported = 0
         var processed = 0
@@ -101,6 +105,12 @@ class GooglePhotosImportWorker @AssistedInject constructor(
         try {
             do {
                 if (isStopped) break
+                if (googleAuthManager.getAccessToken() == null) {
+                    if (!googleAuthManager.refreshToken(clientId!!, clientSecret!!)) {
+                        debugLog.log(TAG, "token refresh failed mid-batch — aborting import")
+                        return Result.failure()
+                    }
+                }
                 val response = pickerApi.listMediaItems(
                     sessionId = sessionId,
                     pageSize = 100,
@@ -112,6 +122,7 @@ class GooglePhotosImportWorker @AssistedInject constructor(
                 importManager.importBatch(
                     items = googlePhotosItems,
                     sessionId = sessionId,
+                    tokenRefresher = tokenRefresher,
                     onItemComplete = { item, result ->
                         result.fold(
                             onSuccess = { status ->
