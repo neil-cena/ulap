@@ -45,6 +45,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.graphics.Color
@@ -406,6 +407,7 @@ fun SettingsScreen(
         Spacer(Modifier.height(16.dp))
         SectionTitle("About")
         Card(modifier = Modifier.fillMaxWidth()) {
+            val uriHandler = LocalUriHandler.current
             Column(modifier = Modifier.padding(16.dp)) {
                 SettingRow("Version", BuildConfig.VERSION_NAME)
                 HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -414,6 +416,23 @@ fun SettingsScreen(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+                Text(
+                    "Community",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Report bugs, get help, or request new features in the Ulap Telegram group.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { uriHandler.openUri(SupportConstants.SUPPORT_GROUP_URL) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Join the Ulap community") }
             }
         }
 
