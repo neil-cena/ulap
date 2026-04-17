@@ -356,7 +356,8 @@ class SyncEngine @Inject constructor(
             // PENDING and FAILED items keep their progress for resume on the next attempt.
             mediaItemDao.clearOrphanedChunkProgress()
 
-            backupIndexManager.fetchAndMerge(token, chatId)
+            backupIndexManager.fetchAndMerge(token, chatId,
+                fallbackFileId = credentialRepository.getLastIndexFileId())
 
             // scanAndSync already marked non-enabled-bucket items as EXCLUDED,
             // so getPendingOrFailed() only returns items in currently enabled buckets.

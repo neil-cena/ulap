@@ -100,7 +100,7 @@ class BackupIndexManager @Inject constructor(
     }
 
     /** Fetches index from the chat's pinned message (works across all devices with the same credentials). */
-    suspend fun fetchAndMerge(token: String, chatId: String): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun fetchAndMerge(token: String, chatId: String, fallbackFileId: String? = null): Result<Int> = withContext(Dispatchers.IO) {
         debugLog.log("IndexManager", "fetchAndMerge: querying pinned message for chatId=$chatId")
         val safeToken = sanitizeTokenForPath(token)
         // Transport failures (HttpException from non-2xx, IOException from socket errors / DNS / reset)
@@ -127,6 +127,10 @@ class BackupIndexManager @Inject constructor(
         }
         val pinnedMessage = chatResponse.result.pinnedMessage
         if (pinnedMessage?.document == null || pinnedMessage.caption != INDEX_CAPTION) {
+            if (fallbackFileId != null) {
+                debugLog.log("IndexManager", "fetchAndMerge: no valid pinned index — using fallback fileId=$fallbackFileId")
+                return@withContext fetchAndMergeFromFileId(token, fallbackFileId)
+            }
             debugLog.log("IndexManager", "fetchAndMerge: no valid pinned index found")
             return@withContext Result.success(0)
         }

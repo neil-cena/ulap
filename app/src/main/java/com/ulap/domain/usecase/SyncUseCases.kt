@@ -28,7 +28,11 @@ class FetchIndexFromPinnedMessageUseCase @Inject constructor(
     suspend operator fun invoke(): Result<Int> {
         val token = credentialRepository.getBotToken() ?: return Result.failure(Exception("No bot token"))
         val chatId = credentialRepository.getChatId() ?: return Result.failure(Exception("No chat ID"))
-        return backupIndexManager.fetchAndMerge(token, chatId)
+        return backupIndexManager.fetchAndMerge(
+            token = token,
+            chatId = chatId,
+            fallbackFileId = credentialRepository.getLastIndexFileId(),
+        )
     }
 }
 
