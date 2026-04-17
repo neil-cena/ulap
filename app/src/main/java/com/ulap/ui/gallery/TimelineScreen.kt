@@ -36,6 +36,7 @@ import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.ViewModule
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.TopAppBar
@@ -94,6 +95,7 @@ fun TimelineScreen(
     val viewMode by viewModel.viewMode.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val downloadingIds by viewModel.downloadingIds.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
@@ -329,6 +331,7 @@ fun TimelineScreen(
                                             item = item,
                                             onClick = { onItemClick(item.id) },
                                             onLongClick = { menuItem = item },
+                                            isDownloading = item.id in downloadingIds,
                                         )
                                     }
                                 }
@@ -451,6 +454,7 @@ fun MediaThumbnail(
     item: MediaItem,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
+    isDownloading: Boolean = false,
 ) {
     Box(
         modifier = Modifier
@@ -526,6 +530,21 @@ fun MediaThumbnail(
                 .align(Alignment.TopEnd)
                 .padding(4.dp),
         )
+        // Download-in-progress overlay
+        if (isDownloading) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(Color(0x88000000)),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(32.dp),
+                    color = Color.White,
+                    strokeWidth = 3.dp,
+                )
+            }
+        }
     }
 }
 

@@ -56,6 +56,7 @@ fun MediaTypeScreen(
     var menuItem by remember { mutableStateOf<MediaItem?>(null) }
     var infoItem by remember { mutableStateOf<MediaItem?>(null) }
     val removeConfirm by viewModel.removeFromDeviceConfirmation.collectAsState()
+    val downloadingIds by viewModel.downloadingIds.collectAsState()
 
     val deleteFromDeviceLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult(),
@@ -146,6 +147,7 @@ fun MediaTypeScreen(
                                 item = item,
                                 onClick = { onItemClick(item.id) },
                                 onLongClick = { menuItem = item },
+                                isDownloading = item.id in downloadingIds,
                             )
                         }
                     }

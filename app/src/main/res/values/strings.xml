@@ -132,6 +132,7 @@
     <string name="gallery_action_share">Share</string>
     <string name="gallery_action_remove_device">Remove from device</string>
     <string name="gallery_action_download">Download</string>
+    <string name="gallery_download_started">Downloading…</string>
     <string name="gallery_download_saved">Saved to Pictures / Ulap Restore</string>
     <string name="gallery_download_failed">Download failed</string>
     <string name="gallery_share_unavailable">Download this item first, or it can’t be shared safely.</string>

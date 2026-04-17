@@ -211,18 +211,27 @@ class TimelineViewModel @Inject constructor(
         }
     }
 
+    private val _downloadingIds = MutableStateFlow<Set<String>>(emptySet())
+    val downloadingIds: StateFlow<Set<String>> = _downloadingIds.asStateFlow()
+
     fun downloadFromGallery(item: MediaItem) {
         if (item.contentUri.isNotBlank()) return
         if (item.telegramFileId.isNullOrBlank()) return
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { downloadCloudItem(item.id) }
-            if (result.isSuccess) {
-                _snackbarMessages.emit(context.getString(R.string.gallery_download_saved))
-            } else {
-                _snackbarMessages.emit(
-                    result.exceptionOrNull()?.message
-                        ?: context.getString(R.string.gallery_download_failed),
-                )
+            _downloadingIds.update { it + item.id }
+            _snackbarMessages.emit(context.getString(R.string.gallery_download_started))
+            try {
+                val result = downloadCloudItem(item.id)
+                if (result.isSuccess) {
+                    _snackbarMessages.emit(context.getString(R.string.gallery_download_saved))
+                } else {
+                    _snackbarMessages.emit(
+                        result.exceptionOrNull()?.message
+                            ?: context.getString(R.string.gallery_download_failed),
+                    )
+                }
+            } finally {
+                _downloadingIds.update { it - item.id }
             }
         }
     }
