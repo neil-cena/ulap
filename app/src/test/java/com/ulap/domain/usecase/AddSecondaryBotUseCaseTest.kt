@@ -171,6 +171,9 @@ class AddSecondaryBotUseCaseTest {
 
         val result = buildUseCase()("new:token", "Private Bot")
 
-        assertTrue("Expected Success, got $result", result is VerifyResult.Success)
+        assertTrue(
+            "Private chats must be rejected — must use a group. Got: $result",
+            result is VerifyResult.Error.PrivateChatNotAllowed,
+        )
     }
 }

@@ -144,7 +144,7 @@
 
     <!-- BotSetup screen -->
     <string name="bot_setup_title">Connect to Telegram</string>
-    <string name="bot_setup_subtitle">Your photos will be stored in a private Telegram chat — only you can see them. Follow these steps to set it up.</string>
+    <string name="bot_setup_subtitle">Your photos will be stored in a private Telegram group — only you and your bots can see them. Follow these steps to set it up.</string>
     <string name="bot_setup_step1_title">Open BotFather</string>
     <string name="bot_setup_step1_body">BotFather is Telegram\'s official helper for creating bots. Your bot will be the one that stores your backup.</string>
     <string name="bot_setup_step1_cta">Open @BotFather in Telegram</string>
@@ -152,14 +152,11 @@
     <string name="bot_setup_step2_body1">In the BotFather chat, tap Start, then send:</string>
     <string name="bot_setup_step2_command">/newbot</string>
     <string name="bot_setup_step2_body2">Follow the prompts — pick any name and username you like. BotFather will give you a token that looks like a long string of numbers and letters. Copy it.</string>
-    <string name="bot_setup_step3_title">Pick a chat for your backup</string>
-    <string name="bot_setup_step3_intro">Choose one of these options — both work:</string>
-    <string name="bot_setup_option_a_label">Option A — Private message (easiest)</string>
-    <string name="bot_setup_option_a_body">Open a chat with your bot in Telegram and tap Start. Your Chat ID is just your own Telegram user ID.</string>
-    <string name="bot_setup_option_b_label">Option B — Private group (if you want backups in a separate place)</string>
-    <string name="bot_setup_option_b_body">Create a new Telegram group, add your bot, and make it an Admin.</string>
+    <string name="bot_setup_step3_title">Create a group for your backup</string>
+    <string name="bot_setup_step3_body">Create a new private Telegram group, add your bot to it, then promote the bot to Admin. Using a group lets you add extra bots later to spread the upload load and reduce rate-limit risk.</string>
     <string name="bot_setup_find_chat_id">How do I find my Chat ID?</string>
-    <string name="bot_setup_find_chat_id_detail">For Option A (private message with the bot):\n1. Open Telegram and search for @userinfobot.\n2. Tap Start — it will reply with your user ID.\n3. That number is your Chat ID.\n\nFor Option B (group chat):\n1. Add @userinfobot to your group.\n2. Send any message in the group.\n3. @userinfobot replies with the Chat ID — it starts with a minus sign, like -1001234567890.</string>
+    <string name="bot_setup_find_chat_id_detail">1. Add @RawDataBot (or @userinfobot) to your group.\n2. Send any message in the group.\n3. The bot replies with your group\'s Chat ID — it starts with a minus sign, like -1001234567890.\n4. Copy that number and paste it into the Chat ID field below.</string>
+    <string name="bot_setup_error_private_chat">Private chats with the bot are not supported. Please create a Telegram group, add your bot as admin, and use that group\'s chat ID instead.</string>
     <string name="bot_setup_token_label">Bot Token (from BotFather)</string>
     <string name="bot_setup_token_hide">Hide token</string>
     <string name="bot_setup_token_show">Show token</string>

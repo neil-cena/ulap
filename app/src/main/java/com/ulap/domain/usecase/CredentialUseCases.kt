@@ -15,6 +15,7 @@ sealed class VerifyResult {
         data class BotNotAdmin(val detail: String) : Error(detail)
         data class BotKicked(val detail: String) : Error(detail)
         data class Network(val detail: String) : Error(detail)
+        data class PrivateChatNotAllowed(val detail: String) : Error(detail)
         data class Unknown(val detail: String) : Error(detail)
     }
 }
@@ -46,7 +47,13 @@ class VerifyBotCredentialsUseCase @Inject constructor(
                 val effectiveChatId = chatAccess.chatId
 
                 val chatType = chatResponse.type
-                if (chatType == null || chatType == "private") {
+                if (chatType == "private") {
+                    return VerifyResult.Error.PrivateChatNotAllowed(
+                        "Private chats with the bot are not supported. Create a group, add your bot as admin, and use the group's chat ID."
+                    )
+                }
+                if (chatType == null) {
+                    // Unknown type — skip admin check, allow
                     return VerifyResult.Success(botName = botName, correctedChatId = if (effectiveChatId != chatId) effectiveChatId else null)
                 }
 

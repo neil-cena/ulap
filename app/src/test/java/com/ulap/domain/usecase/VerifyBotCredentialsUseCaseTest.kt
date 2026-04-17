@@ -124,17 +124,19 @@ class VerifyBotCredentialsUseCaseTest {
         assertEquals("-100123", (result as VerifyResult.Success).correctedChatId)
     }
 
-    // ── 6. getChat ok, type=private → Success, getChatMember never called ─────
+    // ── 6. getChat ok, type=private → PrivateChatNotAllowed (group required) ──
 
     @Test
-    fun invoke_whenChatTypeIsPrivate_succeedsWithoutCallingGetChatMember() = runTest {
+    fun invoke_whenChatTypeIsPrivate_returnsPrivateChatNotAllowed() = runTest {
         whenever(api.getMe(any())).thenReturn(okMe())
         whenever(api.getChat(any(), any())).thenReturn(okChat(type = "private"))
 
-        val result = buildUseCase()("123:token", "-100999")
+        val result = buildUseCase()("123:token", "123456789")
 
-        assertTrue("Expected Success, got $result", result is VerifyResult.Success)
-        assertNull((result as VerifyResult.Success).correctedChatId)
+        assertTrue(
+            "Private chats must be rejected — users must use a group. Got: $result",
+            result is VerifyResult.Error.PrivateChatNotAllowed,
+        )
         verify(api, never()).getChatMember(any(), any(), any())
     }
 

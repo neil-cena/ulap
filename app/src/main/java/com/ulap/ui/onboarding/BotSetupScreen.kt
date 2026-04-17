@@ -138,27 +138,7 @@ fun BotSetupScreen(
         // Step 3
         StepCard(number = "3", title = stringResource(R.string.bot_setup_step3_title)) {
             Text(
-                stringResource(R.string.bot_setup_step3_intro),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.bot_setup_option_a_label),
-                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-            )
-            Text(
-                stringResource(R.string.bot_setup_option_a_body),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                stringResource(R.string.bot_setup_option_b_label),
-                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold),
-            )
-            Text(
-                stringResource(R.string.bot_setup_option_b_body),
+                stringResource(R.string.bot_setup_step3_body),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
