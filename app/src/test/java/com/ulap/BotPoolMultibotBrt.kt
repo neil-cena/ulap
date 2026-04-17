@@ -25,6 +25,8 @@ private class FakeCredentialRepository(
     override fun hasCredentials(): Boolean = primaryToken != null
     override fun getLastIndexFileId(): String? = null
     override fun setLastIndexFileId(fileId: String?) {}
+    override fun getLastIndexMessageId(): Long? = null
+    override fun setLastIndexMessageId(messageId: Long?) {}
     override fun getAdditionalBotTokens(): List<BotCredential> = additionals
     override fun saveAdditionalBotTokens(bots: List<BotCredential>) {}
     override fun clearAdditionalBots() {}

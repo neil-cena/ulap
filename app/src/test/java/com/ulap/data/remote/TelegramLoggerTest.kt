@@ -22,6 +22,8 @@ class TelegramLoggerTest {
         override fun hasCredentials(): Boolean = token != null
         override fun getLastIndexFileId(): String? = null
         override fun setLastIndexFileId(fileId: String?) {}
+        override fun getLastIndexMessageId(): Long? = null
+        override fun setLastIndexMessageId(messageId: Long?) {}
         override fun getAdditionalBotTokens(): List<BotCredential> = emptyList()
         override fun saveAdditionalBotTokens(bots: List<BotCredential>) {}
         override fun clearAdditionalBots() {}

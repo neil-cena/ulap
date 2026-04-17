@@ -9,9 +9,13 @@ interface CredentialRepository {
     fun clearCredentials()
     fun hasCredentials(): Boolean
 
-    /** Last uploaded backup index document file_id (for "Sync from other device"). */
+    /** Last uploaded backup index document file_id (for "Sync from other device" fallback). */
     fun getLastIndexFileId(): String?
     fun setLastIndexFileId(fileId: String?)
+
+    /** Telegram message_id of the last uploaded index document (used to re-pin a stale pin). */
+    fun getLastIndexMessageId(): Long?
+    fun setLastIndexMessageId(messageId: Long?)
 
     /** Returns additional (non-primary) bot credentials, ordered by their assigned index. */
     fun getAdditionalBotTokens(): List<BotCredential>

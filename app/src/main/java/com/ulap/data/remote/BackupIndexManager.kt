@@ -13,6 +13,7 @@ import com.ulap.data.local.entity.MediaType
 import com.ulap.debug.DebugLogBuffer
 import com.ulap.data.remote.CHUNKED_FILE_ID_PREFIX
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -51,6 +52,9 @@ data class IndexManifest(
     @SerializedName("items") val items: List<IndexEntry>,
 )
 
+/** Carries both the Telegram file_id and message_id of a successfully uploaded index document. */
+data class IndexUploadResult(val fileId: String?, val messageId: Long?)
+
 @Singleton
 class BackupIndexManager @Inject constructor(
     private val mediaItemDao: MediaItemDao,
@@ -64,11 +68,11 @@ class BackupIndexManager @Inject constructor(
     private val gson = Gson()
 
     /** Uploads the backup index to the chat. Returns the document file_id on success (for "Sync from other device"). */
-    suspend fun exportAndUpload(token: String, chatId: String): Result<String?> = withContext(Dispatchers.IO) {
+    suspend fun exportAndUpload(token: String, chatId: String): Result<IndexUploadResult?> = withContext(Dispatchers.IO) {
         val allEntities = mediaItemDao.getAllIndexedItems()
         val localItems = buildList { for (e in allEntities) add(e.toIndexEntry()) }
         var seedItems = localItems
-        var lastFileId: String? = null
+        var lastUploadResult: IndexUploadResult? = null
 
         repeat(MAX_EXPORT_RECONCILIATION_ATTEMPTS) {
             val mergedItems = mergeWithPinnedIndex(token, chatId, seedItems)
@@ -80,27 +84,32 @@ class BackupIndexManager @Inject constructor(
                     uploadResult.exceptionOrNull() ?: Exception("Index upload failed")
                 )
             }
-            lastFileId = uploadResult.getOrNull()
+            lastUploadResult = uploadResult.getOrNull()
 
             val latestPinnedItems = loadPinnedIndexEntries(token, chatId).getOrElse {
                 // If we cannot read the pin now, keep previous behavior and do not fail export.
-                return@withContext Result.success(lastFileId)
+                return@withContext Result.success(lastUploadResult)
             }
 
             // If pinned index already contains everything we exported, reconciliation is complete.
             if (hasAllFileIds(latestPinnedItems, mergedItems)) {
-                return@withContext Result.success(lastFileId)
+                return@withContext Result.success(lastUploadResult)
             }
 
             // Another device likely pinned concurrently; merge and retry once.
             seedItems = mergeEntriesByFileId(latestPinnedItems, mergedItems)
         }
 
-        Result.success(lastFileId)
+        Result.success(lastUploadResult)
     }
 
     /** Fetches index from the chat's pinned message (works across all devices with the same credentials). */
-    suspend fun fetchAndMerge(token: String, chatId: String, fallbackFileId: String? = null): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun fetchAndMerge(
+        token: String,
+        chatId: String,
+        fallbackFileId: String? = null,
+        fallbackMessageId: Long? = null,
+    ): Result<Int> = withContext(Dispatchers.IO) {
         debugLog.log("IndexManager", "fetchAndMerge: querying pinned message for chatId=$chatId")
         val safeToken = sanitizeTokenForPath(token)
         // Transport failures (HttpException from non-2xx, IOException from socket errors / DNS / reset)
@@ -135,6 +144,21 @@ class BackupIndexManager @Inject constructor(
             return@withContext Result.success(0)
         }
         val fileId = pinnedMessage.document.fileId
+        // Stale-pin guard: if the caller supplied a newer fallback that differs from the pin,
+        // pinChatMessage likely failed silently after the last export.  Use the fallback index
+        // and attempt to re-pin now so that future syncs on all devices read the correct index.
+        if (fallbackFileId != null && fileId != fallbackFileId) {
+            debugLog.log("IndexManager", "fetchAndMerge: stale pin detected (pin=$fileId, latest=$fallbackFileId) — using fallback")
+            if (fallbackMessageId != null) {
+                try {
+                    api.pinChatMessage(sanitizeTokenForPath(token), chatId, fallbackMessageId)
+                    debugLog.log("IndexManager", "fetchAndMerge: re-pinned msgId=$fallbackMessageId")
+                } catch (e: Exception) {
+                    debugLog.log("IndexManager", "fetchAndMerge: re-pin failed — ${e.message}")
+                }
+            }
+            return@withContext fetchAndMergeFromFileId(token, fallbackFileId)
+        }
         debugLog.log("IndexManager", "fetchAndMerge: found index document fileId=$fileId")
         fetchAndMergeFromFileId(token, fileId)
     }
@@ -518,7 +542,7 @@ class BackupIndexManager @Inject constructor(
         token: String,
         chatId: String,
         items: List<IndexEntry>,
-    ): Result<String?> = withContext(Dispatchers.IO) {
+    ): Result<IndexUploadResult?> = withContext(Dispatchers.IO) {
         val manifest = IndexManifest(items = items)
         val json = gson.toJson(manifest)
         val bytes = json.toByteArray(Charsets.UTF_8)
@@ -549,13 +573,24 @@ class BackupIndexManager @Inject constructor(
             val fileId = message?.document?.fileId
             val messageId = message?.messageId
             if (messageId != null) {
-                try {
-                    api.pinChatMessage(safeToken, chatId, messageId)
-                } catch (_: Exception) {
-                    // Pin is best-effort; bot may lack admin rights.
+                var pinned = false
+                for (attempt in 1..3) {
+                    try {
+                        api.pinChatMessage(safeToken, chatId, messageId)
+                        pinned = true
+                        break
+                    } catch (e: TelegramRateLimitException) {
+                        throw e
+                    } catch (e: Exception) {
+                        debugLog.log("IndexManager", "uploadAndPinIndex: pin attempt $attempt failed — ${e.message}")
+                        if (attempt < 3) delay(attempt * 2_000L)
+                    }
+                }
+                if (!pinned) {
+                    debugLog.log("IndexManager", "uploadAndPinIndex: all pin attempts failed — index uploaded but not pinned")
                 }
             }
-            Result.success(fileId)
+            Result.success(IndexUploadResult(fileId, messageId))
         } catch (e: Exception) {
             Result.failure(e)
         }

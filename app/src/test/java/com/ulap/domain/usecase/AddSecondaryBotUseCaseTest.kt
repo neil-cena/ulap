@@ -40,6 +40,8 @@ class AddSecondaryBotUseCaseTest {
             override fun hasCredentials() = true
             override fun getLastIndexFileId() = null
             override fun setLastIndexFileId(fileId: String?) {}
+            override fun getLastIndexMessageId(): Long? = null
+            override fun setLastIndexMessageId(messageId: Long?) {}
             override fun getAdditionalBotTokens(): List<BotCredential> = additionals.toList()
             override fun saveAdditionalBotTokens(bots: List<BotCredential>) { additionals.clear(); additionals.addAll(bots) }
             override fun clearAdditionalBots() { additionals.clear() }

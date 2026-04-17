@@ -11,6 +11,7 @@ import javax.inject.Singleton
 private const val KEY_BOT_TOKEN = "bot_token"
 private const val KEY_CHAT_ID = "chat_id"
 private const val KEY_LAST_INDEX_FILE_ID = "last_index_file_id"
+private const val KEY_LAST_INDEX_MESSAGE_ID = "last_index_message_id"
 private const val KEY_ADDITIONAL_BOTS = "additional_bots"
 
 /** Wire format stored under [KEY_ADDITIONAL_BOTS]. Index is persisted to survive bot removal
@@ -47,6 +48,19 @@ class CredentialRepositoryImpl @Inject constructor(
 
     override fun setLastIndexFileId(fileId: String?) {
         encryptedPrefs.edit().putString(KEY_LAST_INDEX_FILE_ID, fileId?.takeIf { it.isNotBlank() }).apply()
+    }
+
+    override fun getLastIndexMessageId(): Long? {
+        val stored = encryptedPrefs.getLong(KEY_LAST_INDEX_MESSAGE_ID, -1L)
+        return if (stored == -1L) null else stored
+    }
+
+    override fun setLastIndexMessageId(messageId: Long?) {
+        if (messageId == null) {
+            encryptedPrefs.edit().remove(KEY_LAST_INDEX_MESSAGE_ID).apply()
+        } else {
+            encryptedPrefs.edit().putLong(KEY_LAST_INDEX_MESSAGE_ID, messageId).apply()
+        }
     }
 
     override fun getAdditionalBotTokens(): List<BotCredential> {

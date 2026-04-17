@@ -154,6 +154,8 @@ class PromoteBotUseCaseTest {
                 override fun hasCredentials() = false
                 override fun getLastIndexFileId() = null
                 override fun setLastIndexFileId(fileId: String?) {}
+                override fun getLastIndexMessageId(): Long? = null
+                override fun setLastIndexMessageId(messageId: Long?) {}
                 override fun getAdditionalBotTokens() = emptyList<BotCredential>()
                 override fun saveAdditionalBotTokens(bots: List<BotCredential>) {}
                 override fun clearAdditionalBots() {}
@@ -181,6 +183,8 @@ class PromoteBotUseCaseTest {
         override fun hasCredentials() = primaryToken != null
         override fun getLastIndexFileId() = null
         override fun setLastIndexFileId(fileId: String?) {}
+        override fun getLastIndexMessageId(): Long? = null
+        override fun setLastIndexMessageId(messageId: Long?) {}
         override fun getAdditionalBotTokens(): List<BotCredential> = additionals.toList()
         override fun saveAdditionalBotTokens(bots: List<BotCredential>) { additionals = bots.toMutableList() }
         override fun clearAdditionalBots() { additionals.clear() }

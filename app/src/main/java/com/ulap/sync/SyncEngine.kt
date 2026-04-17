@@ -357,7 +357,8 @@ class SyncEngine @Inject constructor(
             mediaItemDao.clearOrphanedChunkProgress()
 
             backupIndexManager.fetchAndMerge(token, chatId,
-                fallbackFileId = credentialRepository.getLastIndexFileId())
+                fallbackFileId = credentialRepository.getLastIndexFileId(),
+                fallbackMessageId = credentialRepository.getLastIndexMessageId())
 
             // scanAndSync already marked non-enabled-bucket items as EXCLUDED,
             // so getPendingOrFailed() only returns items in currently enabled buckets.
@@ -413,9 +414,10 @@ class SyncEngine @Inject constructor(
                 debugLog.log("SyncEngine", "upload pipeline: exporting index")
                 withContext(NonCancellable) {
                     val result = backupIndexManager.exportAndUpload(token, chatId)
-                    result.getOrNull()?.let { fileId ->
-                        credentialRepository.setLastIndexFileId(fileId)
-                        debugLog.log("SyncEngine", "upload pipeline: index exported, fileId=$fileId")
+                    result.getOrNull()?.let { uploadResult ->
+                        uploadResult.fileId?.let { credentialRepository.setLastIndexFileId(it) }
+                        uploadResult.messageId?.let { credentialRepository.setLastIndexMessageId(it) }
+                        debugLog.log("SyncEngine", "upload pipeline: index exported, fileId=${uploadResult.fileId}, msgId=${uploadResult.messageId}")
                     }
                     if (result.isFailure) {
                         debugLog.log("SyncEngine", "upload pipeline: index export failed — ${result.exceptionOrNull()?.message}")

@@ -32,6 +32,7 @@ class FetchIndexFromPinnedMessageUseCase @Inject constructor(
             token = token,
             chatId = chatId,
             fallbackFileId = credentialRepository.getLastIndexFileId(),
+            fallbackMessageId = credentialRepository.getLastIndexMessageId(),
         )
     }
 }

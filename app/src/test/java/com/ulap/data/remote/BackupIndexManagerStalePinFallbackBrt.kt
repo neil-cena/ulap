@@ -208,32 +208,34 @@ class BackupIndexManagerStalePinFallbackBrt {
         verifyNoInteractions(downloader)
     }
 
-    // ── Test 3: valid pinned message → use pinned fileId, ignore fallback ────
+    // ── Test 3: pin file_id MATCHES fallbackFileId (pin is up-to-date) ────────
     //
-    // The downloader stub writes a manifest ONLY for pinnedFileId.
-    // If the implementation incorrectly called fallbackFileId, download returns Error
-    // and the result would be Result.failure — proving the wrong path was taken.
+    // When the pinned message is valid AND its file_id equals fallbackFileId, there
+    // is no stale-pin situation.  fetchAndMerge must merge from that file_id and
+    // must NOT call pinChatMessage (no unnecessary re-pin overhead).
+    //
+    // Downloader succeeds only for the shared fileId; any deviation would produce
+    // DownloadResult.Error → Result.failure, proving the correct path was taken.
 
     @Test
-    fun fetchAndMerge_whenPinnedMessageValid_usesPinnedFileId_ignoresFallback() = runTest {
-        val pinnedFileId = "PINNED_FILE_ID_ABC"
-        val fallbackFileId = "FALLBACK_FILE_ID_XYZ"
+    fun fetchAndMerge_whenPinnedMessageMatchesFallback_mergesFromPin_noRepin() = runTest {
+        val currentFileId = "CURRENT_FILE_ID_BOTH"
         val api: TelegramBotApi = mock()
-        whenever(api.getChat(any(), any())).doSuspendableAnswer { chatWithPin(pinnedFileId) }
-        stubDownloaderForFileId(pinnedFileId) // fallbackFileId → DownloadResult.Error
+        whenever(api.getChat(any(), any())).doSuspendableAnswer { chatWithPin(currentFileId) }
+        stubDownloaderForFileId(currentFileId) // any other fileId → DownloadResult.Error
 
         val manager = buildManager(api)
         val result = manager.fetchAndMerge(
             token = "123:fake",
             chatId = "-100",
-            fallbackFileId = fallbackFileId,
+            fallbackFileId = currentFileId, // same as pin
+            fallbackMessageId = 99L,
         )
 
         assertTrue(
-            "fetchAndMerge must succeed using the pinned file_id; " +
-                "fallback would return DownloadResult.Error and produce Result.failure. Got: $result",
+            "fetchAndMerge must succeed when pin matches fallback. Got: $result",
             result.isSuccess,
         )
-        assertEquals("must merge the 1 entry from the pinned index", 1, result.getOrThrow())
+        assertEquals("must merge the 1 entry", 1, result.getOrThrow())
     }
 }

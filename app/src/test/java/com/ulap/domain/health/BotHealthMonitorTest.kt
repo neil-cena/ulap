@@ -123,6 +123,8 @@ class BotHealthMonitorTest {
         override fun hasCredentials() = bots.isNotEmpty()
         override fun getLastIndexFileId() = null
         override fun setLastIndexFileId(fileId: String?) {}
+        override fun getLastIndexMessageId(): Long? = null
+        override fun setLastIndexMessageId(messageId: Long?) {}
         override fun getAdditionalBotTokens() = bots.drop(1)
         override fun saveAdditionalBotTokens(bots: List<BotCredential>) {}
         override fun clearAdditionalBots() {}
