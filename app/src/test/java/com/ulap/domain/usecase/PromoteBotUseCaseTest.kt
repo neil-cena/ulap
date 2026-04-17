@@ -144,6 +144,7 @@ class PromoteBotUseCaseTest {
                 override suspend fun getUpdates(token: String, offset: Int?, limit: Int?) = throw NotImplementedError()
                 override suspend fun getChat(token: String, chatId: String) = throw NotImplementedError()
                 override suspend fun pinChatMessage(token: String, chatId: String, messageId: Long, disableNotification: Boolean) = throw NotImplementedError()
+                override suspend fun getChatMember(token: String, chatId: String, userId: Long) = throw NotImplementedError()
             },
             BotPool(object : CredentialRepository {
                 override fun getBotToken() = null

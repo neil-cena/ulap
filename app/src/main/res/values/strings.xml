@@ -168,6 +168,14 @@
     <string name="bot_setup_verify_continue">Verify &amp; Continue</string>
     <string name="bot_setup_step_label">Step %1$s</string>
 
+    <!-- Verification error messages shown below the Verify button -->
+    <string name="bot_setup_error_invalid_token">This bot token is invalid. Copy the whole line BotFather sent, including the colon (:).</string>
+    <string name="bot_setup_error_chat_not_found">This bot can\'t see that chat. Make sure the bot is a member and check the id with @RawDataBot. Supergroups and channels start with -100.</string>
+    <string name="bot_setup_error_bot_not_admin">The bot must be an admin. Open the chat → tap the title → Members → find your bot → Promote to Admin. This also converts a basic group to a supergroup and gives you the correct chat_id.</string>
+    <string name="bot_setup_error_bot_kicked">The bot has been removed from this chat. Re-add it and try again.</string>
+    <string name="bot_setup_error_network">Couldn\'t reach Telegram. Check your connection and try again.</string>
+    <string name="bot_setup_info_chat_id_migrated">Your chat was upgraded to a supergroup. The chat ID has been updated automatically.</string>
+
     <!-- Folder picker screen -->
     <string name="folder_picker_title">Choose Folders</string>
     <string name="folder_picker_subtitle">Select which folders to back up. You can change this later in Settings.</string>

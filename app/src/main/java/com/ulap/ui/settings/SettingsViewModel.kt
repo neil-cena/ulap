@@ -202,9 +202,10 @@ class SettingsViewModel @Inject constructor(
 
     fun verifyConnection() {
         val token = getCredentials.getToken() ?: return
+        val chatId = getCredentials.getChatId() ?: return
         viewModelScope.launch {
             _uiState.update { it.copy(isVerifying = true, verifyResult = null) }
-            val result = verifyBot(token)
+            val result = verifyBot(token, chatId)
             _uiState.update {
                 it.copy(
                     isVerifying = false,

@@ -122,4 +122,11 @@ interface TelegramBotApi {
         @Query("message_id") messageId: Long,
         @Query("disable_notification") disableNotification: Boolean = true,
     ): TelegramResponse<Boolean>
+
+    @GET("bot{token}/getChatMember")
+    suspend fun getChatMember(
+        @Path(value = "token", encoded = true) token: String,
+        @Query("chat_id") chatId: String,
+        @Query("user_id") userId: Long,
+    ): TelegramResponse<TelegramChatMember>
 }

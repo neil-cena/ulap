@@ -51,10 +51,14 @@ class BotSetupViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _uiState.update { it.copy(isVerifying = true, verifyError = null) }
-            val result = verifyBotCredentials(state.token)
+            val result = verifyBotCredentials(state.token, state.chatId)
             when (result) {
                 is VerifyResult.Success -> {
-                    saveCredentials(state.token, state.chatId)
+                    val effectiveChatId = result.correctedChatId ?: state.chatId
+                    if (result.correctedChatId != null) {
+                        _uiState.update { it.copy(chatId = result.correctedChatId) }
+                    }
+                    saveCredentials(state.token, effectiveChatId)
                     _uiState.update { it.copy(isVerifying = false, isVerified = true) }
                     onSuccess()
                 }

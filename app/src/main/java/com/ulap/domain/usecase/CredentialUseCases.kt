@@ -8,24 +8,111 @@ import com.ulap.domain.repository.CredentialRepository
 import javax.inject.Inject
 
 sealed class VerifyResult {
-    data class Success(val botName: String) : VerifyResult()
-    data class Error(val message: String) : VerifyResult()
+    data class Success(val botName: String, val correctedChatId: String? = null) : VerifyResult()
+    sealed class Error(open val message: String) : VerifyResult() {
+        data class InvalidToken(val detail: String) : Error(detail)
+        data class ChatNotFound(val detail: String) : Error(detail)
+        data class BotNotAdmin(val detail: String) : Error(detail)
+        data class BotKicked(val detail: String) : Error(detail)
+        data class Network(val detail: String) : Error(detail)
+        data class Unknown(val detail: String) : Error(detail)
+    }
 }
 
 class VerifyBotCredentialsUseCase @Inject constructor(
     private val api: TelegramBotApi,
 ) {
-    suspend operator fun invoke(token: String): VerifyResult {
-        return try {
-            val response = api.getMe(sanitizeTokenForPath(token))
-            if (response.ok && response.result != null) {
-                VerifyResult.Success(response.result.firstName)
-            } else {
-                VerifyResult.Error(response.description ?: "Unknown error")
-            }
+    suspend operator fun invoke(token: String, chatId: String): VerifyResult {
+        val sanitized = sanitizeTokenForPath(token)
+
+        // Step 1 — verify token
+        val meResponse = try {
+            api.getMe(sanitized)
+        } catch (e: retrofit2.HttpException) {
+            return VerifyResult.Error.InvalidToken("Bad token (HTTP ${e.code()}): ${e.message()}")
         } catch (e: Exception) {
-            VerifyResult.Error(e.message ?: "Connection failed")
+            return VerifyResult.Error.Network(e.message ?: "Connection failed")
         }
+        if (!meResponse.ok || meResponse.result == null) {
+            return VerifyResult.Error.InvalidToken(meResponse.description ?: "Invalid bot token")
+        }
+        val botId = meResponse.result.id
+        val botName = meResponse.result.firstName
+
+        // Step 2 — verify chat access (with one migrate_to_chat_id retry)
+        when (val chatAccess = verifyChatAccess(sanitized, chatId)) {
+            is ChatAccessResult.Ok -> {
+                val chatResponse = chatAccess.info
+                val effectiveChatId = chatAccess.chatId
+
+                val chatType = chatResponse.type
+                if (chatType == null || chatType == "private") {
+                    return VerifyResult.Success(botName = botName, correctedChatId = if (effectiveChatId != chatId) effectiveChatId else null)
+                }
+
+                // Step 3 — verify bot is admin
+                val memberResponse = try {
+                    api.getChatMember(sanitized, effectiveChatId, botId)
+                } catch (e: Exception) {
+                    return VerifyResult.Error.Network(e.message ?: "Connection failed while checking member status")
+                }
+                if (!memberResponse.ok || memberResponse.result == null) {
+                    return VerifyResult.Error.Unknown(memberResponse.description ?: "Could not check member status")
+                }
+                return when (memberResponse.result.status) {
+                    "creator", "administrator" ->
+                        VerifyResult.Success(botName = botName, correctedChatId = if (effectiveChatId != chatId) effectiveChatId else null)
+                    "member", "restricted" ->
+                        VerifyResult.Error.BotNotAdmin(
+                            "Bot is a regular member. Promote it to admin: open the chat → title → Members → find bot → Promote."
+                        )
+                    else ->
+                        VerifyResult.Error.BotKicked("Bot has been removed from this chat. Re-add it.")
+                }
+            }
+            is ChatAccessResult.NotFound ->
+                return VerifyResult.Error.ChatNotFound(
+                    "Bot can't see that chat. Add the bot, confirm the id with @RawDataBot. Supergroups start with -100."
+                )
+            is ChatAccessResult.NetworkError ->
+                return VerifyResult.Error.Network(chatAccess.message)
+        }
+        // Unreachable — all ChatAccessResult branches return above
+        @Suppress("UNREACHABLE_CODE")
+        return VerifyResult.Error.Unknown("Unexpected state")
+    }
+
+    private sealed interface ChatAccessResult {
+        data class Ok(val info: com.ulap.data.remote.TelegramChatInfo, val chatId: String) : ChatAccessResult
+        object NotFound : ChatAccessResult
+        data class NetworkError(val message: String) : ChatAccessResult
+    }
+
+    /** Returns Ok, NotFound, or NetworkError; never throws. */
+    private suspend fun verifyChatAccess(
+        sanitizedToken: String,
+        chatId: String,
+    ): ChatAccessResult {
+        val firstResponse = try {
+            api.getChat(sanitizedToken, chatId)
+        } catch (e: Exception) {
+            return ChatAccessResult.NetworkError(e.message ?: "Network error")
+        }
+        if (firstResponse.ok && firstResponse.result != null) {
+            return ChatAccessResult.Ok(firstResponse.result, chatId)
+        }
+        // Check for supergroup migration hint
+        val migratedId = firstResponse.parameters?.migrateToChatId
+            ?: return ChatAccessResult.NotFound
+        val newChatId = migratedId.toString()
+        val secondResponse = try {
+            api.getChat(sanitizedToken, newChatId)
+        } catch (e: Exception) {
+            return ChatAccessResult.NetworkError(e.message ?: "Network error during migration retry")
+        }
+        return if (secondResponse.ok && secondResponse.result != null) {
+            ChatAccessResult.Ok(secondResponse.result, newChatId)
+        } else ChatAccessResult.NotFound
     }
 }
 
@@ -71,6 +158,7 @@ class GetBotPoolUseCase @Inject constructor(
 /**
  * Verifies a new bot token and, on success, appends it to the additional-bots list.
  * The token must not already be the primary bot token.
+ * Also verifies chat access and admin status against the saved primary chat_id.
  */
 class AddSecondaryBotUseCase @Inject constructor(
     private val api: TelegramBotApi,
@@ -79,23 +167,17 @@ class AddSecondaryBotUseCase @Inject constructor(
 ) {
     suspend operator fun invoke(token: String, label: String): VerifyResult {
         val trimmed = token.trim()
-        if (trimmed.isBlank()) return VerifyResult.Error("Token cannot be empty")
+        if (trimmed.isBlank()) return VerifyResult.Error.Unknown("Token cannot be empty")
         if (trimmed == credentialRepository.getBotToken()) {
-            return VerifyResult.Error("This is already the primary bot")
+            return VerifyResult.Error.Unknown("This is already the primary bot")
         }
-        val verifyResult = try {
-            val response = api.getMe(sanitizeTokenForPath(trimmed))
-            if (response.ok && response.result != null) {
-                VerifyResult.Success(response.result.firstName)
-            } else {
-                VerifyResult.Error(response.description ?: "Unknown error")
-            }
-        } catch (e: Exception) {
-            VerifyResult.Error(e.message ?: "Connection failed")
-        }
+        val chatId = credentialRepository.getChatId() ?: return VerifyResult.Error.Unknown("No chat_id saved — set up the primary bot first")
+
+        val verifyUseCase = VerifyBotCredentialsUseCase(api)
+        val verifyResult = verifyUseCase(trimmed, chatId)
+
         if (verifyResult is VerifyResult.Success) {
             val current = credentialRepository.getAdditionalBotTokens().toMutableList()
-            // Deduplicate: replace existing entry for the same token rather than adding a duplicate.
             val existingIdx = current.indexOfFirst { it.token == trimmed }
             val newEntry = BotCredential(
                 index = if (existingIdx >= 0) current[existingIdx].index else current.size + 1,

@@ -222,7 +222,7 @@ fun BotSetupScreen(
                 .bringIntoViewRequester(chatIdBringIntoView)
                 .onFocusEvent { if (it.isFocused) scope.launch { chatIdBringIntoView.bringIntoView() } },
             singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
         )
 
         state.verifyError?.let { error ->

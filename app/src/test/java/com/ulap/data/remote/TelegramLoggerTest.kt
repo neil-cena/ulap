@@ -127,6 +127,13 @@ class TelegramLoggerTest {
             disableNotification: Boolean,
         ): TelegramResponse<Boolean> =
             throw UnsupportedOperationException("not used in TelegramLogger tests")
+
+        override suspend fun getChatMember(
+            token: String,
+            chatId: String,
+            userId: Long,
+        ): TelegramResponse<com.ulap.data.remote.TelegramChatMember> =
+            throw UnsupportedOperationException("not used in TelegramLogger tests")
     }
 
     private fun makeFreshChannel() = Channel<String>(capacity = Channel.UNLIMITED)
