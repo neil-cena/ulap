@@ -175,6 +175,9 @@ fun MediaViewerScreen(
                             if (item.mediaType == MediaType.VIDEO) {
                                 VideoPlayerView(
                                     uris = listOf(Uri.parse(item.contentUri)),
+                                    startPositionMs = viewModel.getVideoStartPosition(item.id),
+                                    startPlayWhenReady = viewModel.getVideoStartIsPlaying(item.id),
+                                    onPositionChanged = { pos, playing -> viewModel.saveVideoPosition(item.id, pos, playing) },
                                     onControllerVisibilityChanged = onControllerVisibilityChanged,
                                     onFullscreenClick = onFullscreenClick,
                                     onError = { err ->
@@ -222,6 +225,9 @@ fun MediaViewerScreen(
                                     if (item.mediaType == MediaType.VIDEO) {
                                         VideoPlayerView(
                                             uris = urls.map { Uri.parse(it) },
+                                            startPositionMs = viewModel.getVideoStartPosition(item.id),
+                                            startPlayWhenReady = viewModel.getVideoStartIsPlaying(item.id),
+                                            onPositionChanged = { pos, playing -> viewModel.saveVideoPosition(item.id, pos, playing) },
                                             onControllerVisibilityChanged = onControllerVisibilityChanged,
                                             onFullscreenClick = onFullscreenClick,
                                             onVideoOpened = { viewModel.onVideoOpened(item) },
@@ -244,6 +250,9 @@ fun MediaViewerScreen(
                                     VideoPlayerView(
                                         uris = listOf(Uri.parse(state.fileUri)),
                                         dataSourceFactory = state.dataSourceFactory,
+                                        startPositionMs = viewModel.getVideoStartPosition(item.id),
+                                        startPlayWhenReady = viewModel.getVideoStartIsPlaying(item.id),
+                                        onPositionChanged = { pos, playing -> viewModel.saveVideoPosition(item.id, pos, playing) },
                                         onControllerVisibilityChanged = onControllerVisibilityChanged,
                                         onFullscreenClick = onFullscreenClick,
                                         onVideoOpened = { viewModel.onVideoOpened(item) },

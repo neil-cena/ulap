@@ -23,6 +23,16 @@ import androidx.media3.ui.PlayerView
 fun VideoPlayerView(
     uris: List<Uri>,
     dataSourceFactory: DataSource.Factory? = null,
+    /** Position (ms) to seek to on player creation; 0 means start from the beginning. */
+    startPositionMs: Long = 0L,
+    /** Whether the player should start playing immediately (default true). */
+    startPlayWhenReady: Boolean = true,
+    /**
+     * Invoked just before the player is released with the last known position (ms) and
+     * play/pause intent. Wire this to [MediaViewerViewModel.saveVideoPosition] so that
+     * position survives Activity recreation (process death, theme change, etc.).
+     */
+    onPositionChanged: ((positionMs: Long, isPlaying: Boolean) -> Unit)? = null,
     /** Called whenever the player's built-in controls become visible (true) or hidden (false). */
     onControllerVisibilityChanged: (visible: Boolean) -> Unit = {},
     /** Called when the user taps the fullscreen button inside the player controls. */
@@ -48,6 +58,7 @@ fun VideoPlayerView(
             } else {
                 setMediaItems(uris.map { MediaItem.fromUri(it) })
             }
+            if (startPositionMs > 0L) seekTo(startPositionMs)
 
             if (onError != null || onVideoOpened != null || onPlayerStateChanged != null) {
                 addListener(object : Player.Listener {
@@ -97,7 +108,7 @@ fun VideoPlayerView(
             }
 
             prepare()
-            playWhenReady = true
+            playWhenReady = startPlayWhenReady
         }
     }
 
@@ -109,6 +120,7 @@ fun VideoPlayerView(
             // #region agent log
             android.util.Log.w("DBG_5f6b53", "[VideoPlayerView] DisposableEffect onDispose FIRING uris=${uris.size} | thread=${Thread.currentThread().name}")
             // #endregion
+            onPositionChanged?.invoke(exoPlayer.currentPosition, exoPlayer.playWhenReady)
             onVideoReleased?.invoke()
             exoPlayer.release()
         }

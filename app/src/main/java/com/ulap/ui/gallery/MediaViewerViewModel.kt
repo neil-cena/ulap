@@ -95,6 +95,16 @@ class MediaViewerViewModel @Inject constructor(
 
     private val mediaId: String = savedStateHandle.get<String>("mediaId") ?: ""
 
+    private val playbackStateStore = VideoPlaybackStateStore(savedStateHandle)
+
+    fun saveVideoPosition(itemId: String, positionMs: Long, isPlaying: Boolean) {
+        playbackStateStore.save(itemId, positionMs, isPlaying)
+    }
+
+    fun getVideoStartPosition(itemId: String): Long = playbackStateStore.getPosition(itemId)
+
+    fun getVideoStartIsPlaying(itemId: String): Boolean = playbackStateStore.getIsPlaying(itemId)
+
     private val _downloadState = MutableStateFlow<DownloadState?>(null)
     val downloadState: StateFlow<DownloadState?> = _downloadState.asStateFlow()
 
