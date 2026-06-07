@@ -24,7 +24,7 @@ Back up photos and videos from device folders (and optionally from Google Photos
 
 1. Create a bot with [@BotFather](https://t.me/BotFather)
 2. Create a private channel or group and add the bot as an administrator with permission to post
-3. Obtain the chat ID (e.g. forward a message to [@userinfobot](https://t.me/userinfobot) or use Bot API `getUpdates` after a post)
+3. Obtain the chat ID (e.g. send a message to [@userinfobot](https://t.me/userinfobot) and select the group from the bot options. 
 4. In Ulap, enter the bot token and chat ID (or use **QR show/scan** on a second device)
 5. Pick folders to back up and run sync
 
