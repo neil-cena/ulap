@@ -8,6 +8,7 @@ data class GalleryContextMenuVisibility(
     val showShare: Boolean,
     val showRemoveFromDevice: Boolean,
     val showDownload: Boolean,
+    val showDelete: Boolean,
 )
 
 object GalleryContextMenuPolicy {
@@ -17,11 +18,13 @@ object GalleryContextMenuPolicy {
         val contentUriNonBlank = item.contentUri.trim().isNotEmpty()
         val cloudOnly = item.backupStatus == BackupStatus.CLOUD_ONLY
         val telegramIdNonBlank = item.telegramFileId?.trim()?.isNotEmpty() == true
+        val hasMessageId = item.telegramMessageId != null && item.telegramMessageId != 0L
         return GalleryContextMenuVisibility(
             showInfo = true,
             showShare = true,
             showRemoveFromDevice = contentUriNonBlank && !cloudOnly,
             showDownload = cloudOnly && telegramIdNonBlank,
+            showDelete = hasMessageId,
         )
     }
 

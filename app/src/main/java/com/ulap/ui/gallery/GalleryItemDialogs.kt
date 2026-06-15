@@ -20,6 +20,7 @@ fun GalleryItemActionsDialog(
     onShare: (MediaItem) -> Unit,
     onRemove: (MediaItem) -> Unit,
     onDownload: (MediaItem) -> Unit,
+    onDelete: (MediaItem) -> Unit = {},
 ) {
     val it = item ?: return
     val vis = GalleryContextMenuPolicy.contextMenuVisibility(it)
@@ -47,6 +48,11 @@ fun GalleryItemActionsDialog(
                 if (vis.showDownload) {
                     TextButton(onClick = { onDownload(it) }) {
                         Text(stringResource(R.string.gallery_action_download))
+                    }
+                }
+                if (vis.showDelete) {
+                    TextButton(onClick = { onDelete(it) }) {
+                        Text(stringResource(R.string.gallery_action_delete_telegram))
                     }
                 }
             }

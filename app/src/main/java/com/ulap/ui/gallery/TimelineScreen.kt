@@ -363,6 +363,10 @@ fun TimelineScreen(
                     viewModel.downloadFromGallery(it)
                     menuItem = null
                 },
+                onDelete = {
+                    viewModel.deleteFromTelegram(it)
+                    menuItem = null
+                },
             )
             GalleryItemInfoDialog(item = infoItem, onDismiss = { infoItem = null })
         }

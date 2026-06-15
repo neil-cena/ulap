@@ -20,6 +20,8 @@ import com.ulap.domain.usecase.DownloadCloudItemUseCase
 import com.ulap.domain.usecase.GetCredentialsUseCase
 import com.ulap.domain.usecase.GetTimelineUseCase
 import com.ulap.domain.usecase.RepairCorruptChunkMetadataFromPinnedIndexUseCase
+import com.ulap.domain.usecase.DeleteFileFromTelegramUseCase
+import com.ulap.domain.usecase.DeleteFileResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
@@ -87,6 +89,7 @@ class MediaViewerViewModel @Inject constructor(
     private val mediaItemDao: MediaItemDao,
     private val downloadCloudItem: DownloadCloudItemUseCase,
     private val repairChunkMetadata: RepairCorruptChunkMetadataFromPinnedIndexUseCase,
+    private val deleteFileFromTelegram: DeleteFileFromTelegramUseCase,
     private val okHttpClient: okhttp3.OkHttpClient,
     @ApplicationContext private val appContext: Context,
     private val debugLog: com.ulap.debug.DebugLogBuffer,
@@ -694,6 +697,26 @@ class MediaViewerViewModel @Inject constructor(
 
     fun clearDownloadState() {
         _downloadState.value = null
+    }
+
+    fun deleteItem(item: MediaItem) {
+        val messageId = item.telegramMessageId ?: return
+        viewModelScope.launch {
+            _downloadState.value = DownloadState.Downloading
+            try {
+                val result = deleteFileFromTelegram(messageId)
+                _downloadState.value = when (result) {
+                    is DeleteFileResult.Success -> {
+                        DownloadState.Done // Reusing DownloadState for deletion feedback
+                    }
+                    is DeleteFileResult.Error -> {
+                        DownloadState.Error(result.message)
+                    }
+                }
+            } catch (e: Exception) {
+                _downloadState.value = DownloadState.Error(e.message ?: "Delete failed")
+            }
+        }
     }
 
     fun onVideoOpened(item: com.ulap.domain.model.MediaItem) {
