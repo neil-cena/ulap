@@ -1,10 +1,15 @@
 package com.ulap.domain.usecase
 
+import android.util.Log
 import com.ulap.data.local.dao.MediaItemDao
 import com.ulap.data.remote.BackupIndexManager
+import com.ulap.data.remote.TelegramBotApi
+import com.ulap.data.remote.TelegramApiException
 import com.ulap.domain.repository.CredentialRepository
 import com.ulap.sync.DeleteAllBackupsResult
 import com.ulap.sync.SyncEngine
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 class FetchIndexFromFileIdUseCase @Inject constructor(
@@ -100,4 +105,53 @@ class DeleteAllBackupsUseCase @Inject constructor(
     suspend operator fun invoke(
         onProgress: (deleted: Int, total: Int) -> Unit = { _, _ -> },
     ) = syncEngine.deleteAllBackups(onProgress)
+}
+
+sealed class DeleteFileResult {
+    data object Success : DeleteFileResult()
+    data class Error(val message: String) : DeleteFileResult()
+}
+
+/**
+ * Deletes a single file/message from Telegram.
+ * Requires the message ID to be available for the media item.
+ */
+class DeleteFileFromTelegramUseCase @Inject constructor(
+    private val credentialRepository: CredentialRepository,
+    private val telegramApi: TelegramBotApi,
+) {
+    suspend operator fun invoke(messageId: Long): DeleteFileResult = withContext(Dispatchers.IO) {
+        try {
+            val token = credentialRepository.getBotToken()
+                ?: return@withContext DeleteFileResult.Error("No bot token found")
+            val chatId = credentialRepository.getChatId()
+                ?: return@withContext DeleteFileResult.Error("No chat ID found")
+
+            val response = telegramApi.deleteMessage(
+                token = token,
+                chatId = chatId,
+                messageId = messageId
+            )
+
+            if (response.ok) {
+                DeleteFileResult.Success
+            } else {
+                val errorMsg = response.description ?: "Unknown error"
+                Log.w("DeleteFileFromTelegramUseCase", "Delete failed: $errorMsg (code: ${response.errorCode})")
+                DeleteFileResult.Error(errorMsg)
+            }
+        } catch (e: TelegramApiException) {
+            // Message not found or already deleted is acceptable
+            if (e.errorCode == 400 && e.description?.contains("not found", ignoreCase = true) == true) {
+                Log.i("DeleteFileFromTelegramUseCase", "Message already deleted: ${e.message}")
+                DeleteFileResult.Success
+            } else {
+                Log.w("DeleteFileFromTelegramUseCase", "API error: ${e.message}")
+                DeleteFileResult.Error(e.description ?: "Failed to delete from Telegram")
+            }
+        } catch (e: Exception) {
+            Log.w("DeleteFileFromTelegramUseCase", "Unexpected error: ${e.message}", e)
+            DeleteFileResult.Error(e.message ?: "Unexpected error")
+        }
+    }
 }

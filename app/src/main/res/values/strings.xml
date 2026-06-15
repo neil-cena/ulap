@@ -132,6 +132,7 @@
     <string name="gallery_action_share">Share</string>
     <string name="gallery_action_remove_device">Remove from device</string>
     <string name="gallery_action_download">Download</string>
+    <string name="gallery_action_delete_telegram">Delete from Telegram</string>
     <string name="gallery_download_started">Downloading…</string>
     <string name="gallery_download_saved">Saved to Pictures / Ulap Restore</string>
     <string name="gallery_download_failed">Download failed</string>

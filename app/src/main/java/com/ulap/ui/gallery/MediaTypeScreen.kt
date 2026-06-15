@@ -177,6 +177,10 @@ fun MediaTypeScreen(
                     viewModel.downloadFromGallery(it)
                     menuItem = null
                 },
+                onDelete = {
+                    viewModel.deleteFromTelegram(it)
+                    menuItem = null
+                },
             )
             GalleryItemInfoDialog(item = infoItem, onDismiss = { infoItem = null })
         }

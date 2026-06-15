@@ -16,6 +16,8 @@ import com.ulap.domain.usecase.GetMediaByTypeUseCase
 import com.ulap.domain.usecase.MarkAsCloudOnlyUseCase
 import com.ulap.domain.usecase.RemoveLocalMediaFileUseCase
 import com.ulap.domain.usecase.RemoveLocalMediaOutcome
+import com.ulap.domain.usecase.DeleteFileFromTelegramUseCase
+import com.ulap.domain.usecase.DeleteFileResult
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CancellationException
@@ -56,6 +58,7 @@ class MediaTypeViewModel @Inject constructor(
     private val downloadCloudItem: DownloadCloudItemUseCase,
     private val removeLocalMediaFile: RemoveLocalMediaFileUseCase,
     private val markAsCloudOnly: MarkAsCloudOnlyUseCase,
+    private val deleteFileFromTelegram: DeleteFileFromTelegramUseCase,
 ) : ViewModel() {
 
     private val _selectedType = MutableStateFlow(MediaType.IMAGE)
@@ -200,6 +203,26 @@ class MediaTypeViewModel @Inject constructor(
 
     fun dismissRemoveFromDeviceConfirmation() {
         _removeFromDeviceConfirmation.value = RemoveFromDeviceConfirmationState()
+    }
+
+    fun deleteFromTelegram(item: MediaItem) {
+        val messageId = item.telegramMessageId ?: return
+        viewModelScope.launch {
+            _snackbarMessages.emit("Deleting from Telegram…")
+            try {
+                val result = deleteFileFromTelegram(messageId)
+                when (result) {
+                    is DeleteFileResult.Success -> {
+                        _snackbarMessages.emit("Deleted from Telegram")
+                    }
+                    is DeleteFileResult.Error -> {
+                        _snackbarMessages.emit("Delete failed: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                _snackbarMessages.emit("Delete failed: ${e.message ?: "Unknown error"}")
+            }
+        }
     }
 
     private fun groupByLabel(items: List<MediaItem>): List<TimelineGroup> {
